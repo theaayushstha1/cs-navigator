@@ -1,0 +1,113 @@
+/* ====== ACTION BUTTON (Log Out) ====== */
+
+.logout-btn {
+  display: inline-block;
+  padding: 6px 14px;
+  margin-left: 16px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #fff;
+  background-color: #4A90E2;
+  border: 1px solid #357ABD;
+  border-radius: 8px;
+  text-decoration: none;
+  transition: background-color .18s ease, border-color .18s ease, box-shadow .18s ease, transform .05s ease;
+  cursor: pointer;
+}
+.logout-btn:hover { background-color: #357ABD; border-color: #2A65A0; }
+.logout-btn:active { transform: translateY(1px); background-color: #2A65A0; border-color: #235386; }
+.logout-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(74,144,226,.4); }
+
+/* ====== NAV BAR CONTAINER ====== */
+
+.navbar {
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.nav-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: nowrap;          /* keep everything on one line */
+}
+
+/* left cluster (logo + title) */
+.navbar-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  white-space: nowrap;        /* keep title on one line */
+}
+
+.nav-logo {
+  height: 46px;               /* bigger logo */
+  width: auto;
+}
+
+/* never wrap “MSU CS Navigator” */
+.nav-title {
+  white-space: nowrap;
+  font-weight: 800;
+  font-size: 1.3rem;          /* ~20–21px */
+  line-height: 1.1;
+  letter-spacing: .2px;
+}
+
+/* right cluster (links + buttons) */
+.nav-links {
+  margin-left: auto;          /* push links to the right */
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+/* ====== LINKS ====== */
+
+.nav-link {
+  color: #111827;
+  text-decoration: none;
+  padding: 8px 10px;
+  border-radius: 8px;
+  transition: background-color .18s ease, color .18s ease, box-shadow .18s ease, transform .05s ease;
+}
+.nav-link:hover { background: #f3f4f6; }
+.nav-link:active { transform: translateY(1px); }
+.nav-link:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(99,102,241,.35); }
+.nav-link--selected { background: #eef2ff; color: #1f2937; }
+
+/* theme toggle */
+.theme-toggle {
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  border-radius: 10px;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background-color .18s ease, border-color .18s ease, transform .05s ease;
+}
+.theme-toggle:hover { background: #f3f4f6; }
+.theme-toggle:active { transform: translateY(1px); }
+.theme-toggle:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(31,41,55,.25); }
+
+/* ====== DARK MODE ====== */
+
+.dark .navbar { background: #0f172a; border-bottom-color: #1f2937; }
+.dark .nav-link { color: #e5e7eb; }
+.dark .nav-link:hover { background: #111827; }
+.dark .nav-link--selected { background: #1f2937; color: #f3f4f6; }
+.dark .theme-toggle { background: #0b1220; border-color: #1f2937; color: #e5e7eb; }
+.dark .theme-toggle:hover { background: #111827; }
+.dark .logout-btn { background-color: #3b82f6; border-color: #2563eb; }
+.dark .logout-btn:hover { background-color: #2563eb; border-color: #1d4ed8; }
+
+/* ====== RESPONSIVE ====== */
+
+@media (max-width: 768px) {
+  .nav-container { gap: 16px; padding: 10px 16px; }
+  .nav-links { gap: 14px; }
+  .nav-logo { height: 38px; }
+  .nav-title { font-size: 1.1rem; }
+}
