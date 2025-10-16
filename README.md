@@ -69,4 +69,4 @@ git push
 =======
 # MSU CS navigator
 It is an AI-powered Retrieval-Augmented Generation (RAG) chatbot designed to assist students in the Morgan State University Computer Science Department.
->>>>>>> 14a35ba989553c5e77497e85a27e8df7e9c272bc
+
