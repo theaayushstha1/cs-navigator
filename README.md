@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 An AI-powered Retrieval-Augmented Generation (RAG) chatbot designed to assist students in the Morgan State University Computer Science Department.
 
 #  Chatbot App (Frontend + Backend + MySQL)
