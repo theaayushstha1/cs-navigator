@@ -165,7 +165,7 @@ body.sidebar-collapsed .chat-main {
   word-wrap: break-word;
   box-shadow: var(--shadow-sm);
   display: inline-block;
-  max-width: 600px;
+  max-width: 650px; /* Slightly wider for lists */
   width: auto;
 }
 
@@ -183,6 +183,66 @@ body.sidebar-collapsed .chat-main {
   color: white;
   border-radius: 18px 18px 4px 18px;
 }
+
+/* ─── 🔥 NEW MARKDOWN STYLING (Adds Bullets, Spacing & Headers) ─── */
+
+/* Paragraph spacing - prevents "wall of text" */
+.message-bubble p {
+  margin-bottom: 0.8rem;
+}
+.message-bubble p:last-child {
+  margin-bottom: 0;
+}
+
+/* List Styling - The "Bullet" Look */
+.message-bubble ul,
+.message-bubble ol {
+  margin: 0.5rem 0 0.8rem 0;
+  padding-left: 1.5rem; /* Indentation */
+}
+
+.message-bubble li {
+  margin-bottom: 0.4rem; /* Space between items */
+}
+
+/* Headers - Professional Titles */
+.message-bubble h1,
+.message-bubble h2,
+.message-bubble h3 {
+  font-weight: 700;
+  margin-top: 1.2rem;
+  margin-bottom: 0.6rem;
+  font-size: 1.1rem;
+  line-height: 1.3;
+}
+
+/* Remove top margin if header is the very first thing */
+.message-bubble h1:first-child,
+.message-bubble h2:first-child,
+.message-bubble h3:first-child {
+  margin-top: 0;
+}
+
+/* Bot-Specific Markdown Colors */
+.message.bot .message-bubble h1,
+.message.bot .message-bubble h2,
+.message.bot .message-bubble h3 {
+  color: var(--msu-blue); /* Blue headers for bot */
+}
+.message.bot .message-bubble strong {
+  color: var(--msu-blue); /* Blue bold text for bot */
+  font-weight: 700;
+}
+
+/* User-Specific Markdown Colors (Must be white) */
+.message.user .message-bubble h1,
+.message.user .message-bubble h2,
+.message.user .message-bubble h3,
+.message.user .message-bubble strong {
+  color: white;
+}
+
+/* ─── END NEW MARKDOWN STYLING ─── */
 
 .message-link {
   color: var(--msu-blue);
@@ -411,6 +471,16 @@ body.dark .suggestions .suggestion-btn:hover {
   background: var(--msu-blue) !important;
   color: white !important;
   border-color: var(--msu-blue) !important;
+}
+
+/* Dark Mode Markdown Improvements */
+body.dark .message.bot .message-bubble h1,
+body.dark .message.bot .message-bubble h2,
+body.dark .message.bot .message-bubble h3 {
+  color: #FFB703; /* Gold for headers in dark mode */
+}
+body.dark .message.bot .message-bubble strong {
+  color: #FFB703; /* Gold for bold text in dark mode */
 }
 
 /* --- 🔥 FILE CARD & STAGING STYLES (NEW) --- */

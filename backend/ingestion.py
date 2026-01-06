@@ -14,23 +14,48 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
 
-# ── Load env ───────────────────────────────────────────────────────────────────
-BASE_DIR = os.path.dirname(__file__)
-load_dotenv(os.path.join(BASE_DIR, ".env"))
+# ── ROBUST ENV LOADING ─────────────────────────────────────────────────────────
+# 1. Get the absolute path of the directory containing this script (backend/)
+backend_dir = os.path.dirname(os.path.abspath(__file__))
 
+# 2. Get the parent directory (cs-chatbot root/)
+root_dir = os.path.dirname(backend_dir)
+
+# 3. Build path to .env file in the root
+env_path = os.path.join(root_dir, ".env")
+
+print(f"🔍 Checking for .env at: {env_path}")
+
+if os.path.exists(env_path):
+    print("✅ Found .env file. Loading variables...")
+    load_dotenv(env_path)
+else:
+    print("⚠️  WARNING: .env file NOT found at root. Checking current directory...")
+    # Fallback: check if it's inside backend/ for some reason
+    load_dotenv() 
+
+# ── Verify Variables ───────────────────────────────────────────────────────────
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_ENV     = os.getenv("PINECONE_ENV")            # e.g., "us-east-1"
 PINECONE_INDEX   = os.getenv("PINECONE_INDEX_NAME")     # e.g., "vectorized-datasource"
 OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")
-NAMESPACE        = os.getenv("PINECONE_NAMESPACE", "docs")  # <- keep in sync with backend
+NAMESPACE        = os.getenv("PINECONE_NAMESPACE", "docs")
+
+# Debug print to show which specific key is missing (values hidden)
+print(f"   - PINECONE_API_KEY: {'OK' if PINECONE_API_KEY else 'MISSING'}")
+print(f"   - PINECONE_ENV:     {'OK' if PINECONE_ENV else 'MISSING'}")
+print(f"   - PINECONE_INDEX:   {'OK' if PINECONE_INDEX else 'MISSING'}")
+print(f"   - OPENAI_API_KEY:   {'OK' if OPENAI_API_KEY else 'MISSING'}")
 
 if not all([PINECONE_API_KEY, PINECONE_ENV, PINECONE_INDEX, OPENAI_API_KEY]):
     raise RuntimeError(
-        "Missing one of: PINECONE_API_KEY, PINECONE_ENV, PINECONE_INDEX_NAME, OPENAI_API_KEY"
+        "\n❌ CRITICAL ERROR: Missing environment variables.\n"
+        f"Please create a .env file at: {env_path}\n"
+        "It must contain: PINECONE_API_KEY, PINECONE_ENV, PINECONE_INDEX_NAME, OPENAI_API_KEY"
     )
 
 # ── Pinecone client & index ────────────────────────────────────────────────────
-pc = Pinecone(api_key=PINECONE_API_KEY)  # v3 SDK (no pinecone.init)
+pc = Pinecone(api_key=PINECONE_API_KEY)
 
 def _to_dict(obj):
     return obj.to_dict() if hasattr(obj, "to_dict") else obj
@@ -99,7 +124,12 @@ async def ingest_data(file_paths: Optional[List[str]] = None) -> None:
     """
     # 1) Discover files
     if not file_paths:
-        data_dir = os.path.join(BASE_DIR, "data_sources")
+        # data_sources is assumed to be inside backend/
+        data_dir = os.path.join(backend_dir, "data_sources")
+        if not os.path.exists(data_dir):
+             print(f"⚠️  Data directory not found at: {data_dir}")
+             return
+        
         file_paths = [
             os.path.join(data_dir, f)
             for f in sorted(os.listdir(data_dir))

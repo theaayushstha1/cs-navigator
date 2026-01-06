@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+
 import { FaMicrophone } from "@react-icons/all-files/fa/FaMicrophone";
 import { FaPaperPlane } from "@react-icons/all-files/fa/FaPaperPlane";
 import { FaPaperclip } from "@react-icons/all-files/fa/FaPaperclip";
@@ -20,11 +23,12 @@ const SUGGESTIONS = [
 ];
 
 // --- SMART API SWITCHING ---
-// 🔥 SMART CONFIG: Check the browser URL to pick the right backend
 const hostname = window.location.hostname;
 const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
   ? "http://127.0.0.1:8000"           // If on Laptop -> Use Local Backend (8000)
   : "http://18.214.136.155:5000";     // If on AWS -> Use AWS Backend (5000)
+
+// Helper for icons
 const getFileIcon = (filename) => {
   if (!filename) return <FaFile className="file-icon generic" />;
   const ext = filename.split('.').pop().toLowerCase();
@@ -35,56 +39,6 @@ const getFileIcon = (filename) => {
   
   return <FaFile className="file-icon generic" />;
 };
-
-// 🔥 HELPER: Render text with Professional File Cards & Clickable Links
-function linkify(text) {
-  if (!text) return null;
-  
-  // Regex to find Markdown links: [Label](URL)
-  const mdRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g; 
-  const parts = text.split(mdRegex);
-  const nodes = [];
-
-  for (let i = 0; i < parts.length; ) {
-    if (i % 3 === 0) {
-      // Normal text
-      nodes.push(<span key={i}>{parts[i]}</span>);
-      i += 1;
-    } else {
-      const label = parts[i];
-      const url = parts[i + 1];
-      
-      // Check if this link points to our backend file storage
-      const isFile = url.includes("uploads/chat_files") || url.includes("uploads/profile_pictures");
-      
-      if (isFile) {
-        // Render a Professional File Card
-        nodes.push(
-          <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="file-card">
-            <div className="file-icon-wrapper">
-              {getFileIcon(label)}
-            </div>
-            <div className="file-info">
-              <span className="file-name">{label}</span>
-              <span className="file-action">Click to view file</span>
-            </div>
-          </a>
-        );
-      } else {
-        // Normal External Link
-        nodes.push(
-          <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="message-link">
-            {label}
-          </a>
-        );
-      }
-      i += 2;
-    }
-  }
-  
-  // Second pass: Auto-link raw URLs if they weren't in markdown format (optional, keeping simple for now)
-  return nodes; 
-}
 
 export default function Chatbox({ initialMessages = [], onSessionChange, sessionId }) {
   // --- STATE ---
@@ -208,7 +162,6 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
 
   const handleSuggestion = (text) => {
       if (!isLoading) {
-          // Send immediately logic could go here, but for now populating input is safer
           setInput(text);
           inputRef.current?.focus();
       }
@@ -320,9 +273,35 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
               />
               <div className="message-content">
                 <div className="message-bubble">
-                  {/* Apply Linkify to render File Cards properly */}
-                  {linkify(msg.text)}
                   
+                  {/* 🔥 UPDATED: Use ReactMarkdown for Bullets, Bold, & File Cards */}
+                  <ReactMarkdown 
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                        // Custom Renderer for Links to handle File Cards
+                        a: ({node, href, children, ...props}) => {
+                            const isFile = href.includes("uploads/chat_files") || href.includes("uploads/profile_pictures");
+                            
+                            if (isFile) {
+                                return (
+                                    <a href={href} target="_blank" rel="noopener noreferrer" className="file-card">
+                                        <div className="file-icon-wrapper">
+                                            {getFileIcon(children[0])}
+                                        </div>
+                                        <div className="file-info">
+                                            <span className="file-name">{children}</span>
+                                            <span className="file-action">Click to view file</span>
+                                        </div>
+                                    </a>
+                                );
+                            }
+                            return <a href={href} target="_blank" rel="noopener noreferrer" className="message-link" {...props}>{children}</a>;
+                        }
+                    }}
+                  >
+                    {msg.text}
+                  </ReactMarkdown>
+
                   {msg.sender === "bot" && (
                     <button 
                       className="tts-btn" 

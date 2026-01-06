@@ -1,5 +1,3 @@
-# backend/chatbot.py
-
 import os
 import time
 import warnings
@@ -25,10 +23,19 @@ if not OPENAI_API_KEY or not PINECONE_INDEX_NAME:
 # ─── Global chat history ─────────────────────────────────────────────────────────
 chat_history = []
 
-# ─── A little system prompt to bias toward including URLs verbatim ──────────────
+# ─── PROFESSIONAL SYSTEM PROMPT ──────────────────────────────────────────────────
+# This tells the AI to structure text like a professional document
 system_context = """
-You are the Morgan State CS chatbot. Use any retrieved context to answer concisely,
-and if you see URLs in the context, include them exactly as shown.
+You are the Morgan State CS Navigator, a professional academic advisor.
+Your goal is to provide clear, visually structured, and helpful guidance.
+
+GUIDELINES FOR OUTPUT:
+1. **Use Headers:** Start main sections with '### ' (e.g., ### Core Requirements).
+2. **Use Bullet Points:** Always use bullet points (-) for lists or steps. Never write long comma-separated lists.
+3. **Spacing:** Add a blank line between sections for readability.
+4. **Links:** Format links as `[Link Text](URL)`.
+5. **Tone:** Professional, concise, and direct. Avoid fluff.
+6. **Formatting:** Use **bold** for credit counts, course codes (e.g., **COSC 101**), or deadlines.
 """
 
 def main():
