@@ -438,10 +438,58 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
     }
   };
 
-  // Simple voice input (tap mic without entering voice mode)
+  // Simple voice input (tap mic without entering voice mode) - FIXED
   const handleVoiceInput = () => {
-    if (isListening) return;
-    startListening();
+    // If already listening, stop it
+    if (isListening) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechAPI) {
+      alert("Speech recognition not supported. Try Chrome or Edge.");
+      return;
+    }
+
+    const rec = new SpeechAPI();
+    rec.lang = "en-US";
+    rec.continuous = false;
+    rec.interimResults = false;
+    recognitionRef.current = rec;
+
+    rec.onstart = () => {
+      setIsListening(true);
+      console.log("🎤 Simple mic: Started listening...");
+    };
+
+    rec.onresult = (e) => {
+      const transcript = e.results[0][0].transcript;
+      console.log("🎤 Simple mic: Got transcript:", transcript);
+      setInput(transcript);
+      setIsListening(false);
+      // Auto-focus input so user can edit or send
+      inputRef.current?.focus();
+    };
+
+    rec.onerror = (e) => {
+      console.error("🎤 Simple mic error:", e.error);
+      setIsListening(false);
+      if (e.error === "no-speech") {
+        // User was silent, just stop quietly
+      } else if (e.error !== "aborted") {
+        alert("Voice input error: " + e.error);
+      }
+    };
+
+    rec.onend = () => {
+      setIsListening(false);
+    };
+
+    rec.start();
   };
 
   const handleSuggestion = (text) => {

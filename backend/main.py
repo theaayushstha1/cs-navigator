@@ -468,7 +468,8 @@ async def get_profile(user: dict = Depends(get_current_user), db: Session = Depe
         "studentId": getattr(db_user, 'student_id', None),
         "major": getattr(db_user, 'major', "Computer Science"),
         "profilePicture": profile_pic,
-        "morganConnected": getattr(db_user, 'morgan_connected', False)
+        "morganConnected": getattr(db_user, 'morgan_connected', False),
+        "role": getattr(db_user, 'role', "student")
     }
 
 @app.put("/api/profile")

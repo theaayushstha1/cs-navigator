@@ -22,6 +22,33 @@
   border-bottom: 1px solid var(--border-color);
 }
 
+/* Back Button */
+.back-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  background: var(--bg-body);
+  border: 2px solid var(--border-color);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.back-btn:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--msu-blue);
+  color: var(--msu-blue);
+  transform: translateX(-3px);
+}
+
+body.dark .back-btn:hover {
+  border-color: var(--msu-gold);
+  color: var(--msu-gold);
+}
+
 .AdminDashboard .page-icon {
   font-size: 2rem;
   color: var(--msu-blue);
@@ -266,6 +293,19 @@ body.dark .stat-card:hover {
   border-color: var(--msu-gold);
 }
 
+.stat-card .stat-icon {
+  font-size: 1.5rem;
+  margin-bottom: 12px;
+  opacity: 0.6;
+}
+
+.stat-card.total .stat-icon { color: var(--text-secondary); }
+.stat-card.open .stat-icon { color: #F59E0B; }
+.stat-card.progress .stat-icon { color: var(--msu-blue); }
+.stat-card.resolved .stat-icon { color: #22C55E; }
+
+body.dark .stat-card.progress .stat-icon { color: #3B82F6; }
+
 .stat-card .stat-number {
   display: block;
   font-size: 2.5rem;
@@ -428,10 +468,24 @@ body.dark .ticket-card:hover {
   border-top: 1px solid var(--border-color);
 }
 
+.ticket-meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.ticket-user {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
 .ticket-date {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   color: var(--text-secondary);
   font-size: 0.8rem;
 }
@@ -570,7 +624,8 @@ body.dark .ticket-card:hover {
   margin-bottom: 28px;
 }
 
-.modal-meta .ticket-date {
+.modal-meta .ticket-date,
+.modal-meta .ticket-user {
   font-size: 0.85rem;
 }
 

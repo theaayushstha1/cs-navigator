@@ -16,6 +16,8 @@ import { FaBookmark } from "@react-icons/all-files/fa/FaBookmark";
 import { FaChartLine } from "@react-icons/all-files/fa/FaChartLine";
 import { FaBook } from "@react-icons/all-files/fa/FaBook";
 import { FaExternalLinkAlt } from "@react-icons/all-files/fa/FaExternalLinkAlt";
+import { FaCog } from "@react-icons/all-files/fa/FaCog";
+import { FaShieldAlt } from "@react-icons/all-files/fa/FaShieldAlt";
 import "./ProfilePage.css";
 
 // 🔥 Smart API switching - same logic as Chatbox.jsx
@@ -36,7 +38,8 @@ export default function ProfilePage({ userEmail, onLogout }) {
     studentId: "",
     major: "Computer Science",
     profilePicture: "/user_icon.jpg",
-    morganConnected: false
+    morganConnected: false,
+    role: "student"
   });
 
   const [passwords, setPasswords] = useState({
@@ -712,6 +715,21 @@ export default function ProfilePage({ userEmail, onLogout }) {
             </div>
           )}
         </div>
+
+        {/* Admin Access - Only show for admins */}
+        {profile.role === "admin" && (
+          <div className="profile-section admin-section">
+            <div className="section-header">
+              <h3><FaShieldAlt /> Admin Access</h3>
+            </div>
+            <div className="admin-access-content">
+              <p>You have administrator privileges. Access the admin dashboard to manage tickets and curriculum.</p>
+              <button className="admin-access-btn" onClick={() => navigate("/admin")}>
+                <FaCog /> Open Admin Dashboard
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Logout */}
         <div className="profile-section">

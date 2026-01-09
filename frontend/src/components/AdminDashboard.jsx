@@ -1,5 +1,6 @@
 // src/components/AdminDashboard.jsx
 import React, { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { FaCog } from "@react-icons/all-files/fa/FaCog";
 import { FaTicketAlt } from "@react-icons/all-files/fa/FaTicketAlt";
 import { FaBug } from "@react-icons/all-files/fa/FaBug";
@@ -9,6 +10,12 @@ import { FaEye } from "@react-icons/all-files/fa/FaEye";
 import { FaTimes } from "@react-icons/all-files/fa/FaTimes";
 import { FaCheck } from "@react-icons/all-files/fa/FaCheck";
 import { FaClock } from "@react-icons/all-files/fa/FaClock";
+import { FaArrowLeft } from "@react-icons/all-files/fa/FaArrowLeft";
+import { FaInbox } from "@react-icons/all-files/fa/FaInbox";
+import { FaExclamationCircle } from "@react-icons/all-files/fa/FaExclamationCircle";
+import { FaSpinner } from "@react-icons/all-files/fa/FaSpinner";
+import { FaCheckCircle } from "@react-icons/all-files/fa/FaCheckCircle";
+import { FaUser } from "@react-icons/all-files/fa/FaUser";
 import "./AdminDashboard.css";
 
 // API Base URL - Smart switching
@@ -18,6 +25,8 @@ const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
   : "http://18.214.136.155:5000";
 
 export default function AdminDashboard() {
+  const navigate = useNavigate();
+
   // form state
   const [course, setCourse] = useState({
     course_code: "",
@@ -245,6 +254,13 @@ export default function AdminDashboard() {
   return (
     <div className="card page-container AdminDashboard">
       <header className="page-header">
+        <button
+          className="back-btn"
+          onClick={() => navigate("/chat")}
+          title="Back to Chat"
+        >
+          <FaArrowLeft size={16} />
+        </button>
         <FaCog className="page-icon" />
         <h1 className="page-title">Admin Dashboard</h1>
       </header>
@@ -367,18 +383,22 @@ export default function AdminDashboard() {
           {/* Stats Cards */}
           <div className="ticket-stats">
             <div className="stat-card total">
+              <FaInbox className="stat-icon" />
               <span className="stat-number">{ticketStats.total}</span>
               <span className="stat-label">Total</span>
             </div>
             <div className="stat-card open">
+              <FaExclamationCircle className="stat-icon" />
               <span className="stat-number">{ticketStats.open}</span>
               <span className="stat-label">Open</span>
             </div>
             <div className="stat-card progress">
+              <FaSpinner className="stat-icon" />
               <span className="stat-number">{ticketStats.in_progress}</span>
               <span className="stat-label">In Progress</span>
             </div>
             <div className="stat-card resolved">
+              <FaCheckCircle className="stat-icon" />
               <span className="stat-number">{ticketStats.resolved}</span>
               <span className="stat-label">Resolved</span>
             </div>
@@ -428,10 +448,16 @@ export default function AdminDashboard() {
                   </p>
 
                   <div className="ticket-footer">
-                    <span className="ticket-date">
-                      <FaClock size={12} />
-                      {formatDate(ticket.created_at)}
-                    </span>
+                    <div className="ticket-meta">
+                      <span className="ticket-user">
+                        <FaUser size={11} />
+                        {ticket.user_email || "Unknown"}
+                      </span>
+                      <span className="ticket-date">
+                        <FaClock size={11} />
+                        {formatDate(ticket.created_at)}
+                      </span>
+                    </div>
                     <div className="ticket-actions">
                       <button
                         className="view-btn"
@@ -486,8 +512,13 @@ export default function AdminDashboard() {
                 <span className={`ticket-status ${getStatusClass(selectedTicket.status)}`}>
                   {selectedTicket.status.replace("_", " ")}
                 </span>
+                <span className="ticket-user">
+                  <FaUser size={12} />
+                  {selectedTicket.user_email || "Unknown"}
+                </span>
                 <span className="ticket-date">
-                  Submitted: {formatDate(selectedTicket.created_at)}
+                  <FaClock size={12} />
+                  {formatDate(selectedTicket.created_at)}
                 </span>
               </div>
 

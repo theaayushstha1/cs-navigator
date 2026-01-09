@@ -1305,3 +1305,85 @@
     display: none;
   }
 }
+
+/* ========== Admin Access Section ========== */
+.admin-section {
+  background: linear-gradient(135deg, rgba(0, 45, 114, 0.05), rgba(247, 148, 30, 0.05));
+  border: 2px solid var(--msu-blue);
+  border-radius: 16px;
+}
+
+.admin-section .section-header h3 {
+  color: var(--msu-blue);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-section .section-header h3 svg {
+  color: var(--msu-gold);
+}
+
+.admin-access-content {
+  padding: 0 24px 24px;
+}
+
+.admin-access-content p {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  margin-bottom: 20px;
+}
+
+.admin-access-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 14px 24px;
+  background: linear-gradient(135deg, var(--msu-blue), #003d99);
+  color: white;
+  border: none;
+  border-radius: 12px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 12px rgba(0, 45, 114, 0.3);
+}
+
+.admin-access-btn:hover {
+  background: linear-gradient(135deg, #003d99, var(--msu-blue));
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 45, 114, 0.4);
+}
+
+.admin-access-btn:active {
+  transform: translateY(0);
+}
+
+.admin-access-btn svg {
+  font-size: 1.1rem;
+}
+
+/* Dark Mode - Admin Section */
+.dark .admin-section {
+  background: linear-gradient(135deg, rgba(0, 45, 114, 0.15), rgba(247, 148, 30, 0.1));
+  border-color: var(--msu-gold);
+}
+
+.dark .admin-section .section-header h3 {
+  color: var(--msu-gold);
+}
+
+.dark .admin-access-btn {
+  background: linear-gradient(135deg, var(--msu-gold), #ff9f2e);
+  color: #0f172a;
+  box-shadow: 0 4px 12px rgba(247, 148, 30, 0.4);
+}
+
+.dark .admin-access-btn:hover {
+  background: linear-gradient(135deg, #ff9f2e, var(--msu-gold));
+  box-shadow: 0 6px 20px rgba(247, 148, 30, 0.5);
+}
