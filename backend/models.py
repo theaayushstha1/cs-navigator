@@ -1,5 +1,5 @@
 # backend/models.py
-from sqlalchemy import Column, Integer, String, Boolean, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text
 from datetime import datetime
 from db import Base
 
@@ -11,11 +11,12 @@ class User(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False, default="student")  # "admin" or "student"
-    
-    # 🔥 NEW: Profile fields
+
+    # 🔥 Profile fields
     name = Column(String(255), nullable=True)
     student_id = Column(String(50), nullable=True)
     major = Column(String(100), nullable=True, default="Computer Science")
     profile_picture = Column(String(500), nullable=True, default="/user_icon.jpg")
+    profile_picture_data = Column(Text, nullable=True)  # 🔥 NEW: Store base64 image data
     morgan_connected = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

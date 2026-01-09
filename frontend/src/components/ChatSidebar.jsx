@@ -49,10 +49,11 @@ export default function ChatSidebar({
     if (!token) return;
 
     try {
-      // 🔥 API BASE: Handles 5173 vs 5000 logic - PRESERVED
-      const API_BASE = window.location.port === "5173" 
-        ? "http://localhost:5000" 
-        : `${window.location.protocol}//${window.location.hostname}:5000`;
+      // 🔥 FIXED: Smart API switching - same logic as other components
+      const hostname = window.location.hostname;
+      const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
+        ? "http://127.0.0.1:8000"           // Local development
+        : "http://18.214.136.155:5000";     // AWS production
 
       const response = await fetch(`${API_BASE}/api/profile`, {
         headers: {
@@ -64,15 +65,19 @@ export default function ChatSidebar({
         const data = await response.json();
         setUserProfile(data);
 
-        // 🔥 IMAGE URL: Local vs Docker logic - PRESERVED
-        if (data.profile_picture_filename) {
-          let imageUrl;
-          if (window.location.port === "5173") {
-            imageUrl = `http://localhost:5000/uploads/profile_pictures/${data.profile_picture_filename}`;
-          } else {
-            imageUrl = `${window.location.protocol}//${window.location.hostname}:3000/uploads/profile_pictures/${data.profile_picture_filename}`;
+        // 🔥 FIXED: Handle base64 data URLs, full URLs, and relative paths
+        if (data.profilePicture) {
+          let imageUrl = data.profilePicture;
+          if (imageUrl.startsWith('data:')) {
+            // Base64 data URL - use directly
+            setProfileImageUrl(imageUrl);
+          } else if (imageUrl.startsWith('http')) {
+            // Full URL - use directly
+            setProfileImageUrl(imageUrl);
+          } else if (!imageUrl.startsWith('/user_icon')) {
+            // Relative path - prepend API base
+            setProfileImageUrl(`${API_BASE}${imageUrl}`);
           }
-          setProfileImageUrl(imageUrl);
         }
       }
     } catch (error) {

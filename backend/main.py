@@ -18,7 +18,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from collections import Counter
+import io
 from dotenv import load_dotenv
 
 # ==============================================================================
@@ -128,6 +131,18 @@ def init_db():
             except Exception as e:
                 print(f"❌ Failed to add column: {e}")
 
+        # 3. Add profile_picture_data column if missing (For base64 storage)
+        try:
+            conn.execute(text("SELECT profile_picture_data FROM users LIMIT 1"))
+        except (OperationalError, ProgrammingError):
+            print("⚠️ 'profile_picture_data' column missing. Adding it now...")
+            try:
+                conn.execute(text("ALTER TABLE users ADD COLUMN profile_picture_data LONGTEXT"))
+                conn.commit()
+                print("✅ Successfully added 'profile_picture_data' column!")
+            except Exception as e:
+                print(f"❌ Failed to add profile_picture_data column: {e}")
+
 init_db()
 
 # ==============================================================================
@@ -229,6 +244,10 @@ class PasswordChangeRequest(BaseModel):
     currentPassword: str
     newPassword: str
 
+class TTSRequest(BaseModel):
+    text: str
+    voice: str = "alloy"  # Options: alloy, echo, fable, onyx, nova, shimmer
+
 # ==============================================================================
 # 7. STATIC DATA & RESOURCES
 # ==============================================================================
@@ -299,13 +318,18 @@ async def get_profile(user: dict = Depends(get_current_user), db: Session = Depe
     db_user = db.query(User).filter(User.id == user["user_id"]).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
+    # Prefer base64 data (persistent) over file URL
+    profile_pic = getattr(db_user, 'profile_picture_data', None)
+    if not profile_pic:
+        profile_pic = getattr(db_user, 'profile_picture', None)
+
     return {
         "email": db_user.email,
         "name": getattr(db_user, 'name', None),
         "studentId": getattr(db_user, 'student_id', None),
         "major": getattr(db_user, 'major', "Computer Science"),
-        "profilePicture": getattr(db_user, 'profile_picture', None),
+        "profilePicture": profile_pic,
         "morganConnected": getattr(db_user, 'morgan_connected', False)
     }
 
@@ -337,21 +361,45 @@ async def change_password(req: PasswordChangeRequest, user: dict = Depends(get_c
 async def upload_profile_picture(profilePicture: UploadFile = File(...), user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     if not allowed_file(profilePicture.filename):
         raise HTTPException(400, "Invalid file type")
-    
+
+    # Read file content
+    file_content = await profilePicture.read()
+
+    # Get file extension and mime type
+    ext = profilePicture.filename.rsplit('.', 1)[1].lower()
+    mime_types = {
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'png': 'image/png',
+        'gif': 'image/gif'
+    }
+    mime_type = mime_types.get(ext, 'image/jpeg')
+
+    # Convert to base64 data URL
+    import base64
+    base64_data = base64.b64encode(file_content).decode('utf-8')
+    data_url = f"data:{mime_type};base64,{base64_data}"
+
+    # Also save to filesystem as backup
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"user_{user['user_id']}_{timestamp}.{profilePicture.filename.rsplit('.', 1)[1].lower()}"
+    filename = f"user_{user['user_id']}_{timestamp}.{ext}"
     filepath = os.path.join(UPLOAD_FOLDER, filename)
-    
+
     with open(filepath, "wb") as f:
-        f.write(await profilePicture.read())
-    
-    url = f"/uploads/profile_pictures/{filename}"
+        f.write(file_content)
+
+    file_url = f"/uploads/profile_pictures/{filename}"
+
+    # Save base64 to database (persistent) and file URL as fallback
     db_user = db.query(User).filter(User.id == user["user_id"]).first()
-    if hasattr(db_user, 'profile_picture'):
-        db_user.profile_picture = url
+    if db_user:
+        db_user.profile_picture = file_url  # File path as fallback
+        if hasattr(db_user, 'profile_picture_data'):
+            db_user.profile_picture_data = data_url  # Base64 for persistence
         db.commit()
-    
-    return {"url": url}
+
+    # Return base64 data URL for immediate display
+    return {"url": data_url}
 
 # 🔥 NEW: Chat File Upload Endpoint
 @app.post("/api/upload-file")
@@ -441,35 +489,56 @@ def extract_file_content(filepath: str) -> str:
     # Limit content to ~15k chars to fit context window
     return text[:15000]
 
-# --- CHAT ROUTES (WITH FILE READING) ---
+# --- CHAT ROUTES (WITH CONVERSATION MEMORY) ---
 @app.post("/chat")
 async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: Session = Depends(get_db)):
     if not user: raise HTTPException(401, "Unauthorized")
-    
+
     user_q = req.query.strip()
     session_id = req.session_id or "default"
-    
+
+    # 🔥 NEW: Fetch recent conversation history for context (last 6 exchanges)
+    recent_history = db.query(ChatHistory)\
+        .filter(ChatHistory.user_id == user["user_id"])\
+        .filter(ChatHistory.session_id == session_id)\
+        .order_by(ChatHistory.timestamp.desc())\
+        .limit(6)\
+        .all()
+
+    # Reverse to get chronological order
+    recent_history = list(reversed(recent_history))
+
+    # Build conversation context string
+    conversation_context = ""
+    if recent_history:
+        conversation_context = "Previous conversation:\n"
+        for chat in recent_history:
+            conversation_context += f"User: {chat.user_query}\n"
+            conversation_context += f"Assistant: {chat.bot_response}\n"
+        conversation_context += "\n"
+
     # 1. Check for File Upload in Message (Markdown link)
     file_match = re.search(r'uploads/chat_files/([^\)]+)', user_q)
-    
+
     if file_match and llm:
         # User uploaded a file -> Read it and answer based on it
         filename = file_match.group(1)
         filepath = os.path.join(CHAT_FILES_FOLDER, filename)
-        
+
         if os.path.exists(filepath):
             file_content = extract_file_content(filepath)
-            
-            # Construct Prompt with File Content
-            system_msg = "You are a helpful academic assistant. Use the provided file content to answer the user's question."
-            # Remove the ugly URL from the user query before sending to AI
-            clean_query = re.sub(r'\[.*?\]\(.*?\)', '', user_q).strip() 
+
+            # Construct Prompt with File Content + Conversation Context
+            system_msg = """You are a helpful academic assistant for Morgan State University's Computer Science department.
+Use the provided file content and conversation history to answer the user's question.
+Remember the context of the conversation and provide relevant follow-up information."""
+
+            clean_query = re.sub(r'\[.*?\]\(.*?\)', '', user_q).strip()
             if not clean_query: clean_query = "Summarize this file."
 
-            user_msg = f"File Content:\n{file_content}\n\nUser Question: {clean_query}"
-            
+            user_msg = f"{conversation_context}File Content:\n{file_content}\n\nCurrent Question: {clean_query}"
+
             try:
-                # Ask OpenAI directly with the file context
                 response = llm([
                     SystemMessage(content=system_msg),
                     HumanMessage(content=user_msg)
@@ -480,20 +549,82 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
         else:
             answer = "I received the file link, but I cannot find the file on the server to read it."
 
-    elif qa:
-        # 2. No file -> Use RAG (Curriculum Knowledge)
+    elif llm and retriever:
+        # 2. No file -> Use RAG with conversation context
         # Small talk override
         norm = re.sub(r'[\s\W]+', '', user_q.lower())
-        if re.match(r'^(hi|hello|hey)\b', user_q.lower()): answer = "Hello! How can I help you today?"
-        elif re.match(r'^(bye|goodbye|see you)\b', user_q.lower()): answer = "Goodbye! Have a great day."
-        elif re.search(r'\b(thankyou|thanks|thanx|thx|ty)\b', norm): answer = "You're welcome! "
+        if re.match(r'^(hi|hello|hey)\b', user_q.lower()):
+            answer = "Hello! How can I help you today?"
+        elif re.match(r'^(bye|goodbye|see you)\b', user_q.lower()):
+            answer = "Goodbye! Have a great day."
+        elif re.search(r'\b(thankyou|thanks|thanx|thx|ty)\b', norm):
+            answer = "You're welcome! Let me know if you have any other questions."
         else:
             try:
-                result = qa({"query": user_q})
-                answer = result["result"].strip()
+                # 🔥 NEW: Detect if this is a follow-up question
+                follow_up_indicators = ['it', 'they', 'them', 'this', 'that', 'more', 'else', 'also',
+                                        'another', 'what about', 'how about', 'tell me more', 'explain',
+                                        'who is', 'what is', 'details', 'specifically']
+                is_follow_up = any(indicator in user_q.lower() for indicator in follow_up_indicators) and len(recent_history) > 0
+
+                # 🔥 NEW: If follow-up, enhance query with context from last exchange
+                enhanced_query = user_q
+                if is_follow_up and recent_history:
+                    last_exchange = recent_history[-1]
+                    # Add context from previous Q&A to help retriever find relevant docs
+                    enhanced_query = f"Context: The user previously asked about '{last_exchange.user_query}' and I answered about {last_exchange.bot_response[:200]}. Now they ask: {user_q}"
+
+                # Get relevant documents from RAG
+                docs = retriever.get_relevant_documents(enhanced_query if is_follow_up else user_q)
+                context_docs = "\n\n".join([doc.page_content for doc in docs[:4]])
+
+                # 🔥 NEW: Build smart prompt with conversation history
+                system_prompt = """You are CS Navigator, an intelligent academic assistant for Morgan State University's Computer Science department.
+
+Your role:
+- Help students with questions about courses, professors, requirements, and academic resources
+- Remember the conversation context and provide coherent follow-up responses
+- When users ask follow-up questions like "tell me more" or "who is that", refer back to the previous context
+- Be specific and helpful - provide names, details, and actionable information
+- If you don't know something, say so honestly
+
+Important: Pay attention to pronouns and references to previous topics. If the user says "tell me more about it" or "who is he/she", refer to the most recent relevant topic from the conversation."""
+
+                # Build the full message with context
+                full_message = ""
+                if conversation_context:
+                    full_message += conversation_context
+
+                full_message += f"Relevant knowledge base information:\n{context_docs}\n\n"
+                full_message += f"Current question: {user_q}\n\n"
+                full_message += "Please provide a helpful, specific answer. If this is a follow-up question, make sure to connect it to the previous conversation context."
+
+                # Use LLM directly with full context
+                response = llm([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=full_message)
+                ])
+                answer = response.content.strip()
+
             except Exception as e:
-                answer = "I'm having trouble accessing my knowledge base right now."
-                print(f"QA Error: {e}")
+                print(f"❌ Chat Error: {e}")
+                # Fallback to simple QA if enhanced approach fails
+                if qa:
+                    try:
+                        result = qa({"query": user_q})
+                        answer = result["result"].strip()
+                    except:
+                        answer = "I'm having trouble accessing my knowledge base right now."
+                else:
+                    answer = "I'm having trouble processing your request."
+    elif qa:
+        # Fallback to basic QA without LLM
+        try:
+            result = qa({"query": user_q})
+            answer = result["result"].strip()
+        except Exception as e:
+            answer = "I'm having trouble accessing my knowledge base right now."
+            print(f"QA Error: {e}")
     else:
         answer = "AI system is initializing or missing keys."
 
@@ -501,7 +632,7 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     try:
         new_chat = ChatHistory(
             user_id=user["user_id"],
-            session_id=session_id, # 🔥 SAVE TO SPECIFIC SESSION
+            session_id=session_id,
             user_query=user_q,
             bot_response=answer
         )
@@ -538,6 +669,124 @@ async def reset_chat_history(user=Depends(get_current_user), db: Session = Depen
     db.query(ChatHistory).filter(ChatHistory.user_id == user["user_id"]).delete()
     db.commit()
     return {"message": "Chat history reset."}
+
+# --- Voice Mode Endpoints ---
+@app.post("/api/tts")
+async def text_to_speech(req: TTSRequest, user=Depends(get_current_user)):
+    """Convert text to speech using OpenAI TTS API"""
+    if not OPENAI_API_KEY:
+        raise HTTPException(500, "OpenAI API key not configured")
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+
+        # Use TTS-1 for speed (tts-1-hd for quality but slower)
+        response = client.audio.speech.create(
+            model="tts-1",
+            voice=req.voice,
+            input=req.text[:4096],  # Limit to 4096 chars
+            response_format="mp3"
+        )
+
+        # Stream the audio response
+        audio_data = io.BytesIO(response.content)
+        return StreamingResponse(
+            audio_data,
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": "inline; filename=response.mp3"}
+        )
+    except Exception as e:
+        print(f"TTS Error: {e}")
+        raise HTTPException(500, f"TTS generation failed: {str(e)}")
+
+@app.get("/api/popular-questions")
+async def get_popular_questions(db: Session = Depends(get_db)):
+    """
+    Analyze chat_history to find the most frequently asked question patterns.
+    Returns top 3-5 questions to show on the welcome screen.
+    """
+    try:
+        # Query all user questions (across ALL users for global trending)
+        queries = db.query(ChatHistory.user_query)\
+            .filter(ChatHistory.user_query.isnot(None))\
+            .filter(ChatHistory.user_query != "")\
+            .order_by(ChatHistory.timestamp.desc())\
+            .limit(1000)\
+            .all()
+
+        if not queries:
+            # Return default suggestions if no history
+            return {
+                "questions": [
+                    "Who is the chair of computer science?",
+                    "What are the degree requirements?",
+                    "When do classes start for Fall 2025?"
+                ]
+            }
+
+        # Clean and normalize questions
+        def normalize_question(q):
+            if not q:
+                return None
+            # Remove special chars, lowercase, strip
+            q = re.sub(r'[^\w\s?]', '', q.lower().strip())
+            # Remove common greetings to focus on actual questions
+            greetings = ['hi', 'hello', 'hey', 'thanks', 'thank you', 'bye', 'goodbye', 'ok', 'okay']
+            if q in greetings or len(q) < 15:
+                return None
+            # Skip file upload messages
+            if 'uploads' in q or 'chat_files' in q:
+                return None
+            return q
+
+        # Count question frequencies
+        question_counts = Counter()
+        for (query,) in queries:
+            normalized = normalize_question(query)
+            if normalized:
+                question_counts[normalized] += 1
+
+        # Get top questions (filter out very short ones)
+        top_questions = []
+        for question, count in question_counts.most_common(20):
+            # Only include if asked at least twice and is a real question
+            if count >= 1 and len(question) > 15:
+                # Capitalize first letter properly
+                formatted = question[0].upper() + question[1:]
+                if not formatted.endswith('?'):
+                    formatted += '?'
+                top_questions.append(formatted)
+                if len(top_questions) >= 5:
+                    break
+
+        # If we don't have enough, add defaults
+        defaults = [
+            "Who is the chair of computer science?",
+            "What are the degree requirements?",
+            "When do classes start for Fall 2025?",
+            "What programming languages should I learn?",
+            "How do I apply for graduation?"
+        ]
+
+        while len(top_questions) < 3:
+            for d in defaults:
+                if d.lower() not in [q.lower() for q in top_questions]:
+                    top_questions.append(d)
+                    if len(top_questions) >= 3:
+                        break
+
+        return {"questions": top_questions[:5]}
+
+    except Exception as e:
+        print(f"Error fetching popular questions: {e}")
+        return {
+            "questions": [
+                "Who is the chair of computer science?",
+                "What are the degree requirements?",
+                "When do classes start for Fall 2025?"
+            ]
+        }
 
 # --- Admin / Ingest Routes ---
 @app.post("/ingest")

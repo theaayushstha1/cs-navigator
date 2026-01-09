@@ -41,14 +41,23 @@ export default function NavBar({ role, onToggleSidebar }) {
 
       if (response.ok) {
         const data = await response.json();
-        
-        // Construct full image URL - PRESERVED Logic
+
+        // 🔥 FIXED: Handle base64 data URLs, full URLs, and relative paths
         let pictureUrl = data.profilePicture || "/user_icon.jpg";
-        if (pictureUrl && !pictureUrl.startsWith('http') && !pictureUrl.startsWith('/user_icon')) {
-          pictureUrl = `${API_BASE}${pictureUrl}`;
+        if (pictureUrl) {
+          if (pictureUrl.startsWith('data:')) {
+            // Base64 data URL - use directly
+          } else if (pictureUrl.startsWith('http')) {
+            // Full URL - use directly
+          } else if (pictureUrl.startsWith('/user_icon')) {
+            // Default icon - use directly
+          } else {
+            // Relative path - prepend API base
+            pictureUrl = `${API_BASE}${pictureUrl}`;
+          }
         }
-        
-        console.log("✅ Navbar profile picture:", pictureUrl);
+
+        console.log("✅ Navbar profile picture loaded");
         setProfilePicture(pictureUrl);
       }
     } catch (error) {

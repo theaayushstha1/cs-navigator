@@ -3,10 +3,11 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import { FaMicrophone } from "@react-icons/all-files/fa/FaMicrophone";
-import { FaPaperPlane } from "@react-icons/all-files/fa/FaPaperPlane";
 import { FaPaperclip } from "@react-icons/all-files/fa/FaPaperclip";
 import { FaVolumeUp } from "@react-icons/all-files/fa/FaVolumeUp";
 import { FaTimes } from "@react-icons/all-files/fa/FaTimes";
+import { FaStop } from "@react-icons/all-files/fa/FaStop";
+import { BsSoundwave, BsArrowUpCircleFill } from "react-icons/bs";
 
 // 🔥 Icons for File Cards
 import { FaFile } from "@react-icons/all-files/fa/FaFile";
@@ -16,7 +17,8 @@ import { FaFileImage } from "@react-icons/all-files/fa/FaFileImage";
 
 import "./Chatbox.css";
 
-const SUGGESTIONS = [
+// Default suggestions (fallback)
+const DEFAULT_SUGGESTIONS = [
   "Who is the chair of computer science?",
   "What are the degree requirements?",
   "When do classes start for Fall 2025?"
@@ -47,15 +49,27 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [userProfilePicture, setUserProfilePicture] = useState("/user_icon.jpg");
-  
+
   // 🔥 Staging State for File Uploads
   const [pendingFile, setPendingFile] = useState(null);
+
+  // 🔥 Dynamic Suggestions State
+  const [suggestions, setSuggestions] = useState(DEFAULT_SUGGESTIONS);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(true);
+
+  // 🔥 Voice Mode State
+  const [isVoiceMode, setIsVoiceMode] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState("idle"); // idle, listening, processing, speaking
 
   // --- REFS ---
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
   const isRemoteUpdate = useRef(false);
+  const audioRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const isVoiceModeRef = useRef(false); // 🔥 Ref to track voice mode for callbacks
 
   // --- EFFECTS ---
 
@@ -102,34 +116,152 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
         if (response.ok) {
           const data = await response.json();
           if (data.profilePicture) {
-             const picUrl = data.profilePicture.startsWith("http") 
-                ? data.profilePicture 
-                : `${API_BASE}${data.profilePicture}`;
-             setUserProfilePicture(picUrl);
+             // Handle base64 data URLs, full URLs, and relative paths
+             let picUrl = data.profilePicture;
+             if (picUrl.startsWith("data:")) {
+                // Base64 data URL - use directly
+                setUserProfilePicture(picUrl);
+             } else if (picUrl.startsWith("http")) {
+                // Full URL - use directly
+                setUserProfilePicture(picUrl);
+             } else {
+                // Relative path - prepend API base
+                setUserProfilePicture(`${API_BASE}${picUrl}`);
+             }
           }
         }
-      } catch (error) { 
-        console.error("❌ Profile Error:", error); 
+      } catch (error) {
+        console.error("❌ Profile Error:", error);
       }
     };
     fetchUserProfile();
   }, []);
 
+  // 6. Fetch Dynamic Suggestions
+  useEffect(() => {
+    const fetchSuggestions = async () => {
+      if (messages.length > 0) {
+        setSuggestionsLoading(false);
+        return;
+      }
+      try {
+        setSuggestionsLoading(true);
+        const response = await fetch(`${API_BASE}/api/popular-questions`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.questions && data.questions.length > 0) {
+            setSuggestions(data.questions.slice(0, 3));
+          }
+        }
+      } catch (error) {
+        console.error("Failed to fetch suggestions:", error);
+      } finally {
+        setSuggestionsLoading(false);
+      }
+    };
+    fetchSuggestions();
+  }, []);
+
+  // 7. Cleanup voice mode on unmount
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.abort();
+      }
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      window.speechSynthesis?.cancel();
+    };
+  }, []);
+
   // --- HANDLERS ---
 
-  // Text-to-Speech
+  // Helper to add message to local state
+  const addMessage = (text, sender) => {
+    const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    setMessages((prev) => [...prev, { text, sender, time }]);
+  };
+
+  // 🔥 Enhanced TTS using OpenAI API
+  const speakWithTTS = async (text) => {
+    if (isSpeaking) return;
+
+    setIsSpeaking(true);
+    setVoiceStatus("speaking");
+
+    try {
+      const token = localStorage.getItem("token");
+      const response = await fetch(`${API_BASE}/api/tts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ text: text.substring(0, 4000), voice: "alloy" })
+      });
+
+      if (!response.ok) throw new Error("TTS request failed");
+
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+
+      if (audioRef.current) {
+        audioRef.current.src = audioUrl;
+        audioRef.current.onended = () => {
+          setIsSpeaking(false);
+          URL.revokeObjectURL(audioUrl);
+          // 🔥 Use ref to check voice mode (avoids closure issues)
+          if (isVoiceModeRef.current) {
+            setVoiceStatus("listening");
+            setTimeout(() => startListening(), 500);
+          } else {
+            setVoiceStatus("idle");
+          }
+        };
+        audioRef.current.onerror = () => {
+          setIsSpeaking(false);
+          setVoiceStatus("idle");
+          fallbackSpeak(text);
+        };
+        await audioRef.current.play();
+      }
+    } catch (error) {
+      console.error("TTS Error:", error);
+      fallbackSpeak(text);
+    }
+  };
+
+  // Browser TTS fallback
+  const fallbackSpeak = (text) => {
+    if (!window.speechSynthesis) {
+      setIsSpeaking(false);
+      setVoiceStatus("idle");
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.05;
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      // 🔥 Use ref to check voice mode (avoids closure issues)
+      if (isVoiceModeRef.current) {
+        setVoiceStatus("listening");
+        setTimeout(() => startListening(), 500);
+      } else {
+        setVoiceStatus("idle");
+      }
+    };
+    window.speechSynthesis.speak(utterance);
+  };
+
+  // Simple TTS for manual speaker button (uses browser TTS)
   const speak = (text) => {
     if (!window.speechSynthesis) return alert("Text-to-speech not supported.");
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1.05;
     window.speechSynthesis.speak(utterance);
-  };
-
-  // Helper to add message to local state
-  const addMessage = (text, sender) => {
-    const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    setMessages((prev) => [...prev, { text, sender, time }]);
   };
 
   // Handle File Selection (Staging)
@@ -146,18 +278,167 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
     setPendingFile(null);
   };
 
-  // Handle Voice Input
-  const handleVoiceInput = () => {
-    if (isListening) return;
+  // 🔥 Enhanced Voice Input with Voice Mode Support - CONTINUOUS
+  const startListening = (forceVoiceMode = false) => {
+    // Don't start if already listening or speaking
+    if (isListening || isSpeaking) return;
+
+    // Extra safety check - if not in voice mode and not forced, don't start
+    if (!forceVoiceMode && !isVoiceModeRef.current) return;
+
     const SpeechAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechAPI) return alert("Speech API not supported.");
-    
+    if (!SpeechAPI) {
+      alert("Speech recognition not supported. Try Chrome or Edge.");
+      return;
+    }
+
     const rec = new SpeechAPI();
     rec.lang = "en-US";
-    rec.onstart = () => setIsListening(true);
-    rec.onresult = (e) => setInput(e.results[0][0].transcript);
-    rec.onend = () => setIsListening(false);
+    rec.continuous = false;
+    rec.interimResults = false;
+    recognitionRef.current = rec;
+
+    // Track if we got a result (to handle silence timeouts)
+    let gotResult = false;
+
+    rec.onstart = () => {
+      setIsListening(true);
+      setVoiceStatus("listening");
+      console.log("🎤 Voice mode: Started listening...");
+    };
+
+    rec.onresult = async (e) => {
+      gotResult = true;
+      const transcript = e.results[0][0].transcript;
+      console.log("🎤 Voice mode: Got transcript:", transcript);
+      setInput(transcript);
+      setIsListening(false);
+
+      // 🔥 Check ref for current voice mode state (not stale closure)
+      if (isVoiceModeRef.current) {
+        setVoiceStatus("processing");
+        await handleVoiceSend(transcript);
+      }
+    };
+
+    rec.onerror = (e) => {
+      console.error("🎤 Speech error:", e.error);
+      setIsListening(false);
+
+      // 🔥 FIXED: For certain errors, retry listening if still in voice mode
+      if (isVoiceModeRef.current) {
+        // "no-speech" means user was silent - just restart listening
+        // "aborted" means we stopped it intentionally - don't restart
+        // "network" - network issue, try again
+        if (e.error === "no-speech" || e.error === "network") {
+          console.log("🎤 Voice mode: Restarting after", e.error);
+          setVoiceStatus("listening");
+          setTimeout(() => startListening(), 300);
+        } else if (e.error !== "aborted") {
+          // Other errors - still try to restart after a delay
+          setVoiceStatus("listening");
+          setTimeout(() => startListening(), 1000);
+        }
+      } else {
+        setVoiceStatus("idle");
+      }
+    };
+
+    rec.onend = () => {
+      console.log("🎤 Voice mode: Recognition ended, gotResult:", gotResult);
+      setIsListening(false);
+
+      // 🔥 FIXED: If voice mode is active and we didn't get a result, restart
+      // This handles the case where recognition ends without triggering onresult or onerror
+      if (isVoiceModeRef.current && !gotResult && !isSpeaking) {
+        console.log("🎤 Voice mode: Restarting (no result received)");
+        setVoiceStatus("listening");
+        setTimeout(() => startListening(), 300);
+      }
+    };
+
     rec.start();
+  };
+
+  // Voice mode send handler - sends and speaks response
+  const handleVoiceSend = async (transcript) => {
+    if (!transcript.trim()) {
+      // Empty transcript - restart listening if in voice mode
+      if (isVoiceModeRef.current) {
+        setVoiceStatus("listening");
+        setTimeout(() => startListening(), 300);
+      }
+      return;
+    }
+
+    const token = localStorage.getItem("token");
+    addMessage(transcript, "user");
+    setInput("");
+
+    try {
+      const res = await fetch(`${API_BASE}/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          query: transcript,
+          session_id: sessionId || "default"
+        })
+      });
+
+      if (!res.ok) throw new Error(res.statusText);
+
+      const data = await res.json();
+      const botResponse = data.response || data.message || "No response.";
+
+      addMessage(botResponse, "bot");
+
+      // Speak the response with OpenAI TTS
+      await speakWithTTS(botResponse);
+
+    } catch (err) {
+      console.error("🎤 Voice send error:", err);
+      addMessage("Sorry, I had trouble processing that. Please try again.", "bot");
+
+      // 🔥 FIXED: Restart listening even on error if still in voice mode
+      if (isVoiceModeRef.current) {
+        setVoiceStatus("listening");
+        setTimeout(() => startListening(), 1000);
+      } else {
+        setVoiceStatus("idle");
+      }
+    }
+  };
+
+  // Toggle voice mode on/off
+  const toggleVoiceMode = () => {
+    if (isVoiceMode) {
+      // Stop voice mode
+      setIsVoiceMode(false);
+      isVoiceModeRef.current = false; // 🔥 Sync ref with state
+      setVoiceStatus("idle");
+      setIsListening(false);
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      if (recognitionRef.current) {
+        recognitionRef.current.abort();
+      }
+      window.speechSynthesis?.cancel();
+    } else {
+      // Start voice mode
+      setIsVoiceMode(true);
+      isVoiceModeRef.current = true; // 🔥 Sync ref with state
+      startListening(true); // 🔥 Pass true to force voice mode for first listen
+    }
+  };
+
+  // Simple voice input (tap mic without entering voice mode)
+  const handleVoiceInput = () => {
+    if (isListening) return;
+    startListening();
   };
 
   const handleSuggestion = (text) => {
@@ -248,6 +529,9 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
 
   return (
     <div className="chat-main">
+      {/* Hidden audio element for TTS playback */}
+      <audio ref={audioRef} style={{ display: 'none' }} />
+
       <div className="chat-messages">
         {messages.length === 0 ? (
           <div className="welcome-container">
@@ -255,11 +539,19 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
             <h1 className="welcome-title">Morgan State CS Navigator</h1>
             <p className="welcome-subtitle">How can I assist with your academic journey today?</p>
             <div className="suggestions">
-              {SUGGESTIONS.map((s, i) => (
-                <button key={i} className="suggestion-btn" onClick={() => handleSuggestion(s)} disabled={isLoading}>
-                  {s}
-                </button>
-              ))}
+              {suggestionsLoading ? (
+                <>
+                  <div className="suggestion-skeleton"></div>
+                  <div className="suggestion-skeleton"></div>
+                  <div className="suggestion-skeleton"></div>
+                </>
+              ) : (
+                suggestions.map((s, i) => (
+                  <button key={i} className="suggestion-btn" onClick={() => handleSuggestion(s)} disabled={isLoading}>
+                    {s}
+                  </button>
+                ))
+              )}
             </div>
           </div>
         ) : (
@@ -329,21 +621,50 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
             </div>
           </div>
         )}
-        
+
         <div ref={messagesEndRef} />
+
+        {/* 🔥 Voice Mode Overlay - Seamless ChatGPT-style */}
+        {isVoiceMode && (
+          <div className="voice-overlay">
+            <div className="voice-orb-container">
+              <div className={`voice-orb ${voiceStatus}`}>
+                <div className="orb-ring ring-1"></div>
+                <div className="orb-ring ring-2"></div>
+                <div className="orb-ring ring-3"></div>
+                <div className="orb-core">
+                  {voiceStatus === "listening" && <FaMicrophone size={32} />}
+                  {voiceStatus === "processing" && <div className="orb-spinner" />}
+                  {voiceStatus === "speaking" && <FaVolumeUp size={32} />}
+                  {voiceStatus === "idle" && <FaMicrophone size={32} />}
+                </div>
+              </div>
+              <p className="voice-label">
+                {voiceStatus === "listening" && "Listening..."}
+                {voiceStatus === "processing" && "Thinking..."}
+                {voiceStatus === "speaking" && "Speaking..."}
+                {voiceStatus === "idle" && "Ready"}
+              </p>
+              <button className="voice-end-btn" onClick={toggleVoiceMode}>
+                End
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="chat-input-container">
+
         <form onSubmit={handleSend} className="chat-input-wrapper">
-          
+
           {/* 🔥 STAGING AREA: Shows file before sending */}
           {pendingFile && (
             <div className="attachment-preview">
               {getFileIcon(pendingFile.name)}
               <span className="file-name-preview">{pendingFile.name}</span>
-              <button 
-                type="button" 
-                className="remove-attachment-btn" 
+              <button
+                type="button"
+                className="remove-attachment-btn"
                 onClick={clearFile}
                 title="Remove file"
               >
@@ -353,51 +674,61 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
           )}
 
           <div className="input-row">
-            <button 
-                type="button" 
-                className="action-btn-icon" 
-                onClick={() => fileInputRef.current.click()} 
+            <button
+                type="button"
+                className="action-btn-icon"
+                onClick={() => fileInputRef.current.click()}
                 title="Attach a file"
-                disabled={isLoading}
+                disabled={isLoading || isVoiceMode}
             >
                 <FaPaperclip size={18} />
             </button>
-            
-            <input 
-                type="file" 
-                ref={fileInputRef} 
-                style={{ display: 'none' }} 
-                onChange={handleFileSelect} 
+
+            <input
+                type="file"
+                ref={fileInputRef}
+                style={{ display: 'none' }}
+                onChange={handleFileSelect}
             />
 
             <button
                 type="button"
-                className="action-btn-icon"
+                className={`action-btn-icon voice-btn ${isListening ? 'listening' : ''}`}
                 onClick={handleVoiceInput}
                 title="Voice input"
-                disabled={isLoading || isListening}
-                style={{ color: isListening ? '#EF4444' : 'inherit' }}
+                disabled={isLoading || isSpeaking || isVoiceMode}
             >
                 <FaMicrophone size={18} />
             </button>
-            
+
             <input
                 type="text"
                 ref={inputRef}
                 className="chat-input-field"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder={pendingFile ? "Add a message..." : "Type your message..."}
-                disabled={isLoading}
+                placeholder={isVoiceMode ? (voiceStatus === "listening" ? "Listening..." : voiceStatus === "speaking" ? "Speaking..." : "Speak now...") : pendingFile ? "Add a message..." : "Type your message..."}
+                disabled={isLoading || isVoiceMode}
             />
-            
+
             <button
                 type="submit"
                 className="action-btn-icon send-btn"
                 title="Send message"
-                disabled={isLoading || (!input.trim() && !pendingFile)}
+                disabled={isLoading || (!input.trim() && !pendingFile) || isVoiceMode}
             >
-                <FaPaperPlane size={16} />
+                <BsArrowUpCircleFill size={24} />
+            </button>
+
+            {/* 🔥 Live Voice Mode Button */}
+            <button
+                type="button"
+                className={`live-mode-btn ${isVoiceMode ? 'active' : ''}`}
+                onClick={toggleVoiceMode}
+                title={isVoiceMode ? "Exit Live Mode" : "Enter Live Mode"}
+                disabled={isLoading}
+            >
+                <BsSoundwave size={18} />
             </button>
           </div>
         </form>

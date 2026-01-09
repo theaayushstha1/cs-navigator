@@ -1,16 +1,24 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import AuthLayout from "./components/auth/AuthLayout";
 
 const EnvelopeIcon = (props) => (
-  <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-    <path fill="currentColor" d="M496 128H16c-8.8 0-16 7.2-16 16v224c0 8.8 7.2 16 16 16h480c8.8 0 16-7.2 16-16V144c0-8.8-7.2-16-16-16zm-480 32l160 128 160-128v192H16V160zm480 0v192H336L496 160zM256 313.7l-192-153.6v-25.7l192 153.6 192-153.6v25.7l-192 153.6z"/>
+  <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+    <polyline points="22,6 12,13 2,6"/>
   </svg>
 );
 
 const LockIcon = (props) => (
-  <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512">
-    <path fill="currentColor" d="M144 144v48H0V144C0 64.5 64.5 0 144 0h160c79.5 0 144 64.5 144 144v48H304v-48c0-44.1-35.9-80-80-80H192c-44.1 0-80 35.9-80 80zM368 224H80c-26.5 0-48 21.5-48 48v224c0 26.5 21.5 48 48 48h288c26.5 0 48-21.5 48-48V272c0-26.5-21.5-48-48-48zm-64 160c0 17.7-14.3 32-32 32s-32-14.3-32-32V304c0-17.7 14.3-32 32-32s32 14.3 32 32v80z"/>
+  <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+  </svg>
+);
+
+const CheckIcon = (props) => (
+  <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <polyline points="20 6 9 17 4 12"/>
   </svg>
 );
 
@@ -31,23 +39,58 @@ async function parseResponseError(res) {
   return message;
 }
 
+// Password strength checker
+function getPasswordStrength(password) {
+  if (!password) return { level: 0, label: "", class: "" };
+
+  let score = 0;
+  if (password.length >= 6) score++;
+  if (password.length >= 10) score++;
+  if (/[A-Z]/.test(password)) score++;
+  if (/[0-9]/.test(password)) score++;
+  if (/[^A-Za-z0-9]/.test(password)) score++;
+
+  if (score <= 2) return { level: 1, label: "Weak", class: "weak" };
+  if (score <= 3) return { level: 2, label: "Medium", class: "medium" };
+  return { level: 3, label: "Strong", class: "strong" };
+}
+
 export default function Signup({ onRegistered }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
+  const [showConfirmPw, setShowConfirmPw] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
 
-  // 🔥 SMART CONFIG: Browser-based detection (Bulletproof)
+  // Smart API switching
   const hostname = window.location.hostname;
   const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-    ? "http://127.0.0.1:8000"           // Local
-    : "http://18.214.136.155:5000";     // AWS Production
+    ? "http://127.0.0.1:8000"
+    : "http://18.214.136.155:5000";
+
+  const passwordStrength = useMemo(() => getPasswordStrength(password), [password]);
+  const passwordsMatch = password && confirmPassword && password === confirmPassword;
+  const passwordsMismatch = confirmPassword && password !== confirmPassword;
+
+  const canSubmit = email.trim() && password.length >= 6 && passwordsMatch && !submitting;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+
+    if (password !== confirmPassword) {
+      setError("Passwords do not match");
+      return;
+    }
+
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters");
+      return;
+    }
+
     setSubmitting(true);
 
     try {
@@ -59,10 +102,10 @@ export default function Signup({ onRegistered }) {
 
       if (!res.ok) throw new Error(await parseResponseError(res));
 
-      const data = await res.json();
-      
-      alert("Account created successfully!");
-      navigate("/login");
+      // Success - redirect to login
+      navigate("/login", {
+        state: { message: "Account created successfully! Please log in." }
+      });
     } catch (err) {
       setError(err?.message || "Registration failed");
     } finally {
@@ -86,7 +129,7 @@ export default function Signup({ onRegistered }) {
 
       <form onSubmit={handleSubmit}>
         <div className="field">
-          <label htmlFor="signup-email">Email</label>
+          <label htmlFor="signup-email">Email Address</label>
           <div className="field__control">
             <EnvelopeIcon className="field__icon" aria-hidden="true" />
             <input
@@ -94,7 +137,7 @@ export default function Signup({ onRegistered }) {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.edu"
+              placeholder="you@morgan.edu"
               autoComplete="email"
               required
             />
@@ -123,15 +166,81 @@ export default function Signup({ onRegistered }) {
               {showPw ? "Hide" : "Show"}
             </button>
           </div>
+
+          {/* Password Strength Indicator */}
+          {password && (
+            <div className="password-strength">
+              <div className="password-strength__bar">
+                <div className={`password-strength__fill password-strength__fill--${passwordStrength.class}`} />
+              </div>
+              <span className={`password-strength__text password-strength__text--${passwordStrength.class}`}>
+                {passwordStrength.label} password
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="field">
+          <label htmlFor="signup-confirm">Confirm Password</label>
+          <div className="field__control">
+            <LockIcon className="field__icon" aria-hidden="true" />
+            <input
+              id="signup-confirm"
+              type={showConfirmPw ? "text" : "password"}
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Confirm your password"
+              autoComplete="new-password"
+              required
+              style={{
+                borderColor: passwordsMismatch ? '#ef4444' : passwordsMatch ? '#22c55e' : undefined
+              }}
+            />
+            {passwordsMatch && (
+              <CheckIcon
+                className="field__icon"
+                style={{
+                  left: 'auto',
+                  right: '60px',
+                  color: '#22c55e',
+                  width: '20px',
+                  height: '20px'
+                }}
+              />
+            )}
+            <button
+              type="button"
+              className="field__action"
+              onClick={() => setShowConfirmPw((v) => !v)}
+              aria-label={showConfirmPw ? "Hide password" : "Show password"}
+            >
+              {showConfirmPw ? "Hide" : "Show"}
+            </button>
+          </div>
+          {passwordsMismatch && (
+            <span style={{ color: '#ef4444', fontSize: '0.8rem', marginTop: '6px', display: 'block' }}>
+              Passwords do not match
+            </span>
+          )}
         </div>
 
         <button
           className="btn-primary auth__submit"
           type="submit"
-          disabled={submitting || !email.trim() || !password}
+          disabled={!canSubmit}
         >
-          {submitting ? "Creating Account…" : "Create Account"}
+          {submitting ? "Creating Account..." : "Create Account"}
         </button>
+
+        <p style={{
+          marginTop: '16px',
+          fontSize: '0.8rem',
+          color: '#64748b',
+          textAlign: 'center',
+          lineHeight: '1.5'
+        }}>
+          By creating an account, you agree to the University's terms of service and privacy policy.
+        </p>
       </form>
     </AuthLayout>
   );

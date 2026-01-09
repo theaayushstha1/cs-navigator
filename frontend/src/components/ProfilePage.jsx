@@ -11,9 +11,11 @@ import { FaIdCard } from "@react-icons/all-files/fa/FaIdCard";
 import { FaGraduationCap } from "@react-icons/all-files/fa/FaGraduationCap";
 import "./ProfilePage.css";
 
-const API_BASE = window.location.hostname === "localhost" 
-  ? "http://localhost:5000" 
-  : `${window.location.protocol}//${window.location.hostname}:5000`;
+// 🔥 Smart API switching - same logic as Chatbox.jsx
+const hostname = window.location.hostname;
+const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
+  ? "http://127.0.0.1:8000"           // Local development
+  : "http://18.214.136.155:5000";     // AWS production
 
 export default function ProfilePage({ userEmail, onLogout }) {
   const navigate = useNavigate();
@@ -54,15 +56,20 @@ export default function ProfilePage({ userEmail, onLogout }) {
 
     if (response.ok) {
       const data = await response.json();
-      
-      // 🔥 FIX: Construct full image URL if not already full URL
-      if (data.profilePicture && !data.profilePicture.startsWith('http')) {
-        data.profilePicture = `${API_BASE}${data.profilePicture}`;
+
+      // 🔥 FIX: Handle base64 data URLs, full URLs, and relative paths
+      if (data.profilePicture) {
+        if (data.profilePicture.startsWith('data:')) {
+          // Base64 data URL - use directly
+        } else if (data.profilePicture.startsWith('http')) {
+          // Full URL - use directly
+        } else {
+          // Relative path - prepend API base
+          data.profilePicture = `${API_BASE}${data.profilePicture}`;
+        }
       }
-      
-      console.log("Profile loaded:", data); // Debug log
-      console.log("Profile picture URL:", data.profilePicture); // Debug log
-      
+
+      console.log("Profile loaded:", data);
       setProfile(data);
     }
   } catch (error) {

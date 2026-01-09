@@ -1,17 +1,19 @@
 import React, { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import AuthLayout from "./components/auth/AuthLayout";
 
-// 🔥 Icons...
+// Modern line icons
 const EnvelopeIcon = (props) => (
-  <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-    <path fill="currentColor" d="M496 128H16c-8.8 0-16 7.2-16 16v224c0 8.8 7.2 16 16 16h480c8.8 0 16-7.2 16-16V144c0-8.8-7.2-16-16-16zm-480 32l160 128 160-128v192H16V160zm480 0v192H336L496 160zM256 313.7l-192-153.6v-25.7l192 153.6 192-153.6v25.7l-192 153.6z"/>
+  <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+    <polyline points="22,6 12,13 2,6"/>
   </svg>
 );
 
 const LockIcon = (props) => (
-  <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512">
-    <path fill="currentColor" d="M144 144v48H0V144C0 64.5 64.5 0 144 0h160c79.5 0 144 64.5 144 144v48H304v-48c0-44.1-35.9-80-80-80H192c-44.1 0-80 35.9-80 80zM368 224H80c-26.5 0-48 21.5-48 48v224c0 26.5 21.5 48 48 48h288c26.5 0 48-21.5 48-48V272c0-26.5-21.5-48-48-48zm-64 160c0 17.7-14.3 32-32 32s-32-14.3-32-32V304c0-17.7 14.3-32 32-32s32 14.3 32 32v80z"/>
+  <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
   </svg>
 );
 
@@ -37,22 +39,31 @@ export default function Login({ onLoggedIn }) {
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
 
-  // 🔥 SMART CONFIG: Browser-based detection (Bulletproof)
+  // Smart API switching
   const hostname = window.location.hostname;
   const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-    ? "http://127.0.0.1:8000"           // Local
-    : "http://18.214.136.155:5000";     // AWS Production
+    ? "http://127.0.0.1:8000"
+    : "http://18.214.136.155:5000";
 
   useEffect(() => {
     if (localStorage.getItem("token")) navigate("/", { replace: true });
-  }, [navigate]);
+    // Show success message from signup redirect
+    if (location.state?.message) {
+      setSuccess(location.state.message);
+      // Clear the state
+      window.history.replaceState({}, document.title);
+    }
+  }, [navigate, location]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+    setSuccess("");
     setSubmitting(true);
 
     try {
@@ -84,17 +95,31 @@ export default function Login({ onLoggedIn }) {
       subtitle="Welcome back, Bear. Ask questions about courses, requirements, and resources."
       footer={
         <>
-          Don’t have an account? <Link className="auth__link" to="/signup">Sign up</Link>
+          Don't have an account? <Link className="auth__link" to="/signup">Sign up</Link>
         </>
       }
     >
-      {error ? (
+      {success && (
+        <div style={{
+          background: 'linear-gradient(135deg, rgba(34, 197, 94, 0.1), rgba(34, 197, 94, 0.05))',
+          border: '1px solid rgba(34, 197, 94, 0.3)',
+          color: '#16a34a',
+          padding: '12px 16px',
+          borderRadius: '12px',
+          marginBottom: '20px',
+          fontSize: '0.9rem'
+        }} role="status">
+          {success}
+        </div>
+      )}
+
+      {error && (
         <div className="auth__error" role="alert">{error}</div>
-      ) : null}
+      )}
 
       <form onSubmit={handleSubmit}>
         <div className="field">
-          <label htmlFor="email">Email</label>
+          <label htmlFor="email">Email Address</label>
           <div className="field__control">
             <EnvelopeIcon className="field__icon" aria-hidden="true" />
             <input
@@ -118,7 +143,7 @@ export default function Login({ onLoggedIn }) {
               type={showPw ? "text" : "password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Your password"
+              placeholder="Enter your password"
               autoComplete="current-password"
               required
             />
@@ -138,7 +163,7 @@ export default function Login({ onLoggedIn }) {
           type="submit"
           disabled={submitting || !email.trim() || !password}
         >
-          {submitting ? "Logging in…" : "Log in"}
+          {submitting ? "Logging in..." : "Log in"}
         </button>
       </form>
     </AuthLayout>
