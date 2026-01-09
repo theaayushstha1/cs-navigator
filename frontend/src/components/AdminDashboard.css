@@ -1,43 +1,704 @@
-/* AdminDashboard.css */
+/* AdminDashboard.css - Matching App Design System */
+
+/* ========================================
+   Page Container
+   ======================================== */
+.AdminDashboard {
+  background: var(--bg-card);
+  border-radius: 16px;
+  padding: 32px;
+  margin: 24px auto;
+  max-width: 1200px;
+  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--border-color);
+}
+
+.AdminDashboard .page-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.AdminDashboard .page-icon {
+  font-size: 2rem;
+  color: var(--msu-blue);
+}
+
+body.dark .AdminDashboard .page-icon {
+  color: var(--msu-gold);
+}
+
+.AdminDashboard .page-title {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0;
+}
+
+.AdminDashboard p {
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+}
+
+/* ========================================
+   Tab Navigation
+   ======================================== */
+.admin-tabs {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 28px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.admin-tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 24px;
+  background: var(--bg-card);
+  border: 2px solid var(--border-color);
+  border-radius: 12px;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.admin-tab:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--msu-blue);
+  color: var(--text-main);
+}
+
+.admin-tab.active {
+  background: var(--msu-blue);
+  border-color: var(--msu-blue);
+  color: white;
+}
+
+body.dark .admin-tab.active {
+  background: var(--msu-gold);
+  border-color: var(--msu-gold);
+  color: #0f172a;
+}
+
+.ticket-badge {
+  background: #EF4444;
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 12px;
+  margin-left: 6px;
+}
+
+/* ========================================
+   Action Buttons
+   ======================================== */
 .admin-actions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.action-btn {
   display: inline-flex;
+  align-items: center;
   gap: 8px;
+  padding: 12px 24px;
+  background: var(--msu-blue);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.action-btn:hover {
+  background: var(--msu-blue-hover);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+body.dark .action-btn {
+  background: var(--msu-gold);
+  color: #0f172a;
+}
+
+body.dark .action-btn:hover {
+  background: var(--msu-gold-hover);
+}
+
+/* ========================================
+   Form Styles
+   ======================================== */
+.AdminDashboard h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-main);
+  margin-bottom: 16px;
+}
+
+.admin-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
   margin-bottom: 24px;
 }
 
+.admin-form input {
+  padding: 12px 16px;
+  background: var(--bg-body);
+  border: 2px solid var(--border-color);
+  border-radius: 10px;
+  font-size: 0.9rem;
+  color: var(--text-main);
+  transition: all 0.2s ease;
+}
+
+.admin-form input::placeholder {
+  color: var(--text-secondary);
+}
+
+.admin-form input:focus {
+  outline: none;
+  border-color: var(--msu-blue);
+  box-shadow: 0 0 0 3px rgba(0, 45, 114, 0.1);
+}
+
+body.dark .admin-form input:focus {
+  border-color: var(--msu-gold);
+  box-shadow: 0 0 0 3px rgba(255, 183, 3, 0.1);
+}
+
+/* ========================================
+   Table Styles
+   ======================================== */
 .admin-table {
   width: 100%;
   border-collapse: collapse;
-  margin-top: 12px;
+  margin-top: 16px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
 }
+
 .admin-table th,
 .admin-table td {
-  border: 1px solid #ddd;
-  padding: 8px;
+  padding: 14px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
 }
+
 .admin-table th {
-  background: #f0f0f0;
+  background: var(--bg-body);
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
 }
-.admin-table tr:nth-child(even) {
-  background: #fafafa;
+
+.admin-table td {
+  color: var(--text-main);
+  font-size: 0.9rem;
 }
+
+.admin-table tr:hover td {
+  background: var(--bg-card-hover);
+}
+
 .admin-table button {
-  background: #e74c3c;
-  color: #fff;
+  background: #EF4444;
+  color: white;
   border: none;
-  padding: 4px 8px;
-  border-radius: 4px;
+  padding: 8px 16px;
+  border-radius: 8px;
   cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: all 0.2s ease;
 }
+
 .admin-table button:hover {
-  background: #c0392b;
+  background: #DC2626;
+  transform: translateY(-1px);
 }
 
-.admin-actions button {
-  margin-right: 8px;
+/* ========================================
+   Tickets Section
+   ======================================== */
+.tickets-section {
+  animation: fadeIn 0.3s ease;
 }
 
-.admin-actions button:last-child {
-  margin-right: 0;
+/* Stats Cards */
+.ticket-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+  margin-bottom: 28px;
+}
+
+.stat-card {
+  background: var(--bg-body);
+  border: 2px solid var(--border-color);
+  border-radius: 16px;
+  padding: 24px;
+  text-align: center;
+  transition: all 0.2s ease;
+}
+
+.stat-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+  border-color: var(--msu-blue);
+}
+
+body.dark .stat-card:hover {
+  border-color: var(--msu-gold);
+}
+
+.stat-card .stat-number {
+  display: block;
+  font-size: 2.5rem;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.stat-card .stat-label {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+.stat-card.total .stat-number { color: var(--text-main); }
+.stat-card.open .stat-number { color: #F59E0B; }
+.stat-card.progress .stat-number { color: var(--msu-blue); }
+.stat-card.resolved .stat-number { color: #22C55E; }
+
+body.dark .stat-card.progress .stat-number { color: #3B82F6; }
+
+/* Filter Buttons */
+.ticket-filters {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.filter-btn {
+  padding: 10px 20px;
+  background: var(--bg-body);
+  border: 2px solid var(--border-color);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: capitalize;
+}
+
+.filter-btn:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--msu-blue);
+  color: var(--text-main);
+}
+
+.filter-btn.active {
+  background: var(--msu-blue);
+  border-color: var(--msu-blue);
+  color: white;
+}
+
+body.dark .filter-btn.active {
+  background: var(--msu-gold);
+  border-color: var(--msu-gold);
+  color: #0f172a;
+}
+
+/* Tickets List */
+.tickets-list {
+  display: grid;
+  gap: 16px;
+}
+
+.tickets-loading,
+.tickets-empty {
+  text-align: center;
+  padding: 60px;
+  color: var(--text-secondary);
+  font-size: 1rem;
+  background: var(--bg-body);
+  border-radius: 12px;
+  border: 2px dashed var(--border-color);
+}
+
+/* Ticket Card */
+.ticket-card {
+  background: var(--bg-body);
+  border: 2px solid var(--border-color);
+  border-radius: 14px;
+  padding: 24px;
+  transition: all 0.2s ease;
+}
+
+.ticket-card:hover {
+  border-color: var(--msu-blue);
+  box-shadow: var(--shadow-md);
+}
+
+body.dark .ticket-card:hover {
+  border-color: var(--msu-gold);
+}
+
+.ticket-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.ticket-category {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.ticket-status {
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.status-open {
+  background: rgba(245, 158, 11, 0.15);
+  color: #D97706;
+}
+
+.status-progress {
+  background: rgba(59, 130, 246, 0.15);
+  color: #2563EB;
+}
+
+.status-resolved {
+  background: rgba(34, 197, 94, 0.15);
+  color: #16A34A;
+}
+
+.status-closed {
+  background: rgba(100, 116, 139, 0.15);
+  color: #64748B;
+}
+
+.ticket-subject {
+  margin: 0 0 10px 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.ticket-preview {
+  margin: 0 0 18px 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.ticket-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.ticket-date {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.ticket-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.ticket-actions button {
+  background: var(--bg-card);
+  border: 2px solid var(--border-color);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ticket-actions .view-btn:hover {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: #3B82F6;
+  color: #3B82F6;
+}
+
+.ticket-actions .progress-btn:hover {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: #F59E0B;
+  color: #F59E0B;
+}
+
+.ticket-actions .resolve-btn:hover {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: #22C55E;
+  color: #22C55E;
+}
+
+/* ========================================
+   Ticket Detail Modal
+   ======================================== */
+.ticket-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.ticket-detail-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  width: 90%;
+  max-width: 600px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow-xl);
+  animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 28px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--text-secondary);
+}
+
+.modal-title-row h2 {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.modal-close {
+  background: var(--bg-body);
+  border: 2px solid var(--border-color);
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 10px;
+  border-radius: 10px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-close:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--msu-blue);
+  color: var(--text-main);
+}
+
+.modal-body {
+  padding: 28px;
+}
+
+.modal-meta {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 28px;
+}
+
+.modal-meta .ticket-date {
+  font-size: 0.85rem;
+}
+
+.modal-description {
+  margin-bottom: 28px;
+}
+
+.modal-description h4,
+.modal-attachment h4,
+.modal-actions h4 {
+  margin: 0 0 12px 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.modal-description p {
+  margin: 0;
+  color: var(--text-main);
+  font-size: 0.95rem;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  background: var(--bg-body);
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+}
+
+.modal-attachment {
+  margin-bottom: 28px;
+  padding: 16px 20px;
+  background: var(--bg-body);
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+}
+
+.modal-attachment span {
+  color: var(--text-main);
+  font-size: 0.9rem;
+}
+
+.modal-actions {
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
+}
+
+.status-buttons {
+  display: flex;
+  gap: 12px;
+}
+
+.status-btn {
+  flex: 1;
+  padding: 14px 18px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 2px solid var(--border-color);
+  background: var(--bg-body);
+  color: var(--text-secondary);
+}
+
+.status-btn:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--msu-blue);
+  color: var(--text-main);
+}
+
+.status-btn.open.active {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: #F59E0B;
+  color: #D97706;
+}
+
+.status-btn.progress.active {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: #3B82F6;
+  color: #2563EB;
+}
+
+.status-btn.resolved.active {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: #22C55E;
+  color: #16A34A;
+}
+
+/* ========================================
+   Responsive
+   ======================================== */
+@media (max-width: 900px) {
+  .ticket-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .AdminDashboard {
+    margin: 16px;
+    padding: 20px;
+  }
+
+  .admin-tabs {
+    flex-direction: column;
+  }
+
+  .admin-tab {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .ticket-filters {
+    flex-wrap: wrap;
+  }
+
+  .status-buttons {
+    flex-direction: column;
+  }
+
+  .admin-form {
+    grid-template-columns: 1fr;
+  }
+
+  .ticket-stats {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 

@@ -17,11 +17,14 @@ import { FaFileImage } from "@react-icons/all-files/fa/FaFileImage";
 
 import "./Chatbox.css";
 
-// Default suggestions (fallback)
+// Default suggestions (fallback) - 6 questions
 const DEFAULT_SUGGESTIONS = [
-  "Who is the chair of computer science?",
-  "What are the degree requirements?",
-  "When do classes start for Fall 2025?"
+  "Who is the chair of Computer Science department?",
+  "What are the degree requirements for CS major?",
+  "What programming languages should I learn?",
+  "How do I contact my academic advisor?",
+  "What internship opportunities are available?",
+  "When is the deadline for course registration?"
 ];
 
 // --- SMART API SWITCHING ---
@@ -150,7 +153,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
         if (response.ok) {
           const data = await response.json();
           if (data.questions && data.questions.length > 0) {
-            setSuggestions(data.questions.slice(0, 3));
+            setSuggestions(data.questions.slice(0, 6)); // Show 6 suggestions
           }
         }
       } catch (error) {

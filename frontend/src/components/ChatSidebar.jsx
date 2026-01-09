@@ -14,6 +14,13 @@ import { FaMoon } from "@react-icons/all-files/fa/FaMoon";
 import { FaSun } from "@react-icons/all-files/fa/FaSun";
 import { FaDownload } from "@react-icons/all-files/fa/FaDownload";
 import { FaChevronRight } from "@react-icons/all-files/fa/FaChevronRight";
+import { FaHeadset } from "@react-icons/all-files/fa/FaHeadset";
+import { FaTimes } from "@react-icons/all-files/fa/FaTimes";
+import { FaBug } from "@react-icons/all-files/fa/FaBug";
+import { FaLightbulb } from "@react-icons/all-files/fa/FaLightbulb";
+import { FaQuestionCircle } from "@react-icons/all-files/fa/FaQuestionCircle";
+import { FaPaperclip } from "@react-icons/all-files/fa/FaPaperclip";
+import { FaCheckCircle } from "@react-icons/all-files/fa/FaCheckCircle";
 import "./ChatSidebar.css";
 
 export default function ChatSidebar({ 
@@ -39,6 +46,24 @@ export default function ChatSidebar({
   const [profileImageUrl, setProfileImageUrl] = useState(null);
   const navigate = useNavigate();
 
+  // Support Ticket Modal State
+  const [showTicketModal, setShowTicketModal] = useState(false);
+  const [ticketForm, setTicketForm] = useState({
+    subject: "",
+    category: "bug",
+    description: "",
+    attachment: null,
+    attachmentName: ""
+  });
+  const [ticketSubmitting, setTicketSubmitting] = useState(false);
+  const [ticketSuccess, setTicketSuccess] = useState(false);
+
+  // API Base URL
+  const hostname = window.location.hostname;
+  const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
+    ? "http://127.0.0.1:8000"
+    : "http://18.214.136.155:5000";
+
   // 🔥 Fetch user profile on mount - PRESERVED
   useEffect(() => {
     fetchUserProfile();
@@ -49,12 +74,6 @@ export default function ChatSidebar({
     if (!token) return;
 
     try {
-      // 🔥 FIXED: Smart API switching - same logic as other components
-      const hostname = window.location.hostname;
-      const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-        ? "http://127.0.0.1:8000"           // Local development
-        : "http://18.214.136.155:5000";     // AWS production
-
       const response = await fetch(`${API_BASE}/api/profile`, {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -116,6 +135,89 @@ export default function ChatSidebar({
   };
 
   const handleInstallApp = () => alert("Install App feature - Will be connected later!");
+
+  // 🎫 Support Ticket Handlers
+  const handleTicketAttachment = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) {
+        alert("File size must be under 5MB");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setTicketForm(prev => ({
+          ...prev,
+          attachment: reader.result,
+          attachmentName: file.name
+        }));
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleTicketSubmit = async (e) => {
+    e.preventDefault();
+    if (!ticketForm.subject.trim() || !ticketForm.description.trim()) {
+      alert("Please fill in subject and description");
+      return;
+    }
+
+    setTicketSubmitting(true);
+    const token = localStorage.getItem("token");
+
+    try {
+      const response = await fetch(`${API_BASE}/api/tickets`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          subject: ticketForm.subject,
+          category: ticketForm.category,
+          description: ticketForm.description,
+          attachment_data: ticketForm.attachment,
+          attachment_name: ticketForm.attachmentName
+        }),
+      });
+
+      if (response.ok) {
+        setTicketSuccess(true);
+        setTimeout(() => {
+          setShowTicketModal(false);
+          setTicketSuccess(false);
+          setTicketForm({
+            subject: "",
+            category: "bug",
+            description: "",
+            attachment: null,
+            attachmentName: ""
+          });
+        }, 2000);
+      } else {
+        const data = await response.json();
+        alert(data.detail || "Failed to submit ticket");
+      }
+    } catch (error) {
+      console.error("Error submitting ticket:", error);
+      alert("Failed to submit ticket. Please try again.");
+    } finally {
+      setTicketSubmitting(false);
+    }
+  };
+
+  const closeTicketModal = () => {
+    setShowTicketModal(false);
+    setTicketSuccess(false);
+    setTicketForm({
+      subject: "",
+      category: "bug",
+      description: "",
+      attachment: null,
+      attachmentName: ""
+    });
+  };
   
   const handleCurriculumClick = (e) => {
     e.preventDefault();
@@ -288,24 +390,35 @@ export default function ChatSidebar({
       )}
 
       <div className="sidebar-bottom">
-        <div className="sidebar-settings">
-          <button 
-            className="setting-btn" 
-            onClick={onToggleTheme}
-            title={darkMode ? "Switch to light mode" : "Switch to dark mode"} // 🔥 NEW: Hover Text
+        <div className="sidebar-settings-wrapper">
+          <button
+            className="setting-btn support-btn full-width"
+            onClick={() => setShowTicketModal(true)}
+            title="Report a bug or request a feature"
           >
-            {darkMode ? <FaSun size={18} /> : <FaMoon size={18} />}
-            <span>{darkMode ? "Light" : "Dark"} Mode</span>
+            <FaHeadset size={18} />
+            <span>Contact Support</span>
           </button>
 
-          <button 
-            className="setting-btn install-app-btn" 
-            onClick={handleInstallApp}
-            title="Download desktop application" // 🔥 NEW: Hover Text
-          >
-            <FaDownload size={18} />
-            <span>Install App</span>
-          </button>
+          <div className="sidebar-settings-row">
+            <button
+              className="setting-btn"
+              onClick={onToggleTheme}
+              title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              {darkMode ? <FaSun size={18} /> : <FaMoon size={18} />}
+              <span>{darkMode ? "Light" : "Dark"} Mode</span>
+            </button>
+
+            <button
+              className="setting-btn install-app-btn"
+              onClick={handleInstallApp}
+              title="Download desktop application"
+            >
+              <FaDownload size={18} />
+              <span>Install App</span>
+            </button>
+          </div>
         </div>
 
         <div 
@@ -336,18 +449,132 @@ export default function ChatSidebar({
             <div className="user-email">{userProfile?.email || userEmail || "User"}</div>
             <div className="user-status">Free Plan</div>
           </div>
-          <button 
-            className="logout-icon-btn" 
+          <button
+            className="logout-icon-btn"
             onClick={(e) => {
               e.stopPropagation();
               onLogout();
             }}
-            title="Sign out of CS Navigator" // 🔥 NEW: Hover Text
+            title="Sign out of CS Navigator"
           >
             <FaSignOutAlt size={16} />
           </button>
         </div>
       </div>
+
+      {/* 🎫 Support Ticket Modal */}
+      {showTicketModal && (
+        <div className="ticket-modal-overlay" onClick={closeTicketModal}>
+          <div className="ticket-modal" onClick={(e) => e.stopPropagation()}>
+            {ticketSuccess ? (
+              <div className="ticket-success">
+                <FaCheckCircle size={48} className="success-icon" />
+                <h3>Ticket Submitted!</h3>
+                <p>We'll review your feedback and get back to you soon.</p>
+              </div>
+            ) : (
+              <>
+                <div className="ticket-header">
+                  <h2>Contact Support</h2>
+                  <button className="ticket-close-btn" onClick={closeTicketModal}>
+                    <FaTimes size={18} />
+                  </button>
+                </div>
+
+                <form onSubmit={handleTicketSubmit} className="ticket-form">
+                  <div className="ticket-field">
+                    <label>Category</label>
+                    <div className="category-options">
+                      <button
+                        type="button"
+                        className={`category-btn ${ticketForm.category === 'bug' ? 'active' : ''}`}
+                        onClick={() => setTicketForm(prev => ({ ...prev, category: 'bug' }))}
+                      >
+                        <FaBug size={16} />
+                        <span>Bug Report</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`category-btn ${ticketForm.category === 'feature' ? 'active' : ''}`}
+                        onClick={() => setTicketForm(prev => ({ ...prev, category: 'feature' }))}
+                      >
+                        <FaLightbulb size={16} />
+                        <span>Feature Request</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`category-btn ${ticketForm.category === 'question' ? 'active' : ''}`}
+                        onClick={() => setTicketForm(prev => ({ ...prev, category: 'question' }))}
+                      >
+                        <FaQuestionCircle size={16} />
+                        <span>Question</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="ticket-field">
+                    <label htmlFor="ticket-subject">Subject</label>
+                    <input
+                      id="ticket-subject"
+                      type="text"
+                      placeholder="Brief description of your issue..."
+                      value={ticketForm.subject}
+                      onChange={(e) => setTicketForm(prev => ({ ...prev, subject: e.target.value }))}
+                      required
+                    />
+                  </div>
+
+                  <div className="ticket-field">
+                    <label htmlFor="ticket-description">Description</label>
+                    <textarea
+                      id="ticket-description"
+                      placeholder="Please provide details about your issue or suggestion..."
+                      value={ticketForm.description}
+                      onChange={(e) => setTicketForm(prev => ({ ...prev, description: e.target.value }))}
+                      rows={4}
+                      required
+                    />
+                  </div>
+
+                  <div className="ticket-field">
+                    <label>Attachment (Optional)</label>
+                    <div className="attachment-area">
+                      <input
+                        type="file"
+                        id="ticket-attachment"
+                        accept="image/*,.pdf,.txt,.doc,.docx"
+                        onChange={handleTicketAttachment}
+                        style={{ display: 'none' }}
+                      />
+                      <label htmlFor="ticket-attachment" className="attachment-btn">
+                        <FaPaperclip size={16} />
+                        <span>{ticketForm.attachmentName || "Attach file (max 5MB)"}</span>
+                      </label>
+                      {ticketForm.attachmentName && (
+                        <button
+                          type="button"
+                          className="remove-attachment"
+                          onClick={() => setTicketForm(prev => ({ ...prev, attachment: null, attachmentName: "" }))}
+                        >
+                          <FaTimes size={12} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="ticket-submit-btn"
+                    disabled={ticketSubmitting}
+                  >
+                    {ticketSubmitting ? "Submitting..." : "Submit Ticket"}
+                  </button>
+                </form>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -9,6 +9,13 @@ import { FaCamera } from "@react-icons/all-files/fa/FaCamera";
 import { FaUniversity } from "@react-icons/all-files/fa/FaUniversity";
 import { FaIdCard } from "@react-icons/all-files/fa/FaIdCard";
 import { FaGraduationCap } from "@react-icons/all-files/fa/FaGraduationCap";
+import { FaCheckCircle } from "@react-icons/all-files/fa/FaCheckCircle";
+import { FaTimes } from "@react-icons/all-files/fa/FaTimes";
+import { FaSync } from "@react-icons/all-files/fa/FaSync";
+import { FaBookmark } from "@react-icons/all-files/fa/FaBookmark";
+import { FaChartLine } from "@react-icons/all-files/fa/FaChartLine";
+import { FaBook } from "@react-icons/all-files/fa/FaBook";
+import { FaExternalLinkAlt } from "@react-icons/all-files/fa/FaExternalLinkAlt";
 import "./ProfilePage.css";
 
 // 🔥 Smart API switching - same logic as Chatbox.jsx
@@ -40,9 +47,15 @@ export default function ProfilePage({ userEmail, onLogout }) {
 
   const [showPasswordForm, setShowPasswordForm] = useState(false);
 
+  // DegreeWorks Modal State
+  const [showMorganModal, setShowMorganModal] = useState(false);
+  const [degreeWorksData, setDegreeWorksData] = useState(null);
+  const [syncStep, setSyncStep] = useState(1); // 1=instructions, 2=syncing, 3=success
+
   // Fetch profile data on mount
   useEffect(() => {
     fetchProfile();
+    fetchDegreeWorksData();
   }, []);
 
   const fetchProfile = async () => {
@@ -77,6 +90,99 @@ export default function ProfilePage({ userEmail, onLogout }) {
   }
 };
 
+
+  const fetchDegreeWorksData = async () => {
+    try {
+      const token = localStorage.getItem("token");
+      const response = await fetch(`${API_BASE}/api/degreeworks`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.connected && data.data) {
+          setDegreeWorksData(data.data);
+        }
+      }
+    } catch (error) {
+      console.error("Error fetching DegreeWorks data:", error);
+    }
+  };
+
+  const handleDisconnectMorgan = async () => {
+    if (!window.confirm("Are you sure you want to disconnect your DegreeWorks data? This will remove all synced academic data.")) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const token = localStorage.getItem("token");
+      const response = await fetch(`${API_BASE}/api/degreeworks/disconnect`, {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+
+      if (response.ok) {
+        setProfile({ ...profile, morganConnected: false });
+        setDegreeWorksData(null);
+        setMessage({ type: "success", text: "DegreeWorks data disconnected successfully." });
+      }
+    } catch (error) {
+      setMessage({ type: "error", text: "Failed to disconnect. Please try again." });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Generate the bookmarklet code - sends HTML to backend for parsing
+  const getBookmarkletCode = () => {
+    const token = localStorage.getItem("token");
+    return `javascript:(function(){
+      const API='${API_BASE}';
+      const TOKEN='${token}';
+
+      // Show loading message
+      const msg=document.createElement('div');
+      msg.style.cssText='position:fixed;top:20px;right:20px;background:#333;color:#fff;padding:20px;border-radius:10px;z-index:999999;font-family:Arial;';
+      msg.innerHTML='<strong>CS Navigator</strong><br>Syncing your DegreeWorks data...';
+      document.body.appendChild(msg);
+
+      // Get the page HTML
+      const html=document.documentElement.outerHTML;
+
+      fetch(API+'/api/degreeworks/scrape-html',{
+        method:'POST',
+        headers:{
+          'Content-Type':'application/json',
+          'Authorization':'Bearer '+TOKEN
+        },
+        body:JSON.stringify({html:html})
+      })
+      .then(r=>r.json())
+      .then(d=>{
+        msg.remove();
+        if(d.success){
+          const info=d.data||{};
+          let details='';
+          if(info.overall_gpa) details+='GPA: '+info.overall_gpa+'\\n';
+          if(info.classification) details+='Classification: '+info.classification+'\\n';
+          if(info.total_credits_earned) details+='Credits: '+info.total_credits_earned+'\\n';
+          if(info.courses_count) details+='Courses found: '+info.courses_count+'\\n';
+          alert('✅ DegreeWorks synced successfully!\\n\\n'+details+'\\nYou can now close this tab and return to CS Navigator.');
+        }else{
+          alert('❌ Sync failed: '+(d.detail||d.message||'Unknown error')+'\\n\\nTry using manual entry instead.');
+        }
+      })
+      .catch(e=>{
+        msg.remove();
+        alert('❌ Error: '+e.message+'\\n\\nTry using manual entry instead.');
+      });
+    })();`;
+  };
+
+  const copyBookmarklet = () => {
+    navigator.clipboard.writeText(getBookmarkletCode());
+    setMessage({ type: "success", text: "Bookmarklet code copied! Paste it as the URL of a new bookmark." });
+  };
 
   const handleUpdateProfile = async (e) => {
     e.preventDefault();
@@ -196,29 +302,131 @@ export default function ProfilePage({ userEmail, onLogout }) {
     }
   };
 
-  const handleConnectMorgan = async () => {
-    setLoading(true);
-    setMessage({ type: "", text: "" });
+  const handleConnectMorgan = () => {
+    setSyncStep(1);
+    setShowMorganModal(true);
+  };
 
+  const openMorganPortal = () => {
+    window.open("https://morgan.edu", "_blank");
+  };
+
+  // Manual entry state
+  const [showManualEntry, setShowManualEntry] = useState(false);
+  const [showPdfUpload, setShowPdfUpload] = useState(false);
+  const [pdfUploading, setPdfUploading] = useState(false);
+
+  // 🔥 Ref for PDF file input (more reliable than label htmlFor)
+  const pdfInputRef = React.useRef(null);
+
+  const [manualData, setManualData] = useState({
+    student_name: "",
+    classification: "Freshman",
+    degree_program: "Bachelor of Science in Computer Science",
+    overall_gpa: "",
+    total_credits_earned: "",
+    credits_remaining: ""
+  });
+
+  const handleManualSubmit = async () => {
+    setLoading(true);
     try {
       const token = localStorage.getItem("token");
-      const response = await fetch(`${API_BASE}/api/connect-morgan`, {
+      const response = await fetch(`${API_BASE}/api/degreeworks/sync`, {
         method: "POST",
         headers: {
+          "Content-Type": "application/json",
           "Authorization": `Bearer ${token}`
-        }
+        },
+        body: JSON.stringify({
+          ...manualData,
+          overall_gpa: manualData.overall_gpa ? parseFloat(manualData.overall_gpa) : null,
+          total_credits_earned: manualData.total_credits_earned ? parseFloat(manualData.total_credits_earned) : null,
+          credits_remaining: manualData.credits_remaining ? parseFloat(manualData.credits_remaining) : null
+        })
       });
 
       if (response.ok) {
         setProfile({ ...profile, morganConnected: true });
-        setMessage({ type: "success", text: "Morgan State account connected!" });
+        setMessage({ type: "success", text: "Academic data saved successfully!" });
+        setShowMorganModal(false);
+        setShowManualEntry(false);
+        fetchDegreeWorksData();
       } else {
-        setMessage({ type: "error", text: "Failed to connect Morgan account" });
+        setMessage({ type: "error", text: "Failed to save data. Please try again." });
       }
     } catch (error) {
       setMessage({ type: "error", text: "Network error. Please try again." });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePdfUpload = async (e) => {
+    console.log("📄 PDF Upload triggered", e);
+    const file = e.target.files?.[0];
+    console.log("📄 Selected file:", file);
+
+    if (!file) {
+      console.log("❌ No file selected");
+      return;
+    }
+
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      setMessage({ type: "error", text: "Please upload a PDF file" });
+      return;
+    }
+
+    console.log("📄 Starting upload for:", file.name, "Size:", file.size);
+    setPdfUploading(true);
+    setMessage({ type: "", text: "" });
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const token = localStorage.getItem("token");
+      console.log("📄 Uploading to:", `${API_BASE}/api/degreeworks/upload-pdf`);
+
+      const response = await fetch(`${API_BASE}/api/degreeworks/upload-pdf`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`
+        },
+        body: formData
+      });
+
+      console.log("📄 Response status:", response.status);
+      const data = await response.json();
+      console.log("📄 Response data:", data);
+
+      if (response.ok && data.success) {
+        setProfile({ ...profile, morganConnected: true });
+        setMessage({ type: "success", text: "DegreeWorks PDF uploaded successfully! Your academic data is now available." });
+        setShowMorganModal(false);
+        setShowPdfUpload(false);
+        fetchDegreeWorksData();
+      } else {
+        console.error("❌ Upload failed:", data);
+        setMessage({ type: "error", text: data.detail || data.message || "Failed to parse PDF. Please try manual entry instead." });
+      }
+    } catch (error) {
+      console.error("❌ Upload error:", error);
+      setMessage({ type: "error", text: "Upload failed: " + error.message });
+    } finally {
+      setPdfUploading(false);
+      // Reset the input so the same file can be selected again
+      if (pdfInputRef.current) {
+        pdfInputRef.current.value = "";
+      }
+    }
+  };
+
+  // 🔥 Direct click handler for PDF upload button
+  const triggerPdfUpload = () => {
+    console.log("📄 Triggering PDF file picker");
+    if (pdfInputRef.current) {
+      pdfInputRef.current.click();
     }
   };
 
@@ -417,23 +625,91 @@ export default function ProfilePage({ userEmail, onLogout }) {
         </div>
 
         {/* Morgan Connection */}
-        <div className="profile-section">
+        <div className="profile-section morgan-section">
           <div className="section-header">
-            <h3>Morgan State Account</h3>
+            <h3><FaUniversity /> DegreeWorks Integration</h3>
+            {profile.morganConnected && (
+              <button className="disconnect-btn" onClick={handleDisconnectMorgan} disabled={loading}>
+                Disconnect
+              </button>
+            )}
           </div>
-          
-          {profile.morganConnected ? (
-            <div className="connected-status">
-              <FaUniversity size={24} />
-              <div>
-                <p className="connected-text">✓ Connected to Morgan State</p>
-                <p className="connected-subtext">Your account is synced with Morgan State University</p>
+
+          {profile.morganConnected && degreeWorksData ? (
+            <div className="degreeworks-data">
+              <div className="dw-header">
+                <FaCheckCircle className="success-icon" />
+                <div>
+                  <p className="connected-text">Connected to DegreeWorks</p>
+                  <p className="sync-time">Last synced: {degreeWorksData.updated_at ? new Date(degreeWorksData.updated_at).toLocaleDateString() : 'Recently'}</p>
+                </div>
+                <button className="resync-btn" onClick={handleConnectMorgan}>
+                  <FaSync /> Re-sync
+                </button>
               </div>
+
+              <div className="dw-stats-grid">
+                <div className={`dw-stat-card ${!degreeWorksData.overall_gpa ? 'empty' : ''}`}>
+                  <FaChartLine className="stat-icon" />
+                  <div className="stat-value">{degreeWorksData.overall_gpa ? degreeWorksData.overall_gpa.toFixed(2) : '--'}</div>
+                  <div className="stat-label">{degreeWorksData.overall_gpa ? 'Overall GPA' : 'GPA Not Found'}</div>
+                </div>
+                <div className={`dw-stat-card ${!degreeWorksData.total_credits_earned ? 'empty' : ''}`}>
+                  <FaBook className="stat-icon" />
+                  <div className="stat-value">{degreeWorksData.total_credits_earned || '--'}</div>
+                  <div className="stat-label">{degreeWorksData.total_credits_earned ? 'Credits Earned' : 'Credits Not Found'}</div>
+                </div>
+                <div className={`dw-stat-card ${!degreeWorksData.classification ? 'empty' : ''}`}>
+                  <FaGraduationCap className="stat-icon" />
+                  <div className="stat-value">{degreeWorksData.classification || '--'}</div>
+                  <div className="stat-label">{degreeWorksData.classification ? 'Classification' : 'Class Not Found'}</div>
+                </div>
+              </div>
+
+              {degreeWorksData.degree_program && (
+                <div className="dw-info-row">
+                  <strong>Program:</strong> {degreeWorksData.degree_program}
+                </div>
+              )}
+              {degreeWorksData.advisor && (
+                <div className="dw-info-row">
+                  <strong>Advisor:</strong> {degreeWorksData.advisor}
+                </div>
+              )}
+              {degreeWorksData.courses_completed && degreeWorksData.courses_completed.length > 0 && (
+                <div className="dw-courses-section">
+                  <strong>Courses Found ({degreeWorksData.courses_completed.length}):</strong>
+                  <div className="dw-courses-list">
+                    {degreeWorksData.courses_completed.slice(0, 10).map((c, i) => (
+                      <span key={i} className="course-tag">{c.code} {c.grade && `(${c.grade})`}</span>
+                    ))}
+                    {degreeWorksData.courses_completed.length > 10 && (
+                      <span className="course-tag more">+{degreeWorksData.courses_completed.length - 10} more</span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {(!degreeWorksData.overall_gpa || !degreeWorksData.classification) && (
+                <div className="dw-warning">
+                  <p>Some data couldn't be extracted from your PDF. Use <strong>Quick Manual Entry</strong> to add missing info.</p>
+                  <button className="text-btn" onClick={() => { setShowManualEntry(true); setShowMorganModal(true); }}>Add Missing Data</button>
+                </div>
+              )}
             </div>
           ) : (
-            <button className="connect-btn" onClick={handleConnectMorgan} disabled={loading}>
-              <FaUniversity /> Connect Morgan State Account
-            </button>
+            <div className="connect-morgan-prompt">
+              <div className="connect-info">
+                <FaUniversity className="connect-icon" />
+                <div>
+                  <h4>Sync Your Academic Data</h4>
+                  <p>Connect your DegreeWorks to get personalized course recommendations, track your progress, and more.</p>
+                </div>
+              </div>
+              <button className="connect-btn" onClick={handleConnectMorgan} disabled={loading}>
+                <FaSync /> Connect DegreeWorks
+              </button>
+            </div>
           )}
         </div>
 
@@ -444,6 +720,299 @@ export default function ProfilePage({ userEmail, onLogout }) {
           </button>
         </div>
       </div>
+
+      {/* DegreeWorks Connection Modal */}
+      {showMorganModal && (
+        <div className="modal-overlay" onClick={() => setShowMorganModal(false)}>
+          <div className="modal-content degreeworks-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => {
+              setShowMorganModal(false);
+              setShowManualEntry(false);
+              setShowPdfUpload(false);
+            }}>
+              <FaTimes />
+            </button>
+
+            <div className="modal-header">
+              <FaUniversity className="modal-icon" />
+              <h2>Connect Academic Data</h2>
+              <p>Get personalized course recommendations</p>
+            </div>
+
+            <div className="modal-body">
+              {!showManualEntry && !showPdfUpload ? (
+                <>
+                  {/* Option Selection */}
+                  <div className="sync-options">
+                    {/* Option 1: One-Click Sync via Bookmarklet */}
+                    <div className="sync-option highlighted" onClick={() => setShowPdfUpload('bookmarklet')}>
+                      <div className="option-icon sync-icon">
+                        <FaSync />
+                      </div>
+                      <div className="option-content">
+                        <h4>One-Click Sync (Recommended)</h4>
+                        <p>Already on DegreeWorks? Use our sync button to instantly import your data.</p>
+                      </div>
+                      <FaExternalLinkAlt className="option-arrow" />
+                    </div>
+
+                    {/* Option 2: PDF Upload */}
+                    <div className="sync-option" onClick={() => setShowPdfUpload('pdf')}>
+                      <div className="option-icon pdf-icon">
+                        <FaBook />
+                      </div>
+                      <div className="option-content">
+                        <h4>Upload DegreeWorks PDF</h4>
+                        <p>Save your DegreeWorks as PDF and upload it here.</p>
+                      </div>
+                      <FaExternalLinkAlt className="option-arrow" />
+                    </div>
+
+                    {/* Option 3: Manual Entry */}
+                    <div className="sync-option" onClick={() => setShowManualEntry(true)}>
+                      <div className="option-icon">
+                        <FaUser />
+                      </div>
+                      <div className="option-content">
+                        <h4>Quick Manual Entry</h4>
+                        <p>Type in your GPA, classification, and credits manually.</p>
+                      </div>
+                      <FaExternalLinkAlt className="option-arrow" />
+                    </div>
+                  </div>
+                </>
+              ) : showPdfUpload === 'bookmarklet' ? (
+                /* One-Click Sync Instructions */
+                <div className="pdf-upload-section">
+                  <button className="back-to-options" onClick={() => setShowPdfUpload(false)}>
+                    <FaArrowLeft /> Back to options
+                  </button>
+
+                  <h3>One-Click Sync</h3>
+
+                  <div className="pdf-instructions">
+                    <div className="instruction-step">
+                      <span className="step-num">1</span>
+                      <div>
+                        <strong>Open DegreeWorks</strong>
+                        <p>Go to your DegreeWorks page in MyMSU Banner (if not already there)</p>
+                        <button className="step-action-btn small" onClick={openMorganPortal}>
+                          <FaExternalLinkAlt /> Open Morgan State
+                        </button>
+                      </div>
+                    </div>
+                    <div className="instruction-step">
+                      <span className="step-num">2</span>
+                      <div>
+                        <strong>Create Sync Bookmark</strong>
+                        <p>Click the button below to copy the sync code, then create a new bookmark and paste it as the URL:</p>
+                        <button className="bookmarklet-copy-btn" onClick={copyBookmarklet}>
+                          <FaBookmark /> Copy Sync Code
+                        </button>
+                        <div className="bookmark-instructions">
+                          <small>
+                            <strong>Chrome:</strong> Right-click bookmarks bar → Add page → Paste code as URL<br/>
+                            <strong>Firefox:</strong> Ctrl+Shift+B → Right-click → New Bookmark → Paste code as URL
+                          </small>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="instruction-step">
+                      <span className="step-num">3</span>
+                      <div>
+                        <strong>Click the Bookmark</strong>
+                        <p>While on your DegreeWorks page, click the bookmark you just created. Your data will sync automatically!</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="info-box">
+                    <FaCheckCircle />
+                    <p>After syncing, refresh this page to see your updated academic data.</p>
+                  </div>
+                </div>
+              ) : showPdfUpload === 'pdf' ? (
+                /* PDF Upload Section */
+                <div className="pdf-upload-section">
+                  <button className="back-to-options" onClick={() => setShowPdfUpload(false)}>
+                    <FaArrowLeft /> Back to options
+                  </button>
+
+                  <h3>Upload DegreeWorks PDF</h3>
+
+                  <div className="pdf-instructions">
+                    <div className="instruction-step">
+                      <span className="step-num">1</span>
+                      <div>
+                        <strong>Open DegreeWorks</strong>
+                        <p>Go to your DegreeWorks page in MyMSU Banner</p>
+                        <button className="step-action-btn small" onClick={openMorganPortal}>
+                          <FaExternalLinkAlt /> Open Morgan State
+                        </button>
+                      </div>
+                    </div>
+                    <div className="instruction-step">
+                      <span className="step-num">2</span>
+                      <div>
+                        <strong>Save as PDF</strong>
+                        <p>Click the <strong>"Save as PDF"</strong> or <strong>"Print"</strong> button in DegreeWorks, then save/print to PDF</p>
+                      </div>
+                    </div>
+                    <div className="instruction-step">
+                      <span className="step-num">3</span>
+                      <div>
+                        <strong>Upload below</strong>
+                        <p>Select the PDF file you just saved</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pdf-upload-area">
+                    {/* Hidden file input with ref */}
+                    <input
+                      type="file"
+                      accept=".pdf,application/pdf"
+                      ref={pdfInputRef}
+                      onChange={handlePdfUpload}
+                      disabled={pdfUploading}
+                      style={{ display: 'none' }}
+                    />
+                    {/* Clickable button that triggers file picker */}
+                    <button
+                      type="button"
+                      className={`upload-label ${pdfUploading ? 'uploading' : ''}`}
+                      onClick={triggerPdfUpload}
+                      disabled={pdfUploading}
+                    >
+                      {pdfUploading ? (
+                        <>
+                          <FaSync className="spinning" /> Uploading PDF...
+                        </>
+                      ) : (
+                        <>
+                          <FaBook /> Click to Upload DegreeWorks PDF
+                        </>
+                      )}
+                    </button>
+                    <p className="upload-hint">Supports PDF files exported from DegreeWorks</p>
+                  </div>
+                </div>
+              ) : (
+                /* Manual Entry Form */
+                <div className="manual-entry-form">
+                  <button className="back-to-options" onClick={() => setShowManualEntry(false)}>
+                    <FaArrowLeft /> Back to options
+                  </button>
+
+                  <h3>Enter Your Academic Info</h3>
+                  <p className="form-subtitle">This helps us give you personalized recommendations</p>
+
+                  <div className="manual-form-grid">
+                    <div className="form-group">
+                      <label>Full Name</label>
+                      <input
+                        type="text"
+                        placeholder="e.g., John Smith"
+                        value={manualData.student_name}
+                        onChange={(e) => setManualData({...manualData, student_name: e.target.value})}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label>Classification</label>
+                      <select
+                        value={manualData.classification}
+                        onChange={(e) => setManualData({...manualData, classification: e.target.value})}
+                      >
+                        <option value="Freshman">Freshman</option>
+                        <option value="Sophomore">Sophomore</option>
+                        <option value="Junior">Junior</option>
+                        <option value="Senior">Senior</option>
+                        <option value="Graduate">Graduate</option>
+                      </select>
+                    </div>
+
+                    <div className="form-group">
+                      <label>Degree Program</label>
+                      <select
+                        value={manualData.degree_program}
+                        onChange={(e) => setManualData({...manualData, degree_program: e.target.value})}
+                      >
+                        <option value="Bachelor of Science in Computer Science">B.S. Computer Science</option>
+                        <option value="Bachelor of Science in Information Systems">B.S. Information Systems</option>
+                        <option value="Bachelor of Science in Cybersecurity">B.S. Cybersecurity</option>
+                        <option value="Master of Science in Computer Science">M.S. Computer Science</option>
+                        <option value="Other">Other</option>
+                      </select>
+                    </div>
+
+                    <div className="form-group">
+                      <label>Overall GPA</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="4"
+                        placeholder="e.g., 3.50"
+                        value={manualData.overall_gpa}
+                        onChange={(e) => setManualData({...manualData, overall_gpa: e.target.value})}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label>Credits Earned</label>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="e.g., 60"
+                        value={manualData.total_credits_earned}
+                        onChange={(e) => setManualData({...manualData, total_credits_earned: e.target.value})}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label>Credits Remaining</label>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="e.g., 60"
+                        value={manualData.credits_remaining}
+                        onChange={(e) => setManualData({...manualData, credits_remaining: e.target.value})}
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    className="modal-primary-btn submit-manual"
+                    onClick={handleManualSubmit}
+                    disabled={loading}
+                  >
+                    {loading ? "Saving..." : "Save Academic Data"}
+                  </button>
+                </div>
+              )}
+
+              <div className="security-note">
+                <FaLock />
+                <div>
+                  <strong>Your data is secure</strong>
+                  <p>Your academic information is stored securely and only used to personalize your chatbot experience.</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button className="modal-secondary-btn" onClick={() => {
+                setShowMorganModal(false);
+                setShowManualEntry(false);
+                setShowPdfUpload(false);
+              }}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

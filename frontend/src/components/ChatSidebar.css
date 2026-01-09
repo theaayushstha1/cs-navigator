@@ -326,7 +326,21 @@ body.sidebar-collapsed .chat-sidebar {
   background: rgba(0, 0, 0, 0.2);
 }
 
-/* Settings Row */
+/* Settings Wrapper - Two Rows */
+.sidebar-settings-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sidebar-settings-row {
+  display: flex;
+  gap: 8px;
+}
+
+/* Legacy - keep for compatibility */
 .sidebar-settings {
   display: flex;
   gap: 8px;
@@ -472,12 +486,302 @@ body.sidebar-collapsed .chat-sidebar {
   background: rgba(255, 255, 255, 0.3);
 }
 
+/* Support Button Style */
+.setting-btn.support-btn {
+  border-color: var(--msu-blue);
+  color: #E2E8F0;
+}
+
+.setting-btn.support-btn:hover {
+  background: rgba(0, 82, 204, 0.2);
+  border-color: var(--msu-blue);
+}
+
+.setting-btn.full-width {
+  width: 100%;
+  flex: none;
+}
+
+/* ========================================
+   🎫 SUPPORT TICKET MODAL - Professional Design
+   ======================================== */
+
+.ticket-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.ticket-modal {
+  background: #1E293B;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  width: 90%;
+  max-width: 480px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Header */
+.ticket-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.ticket-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #F8FAFC;
+}
+
+.ticket-close-btn {
+  background: transparent;
+  border: none;
+  color: #64748B;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.ticket-close-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #E2E8F0;
+}
+
+/* Form */
+.ticket-form {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.ticket-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ticket-field label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #94A3B8;
+}
+
+/* Category Buttons */
+.category-options {
+  display: flex;
+  gap: 8px;
+}
+
+.category-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  color: #94A3B8;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.category-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.category-btn.active {
+  background: rgba(0, 82, 204, 0.2);
+  border-color: var(--msu-blue);
+  color: #E2E8F0;
+}
+
+.category-btn svg {
+  font-size: 1.25rem;
+}
+
+/* Input & Textarea */
+.ticket-field input,
+.ticket-field textarea {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  padding: 12px 16px;
+  color: #F8FAFC;
+  font-size: 0.9rem;
+  font-family: inherit;
+  transition: all 0.2s;
+  resize: none;
+}
+
+.ticket-field input::placeholder,
+.ticket-field textarea::placeholder {
+  color: #64748B;
+}
+
+.ticket-field input:focus,
+.ticket-field textarea:focus {
+  outline: none;
+  border-color: var(--msu-blue);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Attachment Area */
+.attachment-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.attachment-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  color: #94A3B8;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex: 1;
+}
+
+.attachment-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #E2E8F0;
+}
+
+.remove-attachment {
+  background: rgba(239, 68, 68, 0.2);
+  border: none;
+  color: #EF4444;
+  padding: 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.remove-attachment:hover {
+  background: rgba(239, 68, 68, 0.3);
+}
+
+/* Submit Button */
+.ticket-submit-btn {
+  background: var(--msu-blue);
+  border: none;
+  border-radius: 10px;
+  padding: 14px 24px;
+  color: white;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-top: 8px;
+}
+
+.ticket-submit-btn:hover:not(:disabled) {
+  background: var(--msu-blue-hover);
+  transform: translateY(-1px);
+}
+
+.ticket-submit-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Success State */
+.ticket-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  text-align: center;
+  gap: 16px;
+}
+
+.ticket-success .success-icon {
+  color: #22C55E;
+  animation: scaleIn 0.3s ease;
+}
+
+@keyframes scaleIn {
+  from {
+    transform: scale(0);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.ticket-success h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #F8FAFC;
+}
+
+.ticket-success p {
+  margin: 0;
+  color: #94A3B8;
+  font-size: 0.9rem;
+}
+
 /* Mobile */
 @media (max-width: 768px) {
   .chat-sidebar {
     transform: translateX(-280px);
   }
-  
+
   body:not(.sidebar-collapsed) .chat-sidebar {
     transform: translateX(0);
   }
@@ -489,5 +793,19 @@ body.sidebar-collapsed .chat-sidebar {
 
   .setting-btn {
     width: 100%;
+  }
+
+  .ticket-modal {
+    width: 95%;
+    max-height: 85vh;
+  }
+
+  .category-options {
+    flex-direction: column;
+  }
+
+  .category-btn {
+    flex-direction: row;
+    justify-content: center;
   }
 }

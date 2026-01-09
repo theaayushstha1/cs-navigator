@@ -1,0 +1,418 @@
+================================================================================
+CS NAVIGATOR - TECHNICAL PROGRESS REPORT
+Generated: January 9, 2026
+Development Session with Claude Code (Opus 4.5)
+================================================================================
+
+TABLE OF CONTENTS
+-----------------
+1. DegreeWorks PDF Integration
+2. Support Ticket System
+3. Admin Dashboard & Authentication
+4. UI/UX Improvements
+5. Database Schema Updates
+6. API Endpoints Added
+7. File Changes Summary
+8. Technical Stack
+
+================================================================================
+1. DEGREEWORKS PDF INTEGRATION
+================================================================================
+
+PROBLEM: PDF Upload Button Not Working
+--------------------------------------
+- Issue: File picker dialog not opening when clicking "Connect DegreeWorks"
+- Root Cause: <label htmlFor="fileInput"> approach was unreliable
+- Solution: Implemented React ref-based approach with useRef() and onClick handler
+
+Code Change (ProfilePage.jsx):
+  const pdfInputRef = React.useRef(null);
+  const triggerPdfUpload = () => {
+    if (pdfInputRef.current) {
+      pdfInputRef.current.click();
+    }
+  };
+  // Button: onClick={triggerPdfUpload}
+
+PROBLEM: PDF Text Extraction Failing (400 Bad Request)
+------------------------------------------------------
+- Issue: pypdf extracting 0 characters from PDF files
+- Root Cause: Some PDFs use different encoding/structure
+- Solution: Implemented multi-library fallback extraction chain
+
+Extraction Order (main.py):
+  1. pypdf (PyPDF2 replacement) - Primary method
+  2. pdfplumber - Secondary fallback
+  3. PyMuPDF (fitz) - Third fallback
+  4. Raw text extraction - Final fallback
+
+Code Implementation:
+  def extract_pdf_text_robust(pdf_bytes):
+      # Try pypdf first
+      reader = pypdf.PdfReader(BytesIO(pdf_bytes))
+      text = "".join(page.extract_text() or "" for page in reader.pages)
+
+      if len(text.strip()) < 100:
+          # Try pdfplumber
+          with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+              text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+
+      if len(text.strip()) < 100:
+          # Try PyMuPDF
+          doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+          text = "\n".join(page.get_text() for page in doc)
+
+      return text
+
+PROBLEM: Classification Showing "Freshman" Incorrectly
+------------------------------------------------------
+- Issue: Parser matching "Freshman" from course names like "Freshman Composition"
+- Root Cause: Regex searching for classification anywhere in text
+- Solution: Calculate classification from earned credits (most reliable)
+
+Classification Logic:
+  if credits >= 90: classification = "Senior"
+  elif credits >= 60: classification = "Junior"
+  elif credits >= 30: classification = "Sophomore"
+  else: classification = "Freshman"
+
+PROBLEM: Credits Showing "100" Instead of Actual Value
+------------------------------------------------------
+- Issue: Parser matching "100" from "100%" completion percentage
+- Root Cause: Greedy regex matching first number
+- Solution: Search for specific patterns and exclude false positives
+
+Pattern Matching:
+  - Look for "Credits applied: {number}"
+  - Look for "Credits Earned: {number}"
+  - Exclude value "100" (likely percentage)
+  - Validate credit range (1-200)
+
+PROBLEM: Advisor Showing "Prerequisite"
+---------------------------------------
+- Issue: Parser matching words like "Prerequisite" as advisor name
+- Root Cause: No filtering for common false positive words
+- Solution: Implemented blocklist of excluded words
+
+Blocklist:
+  not_advisor_words = [
+      'prerequisite', 'prerequsite', 'required', 'complete', 'incomplete',
+      'pending', 'satisfied', 'unsatisfied', 'needed', 'met', 'unmet',
+      'information', 'course', 'credit', 'hours', 'gpa', 'grade'
+  ]
+
+================================================================================
+2. SUPPORT TICKET SYSTEM
+================================================================================
+
+DATABASE MODEL (models.py)
+--------------------------
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    # Ticket Details
+    subject = Column(String(255), nullable=False)
+    category = Column(String(50), nullable=False)  # "bug", "feature", "question", "other"
+    description = Column(Text, nullable=False)
+    attachment_data = Column(Text, nullable=True)  # Base64 encoded
+    attachment_name = Column(String(255), nullable=True)
+
+    # Status tracking
+    status = Column(String(50), default="open")  # "open", "in_progress", "resolved", "closed"
+    priority = Column(String(20), default="normal")  # "low", "normal", "high", "urgent"
+
+    # Admin response
+    admin_notes = Column(Text, nullable=True)
+    resolved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+FRONTEND IMPLEMENTATION (ChatSidebar.jsx)
+-----------------------------------------
+State Management:
+  const [showTicketModal, setShowTicketModal] = useState(false);
+  const [ticketForm, setTicketForm] = useState({
+    subject: "",
+    category: "bug",
+    description: "",
+    attachment: null,
+    attachmentName: ""
+  });
+  const [ticketSubmitting, setTicketSubmitting] = useState(false);
+  const [ticketSuccess, setTicketSuccess] = useState(false);
+
+Features:
+  - Category selection (Bug Report, Feature Request, Question)
+  - Subject and description fields
+  - File attachment support (max 5MB, base64 encoded)
+  - Loading state during submission
+  - Success animation on completion
+  - Professional modal design with backdrop blur
+
+================================================================================
+3. ADMIN DASHBOARD & AUTHENTICATION
+================================================================================
+
+ADMIN ACCOUNT CREATION (main.py - init_db)
+------------------------------------------
+Automatic admin account creation on server startup:
+
+  admin_email = "admin@test.com"
+  admin_password = "admin"
+
+  existing_admin = db.query(User).filter(User.email == admin_email).first()
+
+  if existing_admin:
+      if existing_admin.role != "admin":
+          existing_admin.role = "admin"
+          db.commit()
+  else:
+      hashed = hash_password(admin_password)
+      admin_user = User(
+          email=admin_email,
+          password_hash=hashed,
+          role="admin",
+          name="Admin"
+      )
+      db.add(admin_user)
+      db.commit()
+
+ADMIN DASHBOARD FEATURES (AdminDashboard.jsx)
+---------------------------------------------
+Tab Navigation:
+  - Curriculum Tab (existing)
+  - Support Tickets Tab (new)
+
+Ticket Management Features:
+  - Stats cards: Total, Open, In Progress, Resolved
+  - Filter buttons: All, Open, In Progress, Resolved
+  - Ticket list with category icons, status badges, date
+  - Quick action buttons: View, Mark In Progress, Resolve
+  - Detail modal with full description and status controls
+
+ADMIN NAVIGATION BUTTON (NavBar.jsx)
+------------------------------------
+Conditional rendering for admin users:
+
+  {role === "admin" && (
+    <button
+      className="admin-nav-btn"
+      onClick={() => navigate("/admin")}
+      title="Admin Dashboard"
+    >
+      <FaCog size={18} />
+      <span>Admin</span>
+    </button>
+  )}
+
+================================================================================
+4. UI/UX IMPROVEMENTS
+================================================================================
+
+SIDEBAR LAYOUT FIX (ChatSidebar.jsx)
+------------------------------------
+Changed from single row (3 buttons) to two rows:
+  Row 1: Contact Support (full width)
+  Row 2: Dark Mode | Install App (side by side)
+
+Structure:
+  <div className="sidebar-settings-wrapper">
+    <button className="setting-btn support-btn full-width">Contact Support</button>
+    <div className="sidebar-settings-row">
+      <button className="setting-btn">Dark Mode</button>
+      <button className="setting-btn install-app-btn">Install App</button>
+    </div>
+  </div>
+
+ADMIN DASHBOARD STYLING (AdminDashboard.css)
+--------------------------------------------
+Updated to match app design system:
+  - Uses CSS variables (--msu-blue, --msu-gold, --bg-card, --text-main, etc.)
+  - Dark mode support with body.dark selectors
+  - Consistent border-radius (10px-16px)
+  - Proper shadows using var(--shadow-md), var(--shadow-lg)
+  - Hover effects with transforms and color transitions
+  - Mobile responsive breakpoints
+
+TOOLTIPS ADDED
+--------------
+Added title attributes throughout for accessibility:
+  - "Start a new chat session"
+  - "Search through your conversations"
+  - "View Computer Science curriculum"
+  - "Toggle archived conversations"
+  - "Report a bug or request a feature"
+  - "Switch to light/dark mode"
+  - "Sign out of CS Navigator"
+  - "Admin Dashboard"
+
+================================================================================
+5. DATABASE SCHEMA UPDATES
+================================================================================
+
+TABLES CREATED/MODIFIED
+-----------------------
+1. support_tickets (NEW)
+   - Auto-created in init_db() if not exists
+   - Foreign keys to users table
+
+2. users
+   - role column used for admin access control
+   - Values: "student" (default), "admin"
+
+SQL for support_tickets:
+  CREATE TABLE support_tickets (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      subject VARCHAR(255) NOT NULL,
+      category VARCHAR(50) NOT NULL,
+      description TEXT NOT NULL,
+      attachment_data LONGTEXT,
+      attachment_name VARCHAR(255),
+      status VARCHAR(50) DEFAULT 'open',
+      priority VARCHAR(20) DEFAULT 'normal',
+      admin_notes TEXT,
+      resolved_by INT,
+      resolved_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (resolved_by) REFERENCES users(id) ON DELETE SET NULL
+  );
+
+================================================================================
+6. API ENDPOINTS ADDED
+================================================================================
+
+TICKET ENDPOINTS (main.py)
+--------------------------
+POST   /api/tickets              - Create new ticket (authenticated users)
+GET    /api/tickets/my           - Get current user's tickets
+GET    /api/tickets              - Get all tickets (admin only)
+GET    /api/tickets/{id}         - Get specific ticket details
+PUT    /api/tickets/{id}         - Update ticket status (admin only)
+GET    /api/tickets/stats/summary - Get ticket statistics (admin only)
+
+Request/Response Examples:
+
+POST /api/tickets
+Request:
+  {
+    "subject": "Bug report",
+    "category": "bug",
+    "description": "Detailed description...",
+    "attachment_data": "base64string...",
+    "attachment_name": "screenshot.png"
+  }
+Response:
+  {
+    "message": "Ticket created successfully",
+    "ticket_id": 1
+  }
+
+GET /api/tickets/stats/summary
+Response:
+  {
+    "total": 10,
+    "open": 5,
+    "in_progress": 3,
+    "resolved": 2
+  }
+
+================================================================================
+7. FILE CHANGES SUMMARY
+================================================================================
+
+BACKEND FILES
+-------------
+backend/main.py
+  - Added multi-library PDF extraction (pypdf, pdfplumber, PyMuPDF)
+  - Fixed classification, credits, advisor parsing logic
+  - Added support_tickets table creation in init_db()
+  - Added admin account creation in init_db()
+  - Added 6 new ticket API endpoints
+
+backend/models.py
+  - Added SupportTicket model class
+
+backend/requirements.txt
+  - Already had pypdf, pdfplumber
+  - pymupdf added for additional PDF support
+
+FRONTEND FILES
+--------------
+frontend/src/components/ChatSidebar.jsx
+  - Added ticket modal state and handlers
+  - Added Contact Support button
+  - Added ticket submission modal UI
+  - Changed sidebar-settings layout
+
+frontend/src/components/ChatSidebar.css
+  - Added .sidebar-settings-wrapper styles
+  - Added .sidebar-settings-row styles
+  - Added .setting-btn.full-width styles
+  - Added complete ticket modal styles (overlay, form, success state)
+
+frontend/src/components/AdminDashboard.jsx
+  - Added ticket state management
+  - Added ticket loading/filtering functions
+  - Added tab navigation (Curriculum, Tickets)
+  - Added ticket list with cards
+  - Added ticket detail modal
+
+frontend/src/components/AdminDashboard.css
+  - Complete rewrite to match app design system
+  - Added tab navigation styles
+  - Added ticket stats cards
+  - Added filter buttons
+  - Added ticket card styles
+  - Added ticket detail modal
+  - Added dark mode support
+
+frontend/src/components/NavBar.jsx
+  - Added FaCog import
+  - Added admin button for admin users
+
+frontend/src/components/NavBar.css
+  - Added .admin-nav-btn styles
+  - Added dark mode support for admin button
+
+frontend/src/components/ProfilePage.jsx
+  - Changed PDF upload from label to ref-based approach
+
+================================================================================
+8. TECHNICAL STACK
+================================================================================
+
+BACKEND
+-------
+- Python 3.x
+- FastAPI (web framework)
+- SQLAlchemy (ORM)
+- MySQL/AWS RDS (database)
+- pypdf, pdfplumber, PyMuPDF (PDF processing)
+- python-jose (JWT authentication)
+- passlib/bcrypt (password hashing)
+
+FRONTEND
+--------
+- React 18 with Vite
+- React Router v6 (navigation)
+- @react-icons/all-files (icons)
+- CSS with CSS Variables (theming)
+
+INFRASTRUCTURE
+--------------
+- AWS EC2 (backend hosting)
+- AWS RDS MySQL (database)
+- GitHub (version control)
+
+================================================================================
+END OF TECHNICAL REPORT
+================================================================================

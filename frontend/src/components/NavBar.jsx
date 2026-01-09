@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { FaBars } from "@react-icons/all-files/fa/FaBars";
 import { FaUser } from "@react-icons/all-files/fa/FaUser";
+import { FaCog } from "@react-icons/all-files/fa/FaCog";
 import "../index.css";
 import "./NavBar.css";
 
@@ -115,18 +116,29 @@ export default function NavBar({ role, onToggleSidebar }) {
           </div>
         </div>
 
-        {/* Right side - Profile icon when authenticated */}
+        {/* Right side - Admin button + Profile icon when authenticated */}
         {isAuthed && (
           <div className="navbar-right">
-            <button 
-              className="profile-icon-btn" 
+            {role === "admin" && (
+              <button
+                className="admin-nav-btn"
+                onClick={() => navigate("/admin")}
+                title="Admin Dashboard"
+                aria-label="Open admin dashboard"
+              >
+                <FaCog size={18} />
+                <span>Admin</span>
+              </button>
+            )}
+            <button
+              className="profile-icon-btn"
               onClick={() => navigate("/profile")}
-              title="Manage User Profile" // 🔥 UPDATED: Hover Text
+              title="Manage User Profile"
               aria-label="Open profile settings"
             >
-              <img 
-                src={profilePicture} 
-                alt="Profile" 
+              <img
+                src={profilePicture}
+                alt="Profile"
                 className="profile-avatar"
                 onError={(e) => {
                   console.log("❌ Image failed to load, showing fallback");

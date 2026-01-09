@@ -1,0 +1,117 @@
+================================================================================
+CS NAVIGATOR - PROGRESS SUMMARY
+January 9, 2026
+================================================================================
+
+WHAT IS CS NAVIGATOR?
+---------------------
+CS Navigator is a chatbot application for Morgan State University Computer
+Science students. It helps students with course information, academic advising,
+and navigating their degree requirements.
+
+
+WHAT WE ACCOMPLISHED THIS SESSION
+=================================
+
+1. FIXED DEGREEWORKS UPLOAD
+---------------------------
+   What it does: Students can now upload their DegreeWorks PDF to get
+   personalized academic information in the chatbot.
+
+   What we fixed:
+   - The "Connect DegreeWorks" button wasn't opening the file picker - FIXED
+   - PDF files weren't being read properly - FIXED by adding backup methods
+   - Student classification was showing "Freshman" incorrectly - FIXED
+   - Credit hours were showing wrong numbers - FIXED
+   - Advisor name was showing random words - FIXED
+
+   How it works now: When you upload your DegreeWorks PDF, the system reads
+   your credits, calculates your year (Freshman/Sophomore/Junior/Senior),
+   and finds your advisor's name correctly.
+
+
+2. ADDED CONTACT SUPPORT FEATURE
+--------------------------------
+   What it does: Students can now report bugs or request features directly
+   from the app.
+
+   Where to find it: In the sidebar (left side), there's a new "Contact Support"
+   button above the Dark Mode and Install App buttons.
+
+   What you can do:
+   - Choose a category: Bug Report, Feature Request, or Question
+   - Write a subject line
+   - Describe your issue or suggestion
+   - Attach a file (like a screenshot) if needed
+   - Submit the ticket
+
+   After submitting: You'll see a success message, and your ticket is saved
+   for the admin team to review.
+
+
+3. CREATED ADMIN DASHBOARD
+--------------------------
+   What it does: Admins can now see and manage all support tickets submitted
+   by students.
+
+   Features for admins:
+   - See how many tickets are open, in progress, or resolved
+   - Filter tickets by status
+   - View full ticket details
+   - Mark tickets as "In Progress" or "Resolved"
+
+   How to access: Log in as admin (admin@test.com / admin), then click the
+   "Admin" button that appears in the top navigation bar.
+
+
+4. IMPROVED THE LOOK AND FEEL
+-----------------------------
+   Changes made:
+   - Admin Dashboard now matches the rest of the app's design
+   - Buttons have helpful tooltips when you hover over them
+   - Contact Support button has its own row for better visibility
+   - Colors and styles are consistent throughout
+
+
+ADMIN ACCOUNT INFORMATION
+=========================
+   Email: admin@test.com
+   Password: admin
+
+   Use this account to access the Admin Dashboard and manage support tickets.
+
+
+HOW TO TEST THE NEW FEATURES
+============================
+
+Test DegreeWorks Upload:
+   1. Log in to your account
+   2. Go to your Profile page
+   3. Click "Connect DegreeWorks"
+   4. Select your DegreeWorks PDF
+   5. Check if your credits, classification, and GPA show correctly
+
+Test Contact Support:
+   1. Log in to your account
+   2. Open the sidebar (click the logo/hamburger icon)
+   3. Click "Contact Support"
+   4. Fill out the form and submit
+   5. You should see a success message
+
+Test Admin Features:
+   1. Log in with admin@test.com / admin
+   2. Click "Admin" button in the navigation bar
+   3. Click "Support Tickets" tab
+   4. You should see any tickets that have been submitted
+
+
+SUMMARY
+=======
+This session focused on three main areas:
+   1. Making the DegreeWorks PDF upload work properly
+   2. Adding a way for students to report issues
+   3. Creating a way for admins to see and respond to those issues
+
+All these features are now working and ready to use!
+
+================================================================================

@@ -1,3 +1,7 @@
+import sys
+# Force unbuffered output so we see logs immediately
+sys.stdout.reconfigure(line_buffering=True)
+
 print("✅✅✅ main.py loaded successfully")
 
 import os
@@ -60,7 +64,7 @@ from pinecone import Pinecone
 
 # Local Imports (Auth & DB) - These must run AFTER load_dotenv
 from db import SessionLocal, engine, Base
-from models import User
+from models import User, DegreeWorksData, SupportTicket
 from security import hash_password, verify_password, create_access_token
 from jose import JWTError, jwt
 
@@ -142,6 +146,121 @@ def init_db():
                 print("✅ Successfully added 'profile_picture_data' column!")
             except Exception as e:
                 print(f"❌ Failed to add profile_picture_data column: {e}")
+
+        # 4. Add morgan_connected_at column if missing
+        try:
+            conn.execute(text("SELECT morgan_connected_at FROM users LIMIT 1"))
+        except (OperationalError, ProgrammingError):
+            print("⚠️ 'morgan_connected_at' column missing. Adding it now...")
+            try:
+                conn.execute(text("ALTER TABLE users ADD COLUMN morgan_connected_at DATETIME"))
+                conn.commit()
+                print("✅ Successfully added 'morgan_connected_at' column!")
+            except Exception as e:
+                print(f"❌ Failed to add morgan_connected_at column: {e}")
+
+        # 5. Check if degreeworks_data table exists
+        try:
+            conn.execute(text("SELECT id FROM degreeworks_data LIMIT 1"))
+            print("✅ degreeworks_data table exists")
+        except (OperationalError, ProgrammingError):
+            print("⚠️ 'degreeworks_data' table missing. Creating it now...")
+            try:
+                conn.execute(text("""
+                    CREATE TABLE degreeworks_data (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        user_id INT UNIQUE NOT NULL,
+                        student_name VARCHAR(255),
+                        student_id VARCHAR(50),
+                        degree_program VARCHAR(255),
+                        catalog_year VARCHAR(20),
+                        classification VARCHAR(50),
+                        advisor VARCHAR(255),
+                        overall_gpa FLOAT,
+                        major_gpa FLOAT,
+                        total_credits_earned FLOAT,
+                        credits_required FLOAT,
+                        credits_remaining FLOAT,
+                        courses_completed TEXT,
+                        courses_in_progress TEXT,
+                        courses_remaining TEXT,
+                        requirements_status TEXT,
+                        raw_data TEXT,
+                        synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    )
+                """))
+                conn.commit()
+                print("✅ Successfully created 'degreeworks_data' table!")
+            except Exception as e:
+                print(f"❌ Failed to create degreeworks_data table: {e}")
+
+        # 6. Check if support_tickets table exists
+        try:
+            conn.execute(text("SELECT id FROM support_tickets LIMIT 1"))
+            print("✅ support_tickets table exists")
+        except (OperationalError, ProgrammingError):
+            print("⚠️ 'support_tickets' table missing. Creating it now...")
+            try:
+                conn.execute(text("""
+                    CREATE TABLE support_tickets (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        user_id INT NOT NULL,
+                        subject VARCHAR(255) NOT NULL,
+                        category VARCHAR(50) NOT NULL,
+                        description TEXT NOT NULL,
+                        attachment_data LONGTEXT,
+                        attachment_name VARCHAR(255),
+                        status VARCHAR(50) DEFAULT 'open',
+                        priority VARCHAR(20) DEFAULT 'normal',
+                        admin_notes TEXT,
+                        resolved_by INT,
+                        resolved_at DATETIME,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                        FOREIGN KEY (resolved_by) REFERENCES users(id) ON DELETE SET NULL
+                    )
+                """))
+                conn.commit()
+                print("✅ Successfully created 'support_tickets' table!")
+            except Exception as e:
+                print(f"❌ Failed to create support_tickets table: {e}")
+
+    # 7. Create/Update admin account
+    try:
+        db = SessionLocal()
+        admin_email = "admin@test.com"
+        admin_password = "admin"
+
+        existing_admin = db.query(User).filter(User.email == admin_email).first()
+
+        if existing_admin:
+            # Update existing user to admin
+            if existing_admin.role != "admin":
+                existing_admin.role = "admin"
+                db.commit()
+                print(f"✅ Updated {admin_email} to admin role!")
+            else:
+                print(f"✅ Admin account {admin_email} already exists with admin role.")
+        else:
+            # Create new admin account
+            from security import hash_password
+            hashed = hash_password(admin_password)
+            admin_user = User(
+                email=admin_email,
+                password_hash=hashed,
+                role="admin",
+                name="Admin"
+            )
+            db.add(admin_user)
+            db.commit()
+            print(f"✅ Created admin account: {admin_email}")
+
+        db.close()
+    except Exception as e:
+        print(f"❌ Failed to create/update admin account: {e}")
 
 init_db()
 
@@ -247,6 +366,25 @@ class PasswordChangeRequest(BaseModel):
 class TTSRequest(BaseModel):
     text: str
     voice: str = "alloy"  # Options: alloy, echo, fable, onyx, nova, shimmer
+
+# 🔥 DegreeWorks Data Schema
+class DegreeWorksRequest(BaseModel):
+    student_name: Optional[str] = None
+    student_id: Optional[str] = None
+    degree_program: Optional[str] = None
+    catalog_year: Optional[str] = None
+    classification: Optional[str] = None
+    advisor: Optional[str] = None
+    overall_gpa: Optional[float] = None
+    major_gpa: Optional[float] = None
+    total_credits_earned: Optional[float] = None
+    credits_required: Optional[float] = None
+    credits_remaining: Optional[float] = None
+    courses_completed: Optional[List[Dict[str, Any]]] = None  # [{code, name, credits, grade, semester}]
+    courses_in_progress: Optional[List[Dict[str, Any]]] = None  # [{code, name, credits, semester}]
+    courses_remaining: Optional[List[Dict[str, Any]]] = None  # [{code, name, credits, category}]
+    requirements_status: Optional[List[Dict[str, Any]]] = None  # [{category, status, details}]
+    raw_data: Optional[str] = None
 
 # ==============================================================================
 # 7. STATIC DATA & RESOURCES
@@ -435,6 +573,1292 @@ async def connect_morgan(user: dict = Depends(get_current_user), db: Session = D
         db.commit()
     return {"message": "Morgan Connected", "morganConnected": True}
 
+# ==============================================================================
+# DegreeWorks Integration Endpoints
+# ==============================================================================
+
+@app.post("/api/degreeworks/sync")
+async def sync_degreeworks(
+    req: DegreeWorksRequest,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Receives DegreeWorks data from the bookmarklet and saves it to the database.
+    Creates or updates the user's DegreeWorks record.
+    """
+    try:
+        db_user = db.query(User).filter(User.id == user["user_id"]).first()
+        if not db_user:
+            raise HTTPException(404, "User not found")
+
+        # Check if user already has DegreeWorks data
+        existing = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
+
+        if existing:
+            # Update existing record
+            existing.student_name = req.student_name
+            existing.student_id = req.student_id
+            existing.degree_program = req.degree_program
+            existing.catalog_year = req.catalog_year
+            existing.classification = req.classification
+            existing.advisor = req.advisor
+            existing.overall_gpa = req.overall_gpa
+            existing.major_gpa = req.major_gpa
+            existing.total_credits_earned = req.total_credits_earned
+            existing.credits_required = req.credits_required
+            existing.credits_remaining = req.credits_remaining
+            existing.courses_completed = json.dumps(req.courses_completed) if req.courses_completed else None
+            existing.courses_in_progress = json.dumps(req.courses_in_progress) if req.courses_in_progress else None
+            existing.courses_remaining = json.dumps(req.courses_remaining) if req.courses_remaining else None
+            existing.requirements_status = json.dumps(req.requirements_status) if req.requirements_status else None
+            existing.raw_data = req.raw_data
+            existing.updated_at = datetime.utcnow()
+        else:
+            # Create new record
+            new_data = DegreeWorksData(
+                user_id=user["user_id"],
+                student_name=req.student_name,
+                student_id=req.student_id,
+                degree_program=req.degree_program,
+                catalog_year=req.catalog_year,
+                classification=req.classification,
+                advisor=req.advisor,
+                overall_gpa=req.overall_gpa,
+                major_gpa=req.major_gpa,
+                total_credits_earned=req.total_credits_earned,
+                credits_required=req.credits_required,
+                credits_remaining=req.credits_remaining,
+                courses_completed=json.dumps(req.courses_completed) if req.courses_completed else None,
+                courses_in_progress=json.dumps(req.courses_in_progress) if req.courses_in_progress else None,
+                courses_remaining=json.dumps(req.courses_remaining) if req.courses_remaining else None,
+                requirements_status=json.dumps(req.requirements_status) if req.requirements_status else None,
+                raw_data=req.raw_data
+            )
+            db.add(new_data)
+
+        # Update user's morgan_connected status
+        db_user.morgan_connected = True
+        db_user.morgan_connected_at = datetime.utcnow()
+
+        # Update name if provided and not already set
+        if req.student_name and not db_user.name:
+            db_user.name = req.student_name
+        if req.student_id and not db_user.student_id:
+            db_user.student_id = req.student_id
+
+        db.commit()
+
+        return {
+            "success": True,
+            "message": "DegreeWorks data synced successfully!",
+            "data": {
+                "student_name": req.student_name,
+                "degree_program": req.degree_program,
+                "classification": req.classification,
+                "gpa": req.overall_gpa,
+                "credits_earned": req.total_credits_earned
+            }
+        }
+
+    except Exception as e:
+        print(f"❌ DegreeWorks Sync Error: {e}")
+        raise HTTPException(500, f"Failed to sync DegreeWorks data: {str(e)}")
+
+
+@app.get("/api/degreeworks")
+async def get_degreeworks(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Retrieves the user's DegreeWorks data.
+    """
+    dw_data = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
+
+    if not dw_data:
+        return {"connected": False, "data": None}
+
+    return {
+        "connected": True,
+        "data": {
+            "student_name": dw_data.student_name,
+            "student_id": dw_data.student_id,
+            "degree_program": dw_data.degree_program,
+            "catalog_year": dw_data.catalog_year,
+            "classification": dw_data.classification,
+            "advisor": dw_data.advisor,
+            "overall_gpa": dw_data.overall_gpa,
+            "major_gpa": dw_data.major_gpa,
+            "total_credits_earned": dw_data.total_credits_earned,
+            "credits_required": dw_data.credits_required,
+            "credits_remaining": dw_data.credits_remaining,
+            "courses_completed": json.loads(dw_data.courses_completed) if dw_data.courses_completed else [],
+            "courses_in_progress": json.loads(dw_data.courses_in_progress) if dw_data.courses_in_progress else [],
+            "courses_remaining": json.loads(dw_data.courses_remaining) if dw_data.courses_remaining else [],
+            "requirements_status": json.loads(dw_data.requirements_status) if dw_data.requirements_status else [],
+            "synced_at": dw_data.synced_at.isoformat() if dw_data.synced_at else None,
+            "updated_at": dw_data.updated_at.isoformat() if dw_data.updated_at else None
+        }
+    }
+
+
+@app.get("/api/degreeworks/debug")
+async def debug_degreeworks(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Debug endpoint to see ALL extracted DegreeWorks data including raw_data preview.
+    """
+    dw_data = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
+
+    if not dw_data:
+        return {"connected": False, "message": "No DegreeWorks data found for this user"}
+
+    return {
+        "connected": True,
+        "all_fields": {
+            "student_name": dw_data.student_name,
+            "student_id": dw_data.student_id,
+            "degree_program": dw_data.degree_program,
+            "catalog_year": dw_data.catalog_year,
+            "classification": dw_data.classification,
+            "advisor": dw_data.advisor,
+            "overall_gpa": dw_data.overall_gpa,
+            "major_gpa": dw_data.major_gpa,
+            "total_credits_earned": dw_data.total_credits_earned,
+            "credits_required": dw_data.credits_required,
+            "credits_remaining": dw_data.credits_remaining,
+        },
+        "courses_completed_count": len(json.loads(dw_data.courses_completed)) if dw_data.courses_completed else 0,
+        "courses_completed": json.loads(dw_data.courses_completed) if dw_data.courses_completed else [],
+        "raw_data_preview": dw_data.raw_data[:2000] if dw_data.raw_data else "No raw data",
+        "raw_data_full": dw_data.raw_data[:10000] if dw_data.raw_data else "No raw data",
+        "synced_at": dw_data.synced_at.isoformat() if dw_data.synced_at else None,
+    }
+
+
+@app.post("/api/degreeworks/test-pdf-parse")
+async def test_pdf_parse(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user)
+):
+    """
+    Test endpoint that parses a DegreeWorks PDF and returns what was extracted
+    WITHOUT saving to database. Useful for debugging.
+    """
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(400, "Please upload a PDF file")
+
+    try:
+        # Save temporarily
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        temp_filename = f"test_dw_{user['user_id']}_{timestamp}.pdf"
+        temp_filepath = os.path.join(CHAT_FILES_FOLDER, temp_filename)
+
+        with open(temp_filepath, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+
+        # Extract text from PDF
+        pdf_text = ""
+        try:
+            reader = pypdf.PdfReader(temp_filepath)
+            for page in reader.pages:
+                pdf_text += page.extract_text() + "\n"
+        except Exception as e:
+            return {"error": f"Could not read PDF: {e}"}
+
+        # Parse the PDF
+        data = parse_degreeworks_pdf(pdf_text)
+
+        # Clean up temp file
+        try:
+            os.remove(temp_filepath)
+        except:
+            pass
+
+        return {
+            "success": True,
+            "pdf_text_length": len(pdf_text),
+            "pdf_text_preview": pdf_text[:3000],
+            "extracted_data": {
+                "student_name": data.get('student_name'),
+                "student_id": data.get('student_id'),
+                "classification": data.get('classification'),
+                "degree_program": data.get('degree_program'),
+                "overall_gpa": data.get('overall_gpa'),
+                "major_gpa": data.get('major_gpa'),
+                "total_credits_earned": data.get('total_credits_earned'),
+                "credits_required": data.get('credits_required'),
+                "credits_remaining": data.get('credits_remaining'),
+                "advisor": data.get('advisor'),
+                "catalog_year": data.get('catalog_year'),
+                "courses_count": len(json.loads(data.get('courses_completed', '[]'))) if data.get('courses_completed') else 0
+            },
+            "message": "Test parse complete - data NOT saved to database"
+        }
+
+    except Exception as e:
+        return {"error": f"Failed to process PDF: {str(e)}"}
+
+
+@app.delete("/api/degreeworks/disconnect")
+async def disconnect_degreeworks(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Removes the user's DegreeWorks data and disconnects their Morgan account.
+    """
+    try:
+        # Delete DegreeWorks data
+        db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).delete()
+
+        # Update user's morgan_connected status
+        db_user = db.query(User).filter(User.id == user["user_id"]).first()
+        if db_user:
+            db_user.morgan_connected = False
+            db_user.morgan_connected_at = None
+
+        db.commit()
+
+        return {"success": True, "message": "DegreeWorks data disconnected"}
+    except Exception as e:
+        print(f"❌ DegreeWorks Disconnect Error: {e}")
+        raise HTTPException(500, f"Failed to disconnect: {str(e)}")
+
+
+@app.post("/api/degreeworks/upload-pdf")
+async def upload_degreeworks_pdf(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Uploads DegreeWorks PDF and stores the raw text for chat context injection.
+    Uses a "Chat with PDF" approach - the LLM reads the raw text directly.
+    """
+    print("=" * 60)
+    print("🚀 PDF UPLOAD ENDPOINT HIT!")
+    print(f"📄 File received: {file.filename if file else 'NO FILE'}")
+    print(f"📄 User: {user}")
+    print("=" * 60)
+
+    if not file or not file.filename:
+        print("❌ No file provided")
+        raise HTTPException(400, "No file provided")
+
+    if not file.filename.lower().endswith('.pdf'):
+        print(f"❌ Invalid file type: {file.filename}")
+        raise HTTPException(400, "Please upload a PDF file")
+
+    try:
+        # Save the uploaded file temporarily
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        temp_filename = f"degreeworks_{user['user_id']}_{timestamp}.pdf"
+        temp_filepath = os.path.join(CHAT_FILES_FOLDER, temp_filename)
+
+        content = await file.read()
+        print(f"📄 Received PDF file: {file.filename}, size: {len(content)} bytes")
+
+        with open(temp_filepath, "wb") as buffer:
+            buffer.write(content)
+
+        print(f"📄 Saved PDF to: {temp_filepath}")
+
+        # Extract text from PDF - try multiple methods
+        pdf_text = ""
+
+        # Method 1: pypdf
+        try:
+            print("📄 Trying pypdf extraction...")
+            reader = pypdf.PdfReader(temp_filepath)
+            print(f"📄 PDF has {len(reader.pages)} pages")
+            for i, page in enumerate(reader.pages):
+                page_text = page.extract_text()
+                print(f"📄 Page {i+1}: extracted {len(page_text) if page_text else 0} chars")
+                if page_text:
+                    pdf_text += page_text + "\n"
+        except Exception as e:
+            print(f"❌ pypdf extraction failed: {e}")
+
+        # Method 2: Try pdfplumber if pypdf failed or got little text
+        if len(pdf_text.strip()) < 100:
+            try:
+                import pdfplumber
+                print("📄 Trying pdfplumber extraction...")
+                with pdfplumber.open(temp_filepath) as pdf:
+                    print(f"📄 pdfplumber found {len(pdf.pages)} pages")
+                    for i, page in enumerate(pdf.pages):
+                        # Try multiple extraction methods
+                        page_text = page.extract_text() or ""
+
+                        # Also try extracting tables
+                        tables = page.extract_tables()
+                        if tables:
+                            for table in tables:
+                                for row in table:
+                                    if row:
+                                        page_text += " ".join([str(cell) if cell else "" for cell in row]) + "\n"
+
+                        print(f"📄 pdfplumber Page {i+1}: extracted {len(page_text)} chars")
+                        if page_text:
+                            pdf_text += page_text + "\n"
+            except ImportError:
+                print("⚠️ pdfplumber not installed - run: pip install pdfplumber")
+            except Exception as e:
+                print(f"❌ pdfplumber extraction failed: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # Method 3: Try PyMuPDF (fitz) if still no text
+        if len(pdf_text.strip()) < 100:
+            try:
+                import fitz  # PyMuPDF
+                print("📄 Trying PyMuPDF extraction...")
+                doc = fitz.open(temp_filepath)
+                print(f"📄 PyMuPDF found {len(doc)} pages")
+                for i, page in enumerate(doc):
+                    # Try different text extraction methods
+                    page_text = page.get_text("text")  # Plain text
+                    if len(page_text.strip()) < 50:
+                        page_text = page.get_text("blocks")  # Try blocks
+                        if isinstance(page_text, list):
+                            page_text = "\n".join([str(b[4]) if len(b) > 4 else "" for b in page_text])
+                    print(f"📄 PyMuPDF Page {i+1}: extracted {len(page_text) if page_text else 0} chars")
+                    if page_text:
+                        pdf_text += str(page_text) + "\n"
+                doc.close()
+            except ImportError:
+                print("⚠️ PyMuPDF not installed - run: pip install pymupdf")
+            except Exception as e:
+                print(f"❌ PyMuPDF extraction failed: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # Method 4: Try reading raw PDF content for any text
+        if len(pdf_text.strip()) < 100:
+            print("📄 Trying raw PDF text extraction...")
+            try:
+                with open(temp_filepath, 'rb') as f:
+                    raw_content = f.read()
+                # Try to find text streams in PDF
+                import re as regex
+                # Look for text between BT (begin text) and ET (end text) markers
+                text_matches = regex.findall(rb'\(([^)]+)\)', raw_content)
+                raw_text = ""
+                for match in text_matches[:500]:  # Limit to first 500 matches
+                    try:
+                        decoded = match.decode('utf-8', errors='ignore')
+                        if len(decoded) > 2 and decoded.isprintable():
+                            raw_text += decoded + " "
+                    except:
+                        pass
+                if len(raw_text.strip()) > 50:
+                    pdf_text = raw_text
+                    print(f"📄 Raw extraction found {len(raw_text)} chars")
+            except Exception as e:
+                print(f"❌ Raw extraction failed: {e}")
+
+        print(f"📄 Total extracted text: {len(pdf_text)} characters")
+        print(f"📄 Text preview: {pdf_text[:500]}...")
+
+        # Be more lenient - even 20 chars might work for the LLM
+        if len(pdf_text.strip()) < 20:
+            raise HTTPException(400, f"Could not extract text from this PDF. Extracted only {len(pdf_text)} chars. The file may be image-based.")
+
+        print(f"✅ Successfully extracted {len(pdf_text)} characters from DegreeWorks PDF")
+
+        # Try to parse specific fields (best effort)
+        data = parse_degreeworks_pdf(pdf_text)
+
+        # CRITICAL: Always store the raw PDF text - this is used for chat context injection
+        data['raw_data'] = pdf_text[:50000]  # Store up to 50k chars
+
+        # Get or create DegreeWorks record
+        db_user = db.query(User).filter(User.id == user["user_id"]).first()
+        existing = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
+
+        if existing:
+            # Update existing - ALWAYS update raw_data
+            existing.raw_data = data['raw_data']
+            for key, value in data.items():
+                if value is not None and hasattr(existing, key):
+                    setattr(existing, key, value)
+            existing.updated_at = datetime.utcnow()
+        else:
+            # Create new
+            new_data = DegreeWorksData(user_id=user["user_id"], **data)
+            db.add(new_data)
+
+        # Update user's morgan_connected status
+        db_user.morgan_connected = True
+        db_user.morgan_connected_at = datetime.utcnow()
+
+        # Update user name if found
+        if data.get('student_name') and not db_user.name:
+            db_user.name = data['student_name']
+
+        db.commit()
+
+        # Clean up temp file
+        try:
+            os.remove(temp_filepath)
+        except:
+            pass
+
+        return {
+            "success": True,
+            "message": "DegreeWorks PDF uploaded successfully! Your academic data is now available for personalized chat.",
+            "data": {
+                "student_name": data.get('student_name'),
+                "classification": data.get('classification'),
+                "degree_program": data.get('degree_program'),
+                "overall_gpa": data.get('overall_gpa'),
+                "total_credits_earned": data.get('total_credits_earned'),
+                "pdf_text_length": len(pdf_text),
+                "pdf_stored": True
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ DegreeWorks PDF Upload Error: {e}")
+        raise HTTPException(500, f"Failed to process PDF: {str(e)}")
+
+
+@app.post("/api/degreeworks/scrape-html")
+async def scrape_degreeworks_html(
+    request: dict,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Receives raw HTML from DegreeWorks page (via bookmarklet) and extracts academic data.
+    This is the preferred method - more accurate than PDF parsing.
+    """
+    html_content = request.get("html", "")
+
+    if not html_content or len(html_content) < 100:
+        raise HTTPException(400, "No HTML content provided")
+
+    try:
+        # Parse the HTML and extract data
+        data = parse_degreeworks_html(html_content)
+
+        if not data or (not data.get('overall_gpa') and not data.get('classification')):
+            raise HTTPException(400, "Could not extract academic data from this page. Make sure you're on the DegreeWorks audit page.")
+
+        # Get or create DegreeWorks record
+        db_user = db.query(User).filter(User.id == user["user_id"]).first()
+        existing = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
+
+        if existing:
+            # Update existing
+            for key, value in data.items():
+                if value is not None and hasattr(existing, key):
+                    setattr(existing, key, value)
+            existing.updated_at = datetime.utcnow()
+        else:
+            # Create new
+            new_data = DegreeWorksData(user_id=user["user_id"], **data)
+            db.add(new_data)
+
+        # Update user's morgan_connected status
+        db_user.morgan_connected = True
+        db_user.morgan_connected_at = datetime.utcnow()
+
+        # Update user name if found
+        if data.get('student_name') and not db_user.name:
+            db_user.name = data['student_name']
+        if data.get('student_id') and not db_user.student_id:
+            db_user.student_id = data['student_id']
+
+        db.commit()
+
+        return {
+            "success": True,
+            "message": "DegreeWorks data synced successfully!",
+            "data": {
+                "student_name": data.get('student_name'),
+                "classification": data.get('classification'),
+                "degree_program": data.get('degree_program'),
+                "overall_gpa": data.get('overall_gpa'),
+                "major_gpa": data.get('major_gpa'),
+                "total_credits_earned": data.get('total_credits_earned'),
+                "courses_count": len(json.loads(data.get('courses_completed', '[]'))) if data.get('courses_completed') else 0
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ DegreeWorks HTML Scrape Error: {e}")
+        raise HTTPException(500, f"Failed to process DegreeWorks data: {str(e)}")
+
+
+def parse_degreeworks_html(html: str) -> dict:
+    """
+    Parses DegreeWorks HTML and extracts academic data.
+    Based on the DegreeWorks HTML structure.
+    """
+    data = {}
+
+    # First, extract all text content from HTML
+    # Remove script and style tags
+    html_clean = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    html_clean = re.sub(r'<style[^>]*>.*?</style>', '', html_clean, flags=re.DOTALL | re.IGNORECASE)
+    # Remove HTML tags but keep text
+    text = re.sub(r'<[^>]+>', ' ', html_clean)
+    # Clean up whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    text_lower = text.lower()
+
+    # Also keep original HTML for pattern matching
+    html_lower = html.lower()
+
+    # Extract Student Name - look in multiple places
+    name_patterns = [
+        r'student[:\s]+name[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
+        r'name[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
+        r'>([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)</(?:h1|h2|div|span)',
+    ]
+    for pattern in name_patterns:
+        match = re.search(pattern, html)
+        if match:
+            name = match.group(1).strip()
+            if len(name) > 3 and len(name) < 50:
+                data['student_name'] = name
+                break
+
+    # Student ID
+    id_patterns = [
+        r'(?:student\s*)?id[:\s#]*["\']?(\d{7,9})["\']?',
+        r'>\s*(\d{7,9})\s*<',
+    ]
+    for pattern in id_patterns:
+        match = re.search(pattern, html_lower)
+        if match:
+            data['student_id'] = match.group(1)
+            break
+
+    # Overall GPA - this is critical
+    gpa_patterns = [
+        r'overall\s*gpa[:\s]*(\d\.\d{1,2})',
+        r'cumulative\s*gpa[:\s]*(\d\.\d{1,2})',
+        r'gpa[:\s]*(\d\.\d{1,2})',
+        r'>(\d\.\d{2})<.*?gpa',
+        r'gpa.*?>(\d\.\d{2})<',
+    ]
+    for pattern in gpa_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            gpa = float(match.group(1))
+            if 0 <= gpa <= 4.0:
+                data['overall_gpa'] = gpa
+                break
+
+    # Major GPA
+    major_gpa_patterns = [
+        r'major\s*gpa[:\s]*(\d\.\d{1,2})',
+        r'program\s*gpa[:\s]*(\d\.\d{1,2})',
+    ]
+    for pattern in major_gpa_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            data['major_gpa'] = float(match.group(1))
+            break
+
+    # Classification
+    class_patterns = [
+        r'classification[:\s]*(freshman|sophomore|junior|senior|graduate)',
+        r'class[:\s]*(freshman|sophomore|junior|senior|graduate)',
+        r'standing[:\s]*(freshman|sophomore|junior|senior|graduate)',
+        r'>(freshman|sophomore|junior|senior|graduate)<',
+    ]
+    for pattern in class_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            data['classification'] = match.group(1).title()
+            break
+
+    # Degree/Program/Major
+    degree_patterns = [
+        r'(bachelor\s+of\s+science\s+in\s+[a-z\s]+?)(?:\s|<|$)',
+        r'(master\s+of\s+science\s+in\s+[a-z\s]+?)(?:\s|<|$)',
+        r'major[:\s]*(computer\s+science|information\s+(?:systems|science)|cybersecurity|software\s+engineering)',
+        r'program[:\s]*(computer\s+science|information\s+(?:systems|science)|cybersecurity)',
+        r'>(computer\s+science|information\s+systems)<',
+    ]
+    for pattern in degree_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            program = match.group(1).strip().title()
+            if len(program) > 5:
+                data['degree_program'] = program
+                break
+
+    # Credits - look for various patterns
+    credits_patterns = [
+        r'(?:total|earned|completed)\s*(?:credits|hours)[:\s]*(\d{1,3}(?:\.\d)?)',
+        r'(\d{1,3}(?:\.\d)?)\s*(?:credits|hours)\s*(?:earned|completed|total)',
+        r'credits\s*earned[:\s]*(\d{1,3}(?:\.\d)?)',
+        r'hours\s*earned[:\s]*(\d{1,3}(?:\.\d)?)',
+    ]
+    for pattern in credits_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            credits = float(match.group(1))
+            if 0 < credits <= 200:
+                data['total_credits_earned'] = credits
+                break
+
+    # Credits Required
+    req_patterns = [
+        r'(?:credits|hours)\s*required[:\s]*(\d{2,3})',
+        r'required[:\s]*(\d{2,3})\s*(?:credits|hours)',
+        r'total\s*(?:credits|hours)[:\s]*(\d{2,3})',
+    ]
+    for pattern in req_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            req = float(match.group(1))
+            if 60 <= req <= 180:
+                data['credits_required'] = req
+                break
+
+    # Credits Remaining
+    remain_patterns = [
+        r'(?:remaining|still\s*need|left)[:\s]*(\d{1,3}(?:\.\d)?)\s*(?:credits|hours)?',
+        r'(\d{1,3}(?:\.\d)?)\s*(?:credits|hours)\s*(?:remaining|left|needed)',
+    ]
+    for pattern in remain_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            remain = float(match.group(1))
+            if 0 <= remain <= 150:
+                data['credits_remaining'] = remain
+                break
+
+    # Catalog Year
+    catalog_match = re.search(r'(?:catalog|requirement)[:\s]*(\d{4}[-–]\d{4}|\d{4})', text_lower)
+    if catalog_match:
+        data['catalog_year'] = catalog_match.group(1)
+
+    # Advisor
+    advisor_patterns = [
+        r'advisor[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)*)',
+        r'advised\s+by[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+    ]
+    for pattern in advisor_patterns:
+        match = re.search(pattern, text)
+        if match:
+            advisor = match.group(1).strip()
+            if len(advisor) > 3:
+                data['advisor'] = advisor
+                break
+
+    # Extract completed courses - look for course patterns
+    # Pattern: DEPT 123 Course Title Grade Credits Term
+    courses_completed = []
+    course_patterns = [
+        # Standard format: COSC 111 Intro to CS A 3.00 Fall 2024
+        r'([A-Z]{2,4})\s*(\d{3}[A-Z]?)\s+([A-Za-z][A-Za-z\s&\-,]+?)\s+([ABCDF][+-]?)\s+(\d(?:\.\d{1,2})?)\s+((?:Fall|Spring|Summer|Winter)\s*\d{4})',
+        # Without term: COSC 111 Intro to CS A 3.00
+        r'([A-Z]{2,4})\s*(\d{3}[A-Z]?)\s+([A-Za-z][A-Za-z\s&\-,]{3,30}?)\s+([ABCDF][+-]?)\s+(\d(?:\.\d{1,2})?)',
+        # Minimal: COSC 111 A 3.00
+        r'([A-Z]{2,4})\s*(\d{3}[A-Z]?)\s+([ABCDF][+-]?)\s+(\d(?:\.\d{1,2})?)',
+    ]
+
+    seen_courses = set()
+    for pattern in course_patterns:
+        for match in re.finditer(pattern, text):
+            groups = match.groups()
+            if len(groups) >= 4:
+                dept = groups[0]
+                num = groups[1]
+                code = f"{dept} {num}"
+
+                if code in seen_courses:
+                    continue
+                seen_courses.add(code)
+
+                course = {'code': code}
+
+                if len(groups) == 6:  # Full format with term
+                    course['name'] = groups[2].strip()[:50]
+                    course['grade'] = groups[3]
+                    course['credits'] = float(groups[4])
+                    course['term'] = groups[5]
+                elif len(groups) == 5:  # Without term
+                    course['name'] = groups[2].strip()[:50]
+                    course['grade'] = groups[3]
+                    course['credits'] = float(groups[4])
+                elif len(groups) == 4:  # Minimal
+                    course['grade'] = groups[2]
+                    course['credits'] = float(groups[3])
+
+                if course.get('grade') in ['A', 'A-', 'A+', 'B', 'B-', 'B+', 'C', 'C-', 'C+', 'D', 'D-', 'D+', 'F']:
+                    courses_completed.append(course)
+
+    if courses_completed:
+        data['courses_completed'] = json.dumps(courses_completed[:50])  # Limit to 50 courses
+
+    # Extract remaining/needed courses
+    remaining_courses = []
+    still_needed_pattern = r'still\s+need(?:ed)?[:\s]+(.+?)(?:\.|$)'
+    for match in re.finditer(still_needed_pattern, text_lower):
+        req = match.group(1).strip()
+        if len(req) > 5 and len(req) < 200:
+            remaining_courses.append({'requirement': req})
+
+    if remaining_courses:
+        data['courses_remaining'] = json.dumps(remaining_courses[:20])
+
+    # Store raw text for reference (truncated)
+    data['raw_data'] = text[:30000]
+
+    return data
+
+
+def parse_degreeworks_pdf(text: str) -> dict:
+    """
+    Parses DegreeWorks PDF text and extracts academic data.
+    Super enhanced to handle Morgan State DegreeWorks PDF formats.
+    """
+    data = {}
+    text_lower = text.lower()
+
+    # Clean up text - remove extra whitespace but preserve structure
+    text_clean = re.sub(r'[ \t]+', ' ', text)
+    text_lower_clean = text_clean.lower()
+
+    # Debug: print first 1000 chars to see format
+    print("=" * 60)
+    print("📄 PDF TEXT PREVIEW (first 1000 chars):")
+    print("=" * 60)
+    print(text[:1000])
+    print("=" * 60)
+
+    # ============ GPA EXTRACTION (Most Important) ============
+    # Try many different patterns to find GPA
+    gpa_found = False
+
+    # Pattern group 1: Explicit GPA labels
+    gpa_patterns_explicit = [
+        r'overall\s*gpa[:\s]*(\d\.\d{1,2})',
+        r'cumulative\s*gpa[:\s]*(\d\.\d{1,2})',
+        r'gpa[:\s]+(\d\.\d{1,2})',
+        r'overall[:\s]+(\d\.\d{1,2})',
+        r'cumulative[:\s]+(\d\.\d{1,2})',
+        r'grade\s*point\s*average[:\s]*(\d\.\d{1,2})',
+        r'cum\s*gpa[:\s]*(\d\.\d{1,2})',
+        r'inst\s*gpa[:\s]*(\d\.\d{1,2})',  # Institutional GPA
+        r'ovr\s*gpa[:\s]*(\d\.\d{1,2})',   # Abbreviated
+    ]
+
+    for pattern in gpa_patterns_explicit:
+        match = re.search(pattern, text_lower_clean)
+        if match:
+            try:
+                gpa = float(match.group(1))
+                if 0.0 <= gpa <= 4.0:
+                    data['overall_gpa'] = gpa
+                    print(f"✅ Found GPA (explicit): {gpa}")
+                    gpa_found = True
+                    break
+            except: pass
+
+    # Pattern group 2: GPA near keyword (within 30 chars)
+    if not gpa_found:
+        gpa_keywords = ['gpa', 'overall', 'cumulative', 'average', 'grade point']
+        for keyword in gpa_keywords:
+            if keyword in text_lower_clean:
+                # Find position of keyword
+                pos = text_lower_clean.find(keyword)
+                # Look for decimal in nearby text (30 chars before and after)
+                nearby = text_lower_clean[max(0, pos-30):pos+40]
+                decimal_match = re.search(r'(\d\.\d{2})', nearby)
+                if decimal_match:
+                    gpa = float(decimal_match.group(1))
+                    if 0.0 <= gpa <= 4.0:
+                        data['overall_gpa'] = gpa
+                        print(f"✅ Found GPA (near '{keyword}'): {gpa}")
+                        gpa_found = True
+                        break
+
+    # Pattern group 3: Look for X.XX X.XX pattern (often GPA and credits together)
+    if not gpa_found:
+        double_decimal = re.search(r'(\d\.\d{2})\s+(\d{1,3}\.\d{2})', text)
+        if double_decimal:
+            first = float(double_decimal.group(1))
+            if 0.0 <= first <= 4.0:
+                data['overall_gpa'] = first
+                print(f"✅ Found GPA (double pattern): {first}")
+                gpa_found = True
+
+    # Pattern group 4: Find ANY decimal between 1.0 and 4.0 (last resort)
+    if not gpa_found:
+        all_decimals = re.findall(r'(?<!\d)(\d\.\d{2})(?!\d)', text)
+        for dec in all_decimals:
+            val = float(dec)
+            # GPA is typically between 1.0 and 4.0
+            if 1.5 <= val <= 4.0:
+                data['overall_gpa'] = val
+                print(f"✅ Found likely GPA (fallback): {val}")
+                gpa_found = True
+                break
+
+    # ============ CLASSIFICATION ============
+    # BEST APPROACH: Use credits to determine classification (most reliable)
+    # Credits thresholds: Freshman (0-29), Sophomore (30-59), Junior (60-89), Senior (90+)
+
+    # First, try to get credits if we don't have them yet
+    if not data.get('total_credits_earned'):
+        # Quick credits search
+        credits_match = re.search(r'(\d{3}(?:\.\d)?)\s*(?:credits|hours)', text_lower_clean)
+        if credits_match:
+            try:
+                data['total_credits_earned'] = float(credits_match.group(1))
+            except:
+                pass
+
+    # Now determine classification from credits (MOST RELIABLE METHOD)
+    if data.get('total_credits_earned'):
+        credits = data['total_credits_earned']
+        if credits >= 90:
+            data['classification'] = 'Senior'
+        elif credits >= 60:
+            data['classification'] = 'Junior'
+        elif credits >= 30:
+            data['classification'] = 'Sophomore'
+        else:
+            data['classification'] = 'Freshman'
+        print(f"✅ Classification from credits ({credits}): {data['classification']}")
+    else:
+        # Fallback: Look for explicit "Senior", "Junior" etc. in specific contexts
+        # But ONLY if preceded by "Classification" to avoid course names
+        class_match = re.search(r'classification[:\s]*(senior|junior|sophomore|freshman|graduate)', text_lower_clean)
+        if class_match:
+            data['classification'] = class_match.group(1).title()
+            print(f"✅ Classification from label: {data['classification']}")
+
+    # ============ CREDITS ============
+    credits_found = False
+
+    # IMPORTANT: Look for LABELED credits first (e.g., "Credits applied: 124")
+    # Avoid picking up "100%" or "100 %" which is percentage, not credits
+    credits_patterns = [
+        # DegreeWorks specific patterns
+        r'credits\s*applied[:\s]*(\d{2,3}(?:\.\d{1,2})?)',  # "Credits applied: 124.0"
+        r'credits\s*earned[:\s]*(\d{2,3}(?:\.\d{1,2})?)',   # "Credits earned: 124"
+        r'credits\s*required[:\s]*(\d{2,3}(?:\.\d{1,2})?)',  # "Credits required: 120"
+        r'total\s*credits[:\s]*(\d{2,3}(?:\.\d{1,2})?)',     # "Total credits: 124"
+        r'hours\s*earned[:\s]*(\d{2,3}(?:\.\d{1,2})?)',      # "Hours earned: 124"
+        r'transfer\s*hours[:\s]*(\d{2,3}(?:\.\d{1,2})?)',    # "Transfer Hours: 41"
+        # More general patterns
+        r'(\d{2,3}(?:\.\d{1,2})?)\s*credits?\s*(?:applied|earned|completed)',
+        r'(\d{2,3}(?:\.\d{1,2})?)\s*(?:credit\s*)?hours?\s*(?:earned|completed)',
+    ]
+
+    for pattern in credits_patterns:
+        match = re.search(pattern, text_lower_clean)
+        if match:
+            try:
+                credits = float(match.group(1))
+                # Must be between 30-200 and NOT be 100 (which is often percentage)
+                if 30 <= credits <= 200 and credits != 100:
+                    data['total_credits_earned'] = credits
+                    print(f"✅ Found Credits (explicit): {credits}")
+                    credits_found = True
+                    break
+            except: pass
+
+    # If we found 100, double-check it's not from "100%" - look for a different number
+    if not credits_found:
+        # Look specifically for numbers > 100 or numbers like 124, 120, etc.
+        credit_match = re.search(r'(?:credits?|hours?)\s*(?:applied|earned|required)[:\s]*(\d{3}(?:\.\d)?)', text_lower_clean)
+        if credit_match:
+            credits = float(credit_match.group(1))
+            if 100 < credits <= 200:
+                data['total_credits_earned'] = credits
+                print(f"✅ Found Credits (3-digit): {credits}")
+                credits_found = True
+
+    # Fallback: Look for "124.0" or "120.0" pattern (common credit amounts)
+    if not credits_found:
+        common_credits = re.findall(r'(\d{3}\.\d)\b', text)
+        for c in common_credits:
+            val = float(c)
+            if 100 < val <= 150:  # Typical total credits range
+                data['total_credits_earned'] = val
+                print(f"✅ Found Credits (common pattern): {val}")
+                credits_found = True
+                break
+
+    # Pattern group 3: Look for standalone numbers that could be credits (last resort)
+    if not credits_found:
+        # Find 2-3 digit numbers
+        all_numbers = re.findall(r'(?<!\d)(\d{2,3})(?:\.\d{1,2})?(?!\d)', text)
+        for num in all_numbers:
+            val = int(num)
+            # Credits typically between 30 and 150 for enrolled students
+            if 30 <= val <= 150:
+                data['total_credits_earned'] = float(val)
+                print(f"✅ Found likely Credits (fallback): {val}")
+                credits_found = True
+                break
+
+    # ============ DEGREE PROGRAM ============
+    degree_patterns = [
+        r'(bachelor\s+of\s+science\s+in\s+[a-z\s]+)',
+        r'(master\s+of\s+science\s+in\s+[a-z\s]+)',
+        r'(b\.?s\.?\s+(?:in\s+)?computer\s+science)',
+        r'(computer\s+science)',
+        r'(information\s+(?:systems?|science))',
+        r'(cybersecurity)',
+        r'(software\s+engineering)',
+        r'(electrical\s+engineering)',
+        r'major[:\s]*([a-z\s]+?)(?:\n|$)',
+        r'program[:\s]*([a-z\s]+?)(?:\n|$)',
+        r'degree[:\s]*([a-z\s]+?)(?:\n|$)',
+    ]
+    for pattern in degree_patterns:
+        match = re.search(pattern, text_lower_clean)
+        if match:
+            program = match.group(1).strip().title()
+            if len(program) > 3 and len(program) < 60:
+                data['degree_program'] = program
+                print(f"✅ Found Program: {program}")
+                break
+
+    # ============ STUDENT NAME ============
+    # Look for patterns like "Name: John Smith" or just capitalized names at start
+    name_patterns = [
+        r'(?:student|name)[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
+        r'^([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',  # At start of text
+    ]
+    for pattern in name_patterns:
+        match = re.search(pattern, text_clean, re.MULTILINE)
+        if match:
+            name = match.group(1).strip()
+            if 3 < len(name) < 50:
+                data['student_name'] = name
+                print(f"✅ Found Name: {name}")
+                break
+
+    # ============ STUDENT ID ============
+    id_match = re.search(r'(?:id|student)[:\s#]*(\d{7,9})', text_lower_clean)
+    if id_match:
+        data['student_id'] = id_match.group(1)
+        print(f"✅ Found Student ID: {data['student_id']}")
+    else:
+        # Just look for any 7-9 digit number
+        id_match = re.search(r'(?<!\d)(\d{7,9})(?!\d)', text)
+        if id_match:
+            data['student_id'] = id_match.group(1)
+
+    # ============ ADVISOR ============
+    # Look for advisor name in DegreeWorks format
+    # Example formats: "Advisor Md/dr Blakeley", "Advisor: Dr. Smith", "Advisor Walden Blakeley"
+
+    # Words that are NOT advisor names
+    not_advisor_words = [
+        'prerequisite', 'prerequsite', 'required', 'complete', 'incomplete',
+        'pending', 'satisfied', 'unsatisfied', 'needed', 'met', 'unmet',
+        'information', 'course', 'credit', 'hours', 'gpa', 'grade'
+    ]
+
+    # Try multiple patterns
+    advisor_found = False
+
+    # Pattern 1: "Advisor" followed by title and name (e.g., "Advisor Md/dr Blakeley")
+    advisor_match = re.search(r'advisor[:\s]+(?:md/?dr\.?|dr\.?|mr\.?|ms\.?|mrs\.?|prof\.?)?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', text_clean, re.IGNORECASE)
+    if advisor_match:
+        advisor = advisor_match.group(1).strip()
+        if advisor.lower() not in not_advisor_words and len(advisor) > 2:
+            data['advisor'] = advisor
+            advisor_found = True
+            print(f"✅ Found Advisor: {advisor}")
+
+    # Pattern 2: Look for name after "Advisor" with more flexible matching
+    if not advisor_found:
+        # Find the word "Advisor" and grab the next 2-3 words
+        advisor_pos = text_clean.lower().find('advisor')
+        if advisor_pos != -1:
+            # Get text after "Advisor"
+            after_advisor = text_clean[advisor_pos + 7:advisor_pos + 50].strip()
+            # Split into words and take first 1-2 capitalized words
+            words = after_advisor.split()
+            name_parts = []
+            for word in words[:3]:
+                # Skip titles and non-names
+                clean_word = re.sub(r'[^a-zA-Z]', '', word)
+                if clean_word and clean_word.lower() not in not_advisor_words:
+                    if clean_word[0].isupper() and len(clean_word) > 2:
+                        name_parts.append(clean_word)
+                        if len(name_parts) >= 2:
+                            break
+            if name_parts:
+                data['advisor'] = ' '.join(name_parts)
+                print(f"✅ Found Advisor (parsed): {data['advisor']}")
+
+    # ============ CATALOG YEAR ============
+    catalog_match = re.search(r'(?:catalog|requirement|year)[:\s]*(\d{4}[-–]\d{4}|\d{4})', text_lower_clean)
+    if catalog_match:
+        data['catalog_year'] = catalog_match.group(1)
+        print(f"✅ Found Catalog Year: {data['catalog_year']}")
+
+    # ============ COURSES ============
+    courses_completed = []
+    # Various course code patterns
+    course_patterns = [
+        r'([A-Z]{2,4})\s*(\d{3}[A-Z]?)\s+([A-Za-z][A-Za-z\s&\-,\.]+?)\s+([ABCDF][+-]?)\s+(\d(?:\.\d{1,2})?)',
+        r'([A-Z]{2,4})\s*(\d{3}[A-Z]?)\s+([ABCDF][+-]?)\s+(\d(?:\.\d{1,2})?)',
+        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)',  # Just course codes
+    ]
+
+    seen_courses = set()
+    for pattern in course_patterns:
+        for match in re.finditer(pattern, text_clean):
+            groups = match.groups()
+            dept = groups[0]
+            num = groups[1]
+            code = f"{dept} {num}"
+
+            if code in seen_courses:
+                continue
+            seen_courses.add(code)
+
+            course = {'code': code}
+            if len(groups) >= 5:
+                course['name'] = groups[2].strip()[:50]
+                course['grade'] = groups[3]
+                course['credits'] = float(groups[4])
+            elif len(groups) >= 4:
+                course['grade'] = groups[2]
+                course['credits'] = float(groups[3])
+
+            courses_completed.append(course)
+
+    if courses_completed:
+        data['courses_completed'] = json.dumps(courses_completed[:50])
+        print(f"✅ Found {len(courses_completed)} courses")
+
+    # Store raw text for debugging
+    data['raw_data'] = text[:30000]
+
+    print("=" * 60)
+    print("📊 EXTRACTION SUMMARY:")
+    print(f"   GPA: {data.get('overall_gpa', 'NOT FOUND')}")
+    print(f"   Credits: {data.get('total_credits_earned', 'NOT FOUND')}")
+    print(f"   Classification: {data.get('classification', 'NOT FOUND')}")
+    print(f"   Program: {data.get('degree_program', 'NOT FOUND')}")
+    print(f"   Name: {data.get('student_name', 'NOT FOUND')}")
+    print("=" * 60)
+
+    return data
+
+
+# ==============================================================================
+# SUPPORT TICKETS API
+# ==============================================================================
+
+class TicketCreate(BaseModel):
+    subject: str
+    category: str  # "bug", "feature", "question", "other"
+    description: str
+    attachment_data: Optional[str] = None  # Base64 encoded
+    attachment_name: Optional[str] = None
+
+
+class TicketUpdate(BaseModel):
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    admin_notes: Optional[str] = None
+
+
+@app.post("/api/tickets")
+async def create_ticket(
+    ticket: TicketCreate,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new support ticket"""
+    try:
+        new_ticket = SupportTicket(
+            user_id=user["user_id"],
+            subject=ticket.subject,
+            category=ticket.category,
+            description=ticket.description,
+            attachment_data=ticket.attachment_data,
+            attachment_name=ticket.attachment_name,
+            status="open",
+            priority="normal"
+        )
+        db.add(new_ticket)
+        db.commit()
+        db.refresh(new_ticket)
+
+        print(f"📩 New support ticket #{new_ticket.id} from user {user['email']}: {ticket.subject}")
+
+        return {
+            "success": True,
+            "message": "Ticket submitted successfully! We'll review it soon.",
+            "ticket_id": new_ticket.id
+        }
+    except Exception as e:
+        print(f"❌ Ticket creation error: {e}")
+        raise HTTPException(500, f"Failed to create ticket: {str(e)}")
+
+
+@app.get("/api/tickets/my")
+async def get_my_tickets(
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get current user's tickets"""
+    tickets = db.query(SupportTicket).filter(
+        SupportTicket.user_id == user["user_id"]
+    ).order_by(SupportTicket.created_at.desc()).all()
+
+    return {
+        "tickets": [
+            {
+                "id": t.id,
+                "subject": t.subject,
+                "category": t.category,
+                "status": t.status,
+                "priority": t.priority,
+                "created_at": t.created_at.isoformat(),
+                "admin_notes": t.admin_notes
+            }
+            for t in tickets
+        ]
+    }
+
+
+@app.get("/api/tickets")
+async def get_all_tickets(
+    status: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all tickets (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin access required")
+
+    query = db.query(SupportTicket).order_by(SupportTicket.created_at.desc())
+
+    if status:
+        query = query.filter(SupportTicket.status == status)
+
+    tickets = query.all()
+
+    return {
+        "tickets": [
+            {
+                "id": t.id,
+                "user_id": t.user_id,
+                "user_email": db.query(User).filter(User.id == t.user_id).first().email if t.user_id else None,
+                "subject": t.subject,
+                "category": t.category,
+                "description": t.description,
+                "status": t.status,
+                "priority": t.priority,
+                "admin_notes": t.admin_notes,
+                "attachment_name": t.attachment_name,
+                "has_attachment": bool(t.attachment_data),
+                "created_at": t.created_at.isoformat(),
+                "updated_at": t.updated_at.isoformat() if t.updated_at else None
+            }
+            for t in tickets
+        ],
+        "total": len(tickets)
+    }
+
+
+@app.get("/api/tickets/{ticket_id}")
+async def get_ticket(
+    ticket_id: int,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get a specific ticket"""
+    ticket = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).first()
+
+    if not ticket:
+        raise HTTPException(404, "Ticket not found")
+
+    # Users can only view their own tickets, admins can view all
+    if user.get("role") != "admin" and ticket.user_id != user["user_id"]:
+        raise HTTPException(403, "Not authorized to view this ticket")
+
+    return {
+        "id": ticket.id,
+        "user_id": ticket.user_id,
+        "subject": ticket.subject,
+        "category": ticket.category,
+        "description": ticket.description,
+        "status": ticket.status,
+        "priority": ticket.priority,
+        "admin_notes": ticket.admin_notes,
+        "attachment_data": ticket.attachment_data,
+        "attachment_name": ticket.attachment_name,
+        "created_at": ticket.created_at.isoformat(),
+        "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None
+    }
+
+
+@app.put("/api/tickets/{ticket_id}")
+async def update_ticket(
+    ticket_id: int,
+    update: TicketUpdate,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update a ticket (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin access required")
+
+    ticket = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).first()
+
+    if not ticket:
+        raise HTTPException(404, "Ticket not found")
+
+    if update.status:
+        ticket.status = update.status
+        if update.status == "resolved":
+            ticket.resolved_by = user["user_id"]
+            ticket.resolved_at = datetime.utcnow()
+
+    if update.priority:
+        ticket.priority = update.priority
+
+    if update.admin_notes is not None:
+        ticket.admin_notes = update.admin_notes
+
+    db.commit()
+
+    return {"success": True, "message": "Ticket updated successfully"}
+
+
+@app.get("/api/tickets/stats/summary")
+async def get_ticket_stats(
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get ticket statistics (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin access required")
+
+    total = db.query(SupportTicket).count()
+    open_count = db.query(SupportTicket).filter(SupportTicket.status == "open").count()
+    in_progress = db.query(SupportTicket).filter(SupportTicket.status == "in_progress").count()
+    resolved = db.query(SupportTicket).filter(SupportTicket.status == "resolved").count()
+
+    return {
+        "total": total,
+        "open": open_count,
+        "in_progress": in_progress,
+        "resolved": resolved
+    }
+
+
 # --- AI Initialization ---
 pc = None
 retriever = None
@@ -489,7 +1913,7 @@ def extract_file_content(filepath: str) -> str:
     # Limit content to ~15k chars to fit context window
     return text[:15000]
 
-# --- CHAT ROUTES (WITH CONVERSATION MEMORY) ---
+# --- CHAT ROUTES (WITH CONVERSATION MEMORY + PERSONALIZATION) ---
 @app.post("/chat")
 async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: Session = Depends(get_db)):
     if not user: raise HTTPException(401, "Unauthorized")
@@ -497,7 +1921,81 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     user_q = req.query.strip()
     session_id = req.session_id or "default"
 
-    # 🔥 NEW: Fetch recent conversation history for context (last 6 exchanges)
+    # 🔥 Fetch user's DegreeWorks data for personalization
+    student_context = ""
+    has_student_data = False
+    has_raw_pdf_data = False
+    dw_data = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
+    if dw_data:
+        has_student_data = True
+        student_context = "\n" + "="*60 + "\n"
+        student_context += "🎓 THIS STUDENT'S DEGREEWORKS ACADEMIC RECORD:\n"
+        student_context += "="*60 + "\n\n"
+
+        # 🔥 CRITICAL: If we have raw PDF text, inject it directly!
+        # This is the "Chat with PDF" approach - let the LLM read the actual document
+        if dw_data.raw_data and len(dw_data.raw_data) > 100:
+            has_raw_pdf_data = True
+            student_context += "📄 FULL DEGREEWORKS DOCUMENT CONTENT:\n"
+            student_context += "-"*40 + "\n"
+            # Include up to 15000 chars of raw PDF text for context
+            student_context += dw_data.raw_data[:15000] + "\n"
+            student_context += "-"*40 + "\n\n"
+
+        # Also include any parsed fields we found (as a summary)
+        student_context += "📊 PARSED SUMMARY (if available):\n"
+        if dw_data.student_name:
+            student_context += f"• Student Name: {dw_data.student_name}\n"
+        if dw_data.student_id:
+            student_context += f"• Student ID: {dw_data.student_id}\n"
+        if dw_data.classification:
+            student_context += f"• Classification: {dw_data.classification}\n"
+        if dw_data.degree_program:
+            student_context += f"• Degree Program: {dw_data.degree_program}\n"
+        if dw_data.overall_gpa:
+            student_context += f"• Overall GPA: {dw_data.overall_gpa}\n"
+        if dw_data.major_gpa:
+            student_context += f"• Major GPA: {dw_data.major_gpa}\n"
+        if dw_data.total_credits_earned:
+            student_context += f"• Credits Earned: {dw_data.total_credits_earned}\n"
+        if dw_data.credits_required:
+            student_context += f"• Credits Required: {dw_data.credits_required}\n"
+        if dw_data.credits_remaining:
+            student_context += f"• Credits Remaining: {dw_data.credits_remaining}\n"
+        if dw_data.advisor:
+            student_context += f"• Academic Advisor: {dw_data.advisor}\n"
+        if dw_data.catalog_year:
+            student_context += f"• Catalog Year: {dw_data.catalog_year}\n"
+        if dw_data.courses_completed:
+            try:
+                completed = json.loads(dw_data.courses_completed)
+                if completed:
+                    student_context += f"• Courses Completed ({len(completed)} total):\n"
+                    for c in completed[:20]:
+                        grade = c.get('grade', '')
+                        name = c.get('name', '')
+                        student_context += f"  - {c.get('code', '')} {name} (Grade: {grade})\n"
+            except: pass
+        if dw_data.courses_in_progress:
+            try:
+                in_progress = json.loads(dw_data.courses_in_progress)
+                if in_progress:
+                    student_context += f"• Currently Enrolled In:\n"
+                    for c in in_progress:
+                        student_context += f"  - {c.get('code', '')} {c.get('name', '')}\n"
+            except: pass
+        if dw_data.courses_remaining:
+            try:
+                remaining = json.loads(dw_data.courses_remaining)
+                if remaining:
+                    student_context += f"• Still Needs to Complete:\n"
+                    for c in remaining[:10]:
+                        req = c.get('requirement', c.get('code', ''))
+                        student_context += f"  - {req}\n"
+            except: pass
+        student_context += "="*60 + "\n\n"
+
+    # 🔥 Fetch recent conversation history for context (last 6 exchanges)
     recent_history = db.query(ChatHistory)\
         .filter(ChatHistory.user_id == user["user_id"])\
         .filter(ChatHistory.session_id == session_id)\
@@ -528,10 +2026,12 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
         if os.path.exists(filepath):
             file_content = extract_file_content(filepath)
 
-            # Construct Prompt with File Content + Conversation Context
-            system_msg = """You are a helpful academic assistant for Morgan State University's Computer Science department.
+            # Construct Prompt with File Content + Conversation Context + Student Profile
+            system_msg = f"""You are a helpful academic assistant for Morgan State University's Computer Science department.
 Use the provided file content and conversation history to answer the user's question.
-Remember the context of the conversation and provide relevant follow-up information."""
+Remember the context of the conversation and provide relevant follow-up information.
+{student_context}
+If you have the student's profile data above, use it to give personalized recommendations."""
 
             clean_query = re.sub(r'\[.*?\]\(.*?\)', '', user_q).strip()
             if not clean_query: clean_query = "Summarize this file."
@@ -578,26 +2078,60 @@ Remember the context of the conversation and provide relevant follow-up informat
                 docs = retriever.get_relevant_documents(enhanced_query if is_follow_up else user_q)
                 context_docs = "\n\n".join([doc.page_content for doc in docs[:4]])
 
-                # 🔥 NEW: Build smart prompt with conversation history
-                system_prompt = """You are CS Navigator, an intelligent academic assistant for Morgan State University's Computer Science department.
+                # 🔥 Build smart prompt with conversation history + student profile
+                personalization_note = ""
+                if has_student_data:
+                    if has_raw_pdf_data:
+                        personalization_note = """
+⚠️ CRITICAL - THIS STUDENT HAS UPLOADED THEIR DEGREEWORKS DOCUMENT:
+Below you will see the FULL TEXT of this student's DegreeWorks academic audit.
+READ IT CAREFULLY and use it to answer ANY questions about:
+- Their GPA (look for "GPA", "Overall", "Cumulative" in the document)
+- Their courses completed (look for course codes like COSC 111, MATH 201, etc.)
+- Their credits earned (look for "hours", "credits", "earned")
+- Their classification (Freshman/Sophomore/Junior/Senior)
+- Their degree requirements and what they still need
 
+IMPORTANT: The answer to their question IS IN THE DOCUMENT. Search through it!
+DO NOT say "I don't have access to your data" - the DegreeWorks document is provided below!
+"""
+                    else:
+                        personalization_note = """
+⚠️ CRITICAL - PERSONALIZED RESPONSES REQUIRED:
+This student has synced their DegreeWorks data. Use their personal academic data when answering questions about:
+- Their GPA, courses, classification, advisor, credits, and remaining requirements
+
+DO NOT say "I don't have access to your data" - their profile data is provided below!
+"""
+
+                system_prompt = f"""You are CS Navigator, an intelligent academic assistant for Morgan State University's Computer Science department.
+{personalization_note}
 Your role:
 - Help students with questions about courses, professors, requirements, and academic resources
+- When the student asks about THEIR personal academic info (GPA, courses, credits, advisor), ALWAYS check the DEGREEWORKS DOCUMENT or STUDENT DATA section below first
+- READ the full document content to find the answer - the info IS there
 - Remember the conversation context and provide coherent follow-up responses
-- When users ask follow-up questions like "tell me more" or "who is that", refer back to the previous context
 - Be specific and helpful - provide names, details, and actionable information
-- If you don't know something, say so honestly
 
-Important: Pay attention to pronouns and references to previous topics. If the user says "tell me more about it" or "who is he/she", refer to the most recent relevant topic from the conversation."""
+Important rules:
+1. If a DegreeWorks document is provided, READ it to find GPA, courses, credits, etc.
+2. The answer to personal academic questions is IN the document - search for it
+3. Pay attention to pronouns and references to previous topics
+4. If you truly can't find something in the document, say so honestly"""
 
                 # Build the full message with context
                 full_message = ""
+
+                # Add student profile if available
+                if student_context:
+                    full_message += student_context
+
                 if conversation_context:
                     full_message += conversation_context
 
                 full_message += f"Relevant knowledge base information:\n{context_docs}\n\n"
                 full_message += f"Current question: {user_q}\n\n"
-                full_message += "Please provide a helpful, specific answer. If this is a follow-up question, make sure to connect it to the previous conversation context."
+                full_message += "Please provide a helpful, specific answer. If this is a follow-up question, make sure to connect it to the previous conversation context. If you have student profile data, use it to personalize your response."
 
                 # Use LLM directly with full context
                 response = llm([
@@ -703,11 +2237,19 @@ async def text_to_speech(req: TTSRequest, user=Depends(get_current_user)):
 @app.get("/api/popular-questions")
 async def get_popular_questions(db: Session = Depends(get_db)):
     """
-    Analyze chat_history to find the most frequently asked question patterns.
-    Returns top 3-5 questions to show on the welcome screen.
+    Returns 6 questions:
+    - 2 most frequently asked (from user data)
+    - 2 trending (recent popular questions)
+    - 2 general questions (hardcoded)
     """
     try:
-        # Query all user questions (across ALL users for global trending)
+        # 2 General questions (always shown)
+        general_questions = [
+            "What internship opportunities are available?",
+            "How do I contact my academic advisor?"
+        ]
+
+        # Query ALL user questions to find most frequent and trending
         queries = db.query(ChatHistory.user_query)\
             .filter(ChatHistory.user_query.isnot(None))\
             .filter(ChatHistory.user_query != "")\
@@ -715,30 +2257,23 @@ async def get_popular_questions(db: Session = Depends(get_db)):
             .limit(1000)\
             .all()
 
-        if not queries:
-            # Return default suggestions if no history
-            return {
-                "questions": [
-                    "Who is the chair of computer science?",
-                    "What are the degree requirements?",
-                    "When do classes start for Fall 2025?"
-                ]
-            }
-
         # Clean and normalize questions
         def normalize_question(q):
             if not q:
                 return None
-            # Remove special chars, lowercase, strip
-            q = re.sub(r'[^\w\s?]', '', q.lower().strip())
-            # Remove common greetings to focus on actual questions
-            greetings = ['hi', 'hello', 'hey', 'thanks', 'thank you', 'bye', 'goodbye', 'ok', 'okay']
-            if q in greetings or len(q) < 15:
+            original = q.strip()
+            normalized = re.sub(r'[^\w\s?]', '', q.lower().strip())
+            # Skip greetings and short phrases
+            skip_words = ['hi', 'hello', 'hey', 'thanks', 'thank you', 'bye', 'goodbye',
+                          'ok', 'okay', 'yes', 'no', 'sure', 'great']
+            if normalized in skip_words or len(normalized) < 15:
                 return None
-            # Skip file upload messages
-            if 'uploads' in q or 'chat_files' in q:
+            # Skip file uploads and follow-ups
+            if 'uploads' in normalized or 'chat_files' in normalized:
                 return None
-            return q
+            if any(fu in normalized for fu in ['tell me more', 'what about', 'explain more']):
+                return None
+            return original
 
         # Count question frequencies
         question_counts = Counter()
@@ -747,44 +2282,82 @@ async def get_popular_questions(db: Session = Depends(get_db)):
             if normalized:
                 question_counts[normalized] += 1
 
-        # Get top questions (filter out very short ones)
-        top_questions = []
+        # Get 2 MOST FREQUENTLY asked (highest count overall)
+        frequent_questions = []
         for question, count in question_counts.most_common(20):
-            # Only include if asked at least twice and is a real question
-            if count >= 1 and len(question) > 15:
-                # Capitalize first letter properly
+            if count >= 2 and len(question) > 15:  # Asked at least twice
                 formatted = question[0].upper() + question[1:]
                 if not formatted.endswith('?'):
                     formatted += '?'
-                top_questions.append(formatted)
-                if len(top_questions) >= 5:
+                frequent_questions.append(formatted)
+                if len(frequent_questions) >= 2:
                     break
 
-        # If we don't have enough, add defaults
-        defaults = [
-            "Who is the chair of computer science?",
-            "What are the degree requirements?",
-            "When do classes start for Fall 2025?",
+        # Get 2 TRENDING questions (recent but different from frequent)
+        recent_queries = db.query(ChatHistory.user_query)\
+            .filter(ChatHistory.user_query.isnot(None))\
+            .order_by(ChatHistory.timestamp.desc())\
+            .limit(100)\
+            .all()
+
+        recent_counts = Counter()
+        for (query,) in recent_queries:
+            normalized = normalize_question(query)
+            if normalized:
+                recent_counts[normalized] += 1
+
+        trending_questions = []
+        for question, count in recent_counts.most_common(20):
+            # Skip if already in frequent
+            if any(question.lower() in fq.lower() or fq.lower() in question.lower()
+                   for fq in frequent_questions):
+                continue
+            if len(question) > 15:
+                formatted = question[0].upper() + question[1:]
+                if not formatted.endswith('?'):
+                    formatted += '?'
+                trending_questions.append(formatted)
+                if len(trending_questions) >= 2:
+                    break
+
+        # Fallback questions if we don't have enough data
+        fallback_frequent = [
+            "Who is the chair of Computer Science department?",
+            "What are the degree requirements for CS major?"
+        ]
+        fallback_trending = [
             "What programming languages should I learn?",
-            "How do I apply for graduation?"
+            "When is the deadline for course registration?"
         ]
 
-        while len(top_questions) < 3:
-            for d in defaults:
-                if d.lower() not in [q.lower() for q in top_questions]:
-                    top_questions.append(d)
-                    if len(top_questions) >= 3:
-                        break
+        # Fill in with fallbacks if needed
+        while len(frequent_questions) < 2:
+            for fb in fallback_frequent:
+                if fb not in frequent_questions:
+                    frequent_questions.append(fb)
+                    break
 
-        return {"questions": top_questions[:5]}
+        while len(trending_questions) < 2:
+            for fb in fallback_trending:
+                if fb not in trending_questions and fb not in frequent_questions:
+                    trending_questions.append(fb)
+                    break
+
+        # Combine: 2 frequent + 2 trending + 2 general = 6 total
+        all_questions = frequent_questions[:2] + trending_questions[:2] + general_questions[:2]
+
+        return {"questions": all_questions}
 
     except Exception as e:
         print(f"Error fetching popular questions: {e}")
         return {
             "questions": [
-                "Who is the chair of computer science?",
-                "What are the degree requirements?",
-                "When do classes start for Fall 2025?"
+                "Who is the chair of Computer Science department?",
+                "What are the degree requirements for CS major?",
+                "What programming languages should I learn?",
+                "When is the deadline for course registration?",
+                "What internship opportunities are available?",
+                "How do I contact my academic advisor?"
             ]
         }
 
