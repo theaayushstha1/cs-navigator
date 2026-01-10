@@ -2440,6 +2440,369 @@ async def get_curriculum():
 def health():
     return {"status": "ok", "db": "connected", "ai": "ready" if qa else "offline"}
 
+# ==============================================================================
+# ADMIN DASHBOARD ENDPOINTS
+# ==============================================================================
+
+# --- Admin: User Management ---
+@app.get("/api/admin/users")
+async def get_all_users(
+    search: Optional[str] = None,
+    role: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all users (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    query = db.query(User).order_by(User.created_at.desc())
+
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            (User.email.ilike(search_term)) |
+            (User.name.ilike(search_term)) |
+            (User.student_id.ilike(search_term))
+        )
+
+    if role and role != "all":
+        query = query.filter(User.role == role)
+
+    users = query.all()
+
+    return {
+        "users": [
+            {
+                "id": u.id,
+                "email": u.email,
+                "name": u.name,
+                "role": u.role,
+                "student_id": u.student_id,
+                "major": u.major,
+                "morgan_connected": u.morgan_connected,
+                "created_at": u.created_at.isoformat() if u.created_at else None
+            }
+            for u in users
+        ],
+        "total": len(users)
+    }
+
+@app.get("/api/admin/users/stats")
+async def get_user_stats(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get user statistics (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from datetime import timedelta
+    now = datetime.utcnow()
+    week_ago = now - timedelta(days=7)
+    month_ago = now - timedelta(days=30)
+
+    total_users = db.query(User).count()
+    total_students = db.query(User).filter(User.role == "student").count()
+    total_admins = db.query(User).filter(User.role == "admin").count()
+    new_this_week = db.query(User).filter(User.created_at >= week_ago).count()
+    new_this_month = db.query(User).filter(User.created_at >= month_ago).count()
+    morgan_connected = db.query(User).filter(User.morgan_connected == True).count()
+
+    return {
+        "total": total_users,
+        "students": total_students,
+        "admins": total_admins,
+        "new_this_week": new_this_week,
+        "new_this_month": new_this_month,
+        "morgan_connected": morgan_connected
+    }
+
+@app.put("/api/admin/users/{user_id}/role")
+async def update_user_role(
+    user_id: int,
+    new_role: str,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update user role (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    if new_role not in ["student", "admin"]:
+        raise HTTPException(status_code=400, detail="Role must be 'student' or 'admin'")
+
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    target_user.role = new_role
+    db.commit()
+
+    return {"message": f"User {target_user.email} role updated to {new_role}"}
+
+# --- Admin: System Health ---
+@app.get("/api/admin/health")
+async def get_system_health(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get detailed system health (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    health_status = {
+        "database": {"status": "unknown", "message": ""},
+        "pinecone": {"status": "unknown", "message": ""},
+        "openai": {"status": "unknown", "message": ""},
+        "vector_count": 0,
+        "last_check": datetime.utcnow().isoformat()
+    }
+
+    # Check Database
+    try:
+        db.execute(text("SELECT 1"))
+        health_status["database"] = {"status": "connected", "message": "Database connection OK"}
+    except Exception as e:
+        health_status["database"] = {"status": "error", "message": str(e)[:100]}
+
+    # Check Pinecone
+    try:
+        if PINECONE_API_KEY and PINECONE_INDEX:
+            pc = Pinecone(api_key=PINECONE_API_KEY)
+            idx = pc.Index(PINECONE_INDEX)
+            stats = idx.describe_index_stats()
+            vector_count = stats.get("total_vector_count", 0)
+            health_status["pinecone"] = {"status": "connected", "message": f"Index ready with {vector_count} vectors"}
+            health_status["vector_count"] = vector_count
+        else:
+            health_status["pinecone"] = {"status": "not_configured", "message": "API key or index not set"}
+    except Exception as e:
+        health_status["pinecone"] = {"status": "error", "message": str(e)[:100]}
+
+    # Check OpenAI
+    try:
+        if OPENAI_API_KEY:
+            health_status["openai"] = {"status": "configured", "message": "API key present"}
+        else:
+            health_status["openai"] = {"status": "not_configured", "message": "API key not set"}
+    except Exception as e:
+        health_status["openai"] = {"status": "error", "message": str(e)[:100]}
+
+    return health_status
+
+# --- Admin: Course Edit ---
+@app.put("/api/curriculum/{code}")
+async def update_course(code: str, course: Course, user=Depends(get_current_user)):
+    """Update an existing course (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admins only")
+
+    arr = json.load(open(CLASSES_FILE, encoding="utf-8"))
+    found = False
+    for i, c in enumerate(arr):
+        if c.get("course_code") == code:
+            arr[i] = course.dict()
+            found = True
+            break
+
+    if not found:
+        raise HTTPException(status_code=404, detail=f"Course {code} not found")
+
+    json.dump(arr, open(CLASSES_FILE, "w", encoding="utf-8"), indent=2)
+    return {"message": f"Course {code} updated", "course": course}
+
+# --- Admin: Knowledge Base Management ---
+DATA_SOURCES_DIR = os.path.join(BACKEND_DIR, "data_sources")
+
+@app.get("/api/admin/knowledge-base/files")
+async def list_kb_files(user: dict = Depends(get_current_user)):
+    """List all knowledge base JSON files (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    files = []
+    if os.path.exists(DATA_SOURCES_DIR):
+        for f in os.listdir(DATA_SOURCES_DIR):
+            if f.endswith(".json"):
+                filepath = os.path.join(DATA_SOURCES_DIR, f)
+                size = os.path.getsize(filepath)
+                modified = datetime.fromtimestamp(os.path.getmtime(filepath))
+                files.append({
+                    "filename": f,
+                    "size": size,
+                    "modified": modified.isoformat()
+                })
+
+    return {"files": sorted(files, key=lambda x: x["filename"])}
+
+@app.get("/api/admin/knowledge-base/search")
+async def search_kb_files(q: str, user: dict = Depends(get_current_user)):
+    """Search across all knowledge base files (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    if not q or len(q) < 2:
+        return {"results": []}
+
+    results = []
+    search_term = q.lower()
+
+    if os.path.exists(DATA_SOURCES_DIR):
+        for filename in os.listdir(DATA_SOURCES_DIR):
+            if not filename.endswith(".json"):
+                continue
+
+            filepath = os.path.join(DATA_SOURCES_DIR, filename)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                content_lower = content.lower()
+
+                # Find ALL matches in this file
+                idx = 0
+                match_count = 0
+                while True:
+                    idx = content_lower.find(search_term, idx)
+                    if idx == -1:
+                        break
+
+                    match_count += 1
+
+                    # Get context around match (80 chars before and after)
+                    start = max(0, idx - 80)
+                    end = min(len(content), idx + len(q) + 80)
+                    context = content[start:end]
+
+                    # Clean up context (remove newlines for display)
+                    context = context.replace('\n', ' ').replace('\r', '')
+
+                    # Find the match in context and highlight it
+                    match_start_in_context = idx - start
+                    actual_match = content[idx:idx+len(q)]
+
+                    # Build highlighted context
+                    highlighted = (
+                        context[:match_start_in_context] +
+                        f"<mark>{actual_match}</mark>" +
+                        context[match_start_in_context + len(q):]
+                    )
+
+                    results.append({
+                        "filename": filename,
+                        "context": "..." + highlighted.strip() + "...",
+                        "position": idx,
+                        "match_number": match_count
+                    })
+
+                    idx += len(q)
+
+                    # Limit matches per file to 10
+                    if match_count >= 10:
+                        break
+
+            except Exception as e:
+                continue
+
+    # Sort by filename, then position
+    results.sort(key=lambda x: (x["filename"], x.get("position", 0)))
+
+    return {"results": results[:50], "total_matches": len(results)}
+
+@app.get("/api/admin/knowledge-base/{filename}")
+async def get_kb_file(filename: str, user: dict = Depends(get_current_user)):
+    """Get content of a knowledge base file (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    if not filename.endswith(".json"):
+        raise HTTPException(status_code=400, detail="Only JSON files allowed")
+
+    filepath = os.path.join(DATA_SOURCES_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = json.load(f)
+        return {"filename": filename, "content": content}
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Invalid JSON: {str(e)}")
+
+@app.put("/api/admin/knowledge-base/{filename}")
+async def update_kb_file(filename: str, content: dict, user: dict = Depends(get_current_user)):
+    """Update a knowledge base file (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    if not filename.endswith(".json"):
+        raise HTTPException(status_code=400, detail="Only JSON files allowed")
+
+    filepath = os.path.join(DATA_SOURCES_DIR, filename)
+
+    # Create backup
+    if os.path.exists(filepath):
+        backup_path = filepath + ".backup"
+        shutil.copy(filepath, backup_path)
+
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(content, f, indent=2, ensure_ascii=False)
+        return {"message": f"File {filename} updated successfully"}
+    except Exception as e:
+        # Restore backup on failure
+        if os.path.exists(filepath + ".backup"):
+            shutil.copy(filepath + ".backup", filepath)
+        raise HTTPException(status_code=500, detail=f"Failed to save: {str(e)}")
+
+@app.post("/api/admin/knowledge-base/ingest")
+async def trigger_ingestion(user: dict = Depends(get_current_user)):
+    """Trigger knowledge base re-ingestion (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        # Import and run ingestion
+        from ingestion import ingest_data
+        import asyncio
+        await ingest_data()
+        return {"message": "Ingestion completed successfully", "timestamp": datetime.utcnow().isoformat()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+# --- Admin: Analytics ---
+@app.get("/api/admin/analytics")
+async def get_analytics(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get usage analytics (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from datetime import timedelta
+    now = datetime.utcnow()
+
+    # User signups by day (last 7 days)
+    signups_by_day = []
+    for i in range(6, -1, -1):
+        day = now - timedelta(days=i)
+        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        count = db.query(User).filter(
+            User.created_at >= day_start,
+            User.created_at < day_end
+        ).count()
+        signups_by_day.append({
+            "date": day_start.strftime("%Y-%m-%d"),
+            "day": day_start.strftime("%a"),
+            "count": count
+        })
+
+    # Ticket stats
+    total_tickets = db.query(SupportTicket).count()
+    open_tickets = db.query(SupportTicket).filter(SupportTicket.status == "open").count()
+
+    return {
+        "signups_by_day": signups_by_day,
+        "total_users": db.query(User).count(),
+        "total_tickets": total_tickets,
+        "open_tickets": open_tickets,
+        "timestamp": now.isoformat()
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=True)

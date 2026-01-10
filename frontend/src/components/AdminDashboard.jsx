@@ -1,5 +1,5 @@
 // src/components/AdminDashboard.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { FaCog } from "@react-icons/all-files/fa/FaCog";
 import { FaTicketAlt } from "@react-icons/all-files/fa/FaTicketAlt";
@@ -10,12 +10,26 @@ import { FaEye } from "@react-icons/all-files/fa/FaEye";
 import { FaTimes } from "@react-icons/all-files/fa/FaTimes";
 import { FaCheck } from "@react-icons/all-files/fa/FaCheck";
 import { FaClock } from "@react-icons/all-files/fa/FaClock";
-import { FaArrowLeft } from "@react-icons/all-files/fa/FaArrowLeft";
 import { FaInbox } from "@react-icons/all-files/fa/FaInbox";
 import { FaExclamationCircle } from "@react-icons/all-files/fa/FaExclamationCircle";
 import { FaSpinner } from "@react-icons/all-files/fa/FaSpinner";
 import { FaCheckCircle } from "@react-icons/all-files/fa/FaCheckCircle";
 import { FaUser } from "@react-icons/all-files/fa/FaUser";
+import { FaUsers } from "@react-icons/all-files/fa/FaUsers";
+import { FaDatabase } from "@react-icons/all-files/fa/FaDatabase";
+import { FaServer } from "@react-icons/all-files/fa/FaServer";
+import { FaChartBar } from "@react-icons/all-files/fa/FaChartBar";
+import { FaEdit } from "@react-icons/all-files/fa/FaEdit";
+import { FaSearch } from "@react-icons/all-files/fa/FaSearch";
+import { FaSync } from "@react-icons/all-files/fa/FaSync";
+import { FaTrash } from "@react-icons/all-files/fa/FaTrash";
+import { FaSave } from "@react-icons/all-files/fa/FaSave";
+import { FaUserShield } from "@react-icons/all-files/fa/FaUserShield";
+import { FaUserGraduate } from "@react-icons/all-files/fa/FaUserGraduate";
+import { FaCalendarPlus } from "@react-icons/all-files/fa/FaCalendarPlus";
+import { FaLink } from "@react-icons/all-files/fa/FaLink";
+import { FaMicrophone } from "@react-icons/all-files/fa/FaMicrophone";
+import { FaStop } from "@react-icons/all-files/fa/FaStop";
 import "./AdminDashboard.css";
 
 // API Base URL - Smart switching
@@ -26,17 +40,18 @@ const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
+  const token = localStorage.getItem("token");
 
-  // form state
+  // Tab state
+  const [activeTab, setActiveTab] = useState("users");
+
+  // Course state
   const [course, setCourse] = useState({
-    course_code: "",
-    course_name: "",
-    credits: "",
-    prerequisites: "",
-    offered: "",
+    course_code: "", course_name: "", credits: "", prerequisites: "", offered: "",
   });
   const [message, setMessage] = useState("");
   const [courses, setCourses] = useState([]);
+  const [editingCourse, setEditingCourse] = useState(null);
 
   // Support Tickets State
   const [tickets, setTickets] = useState([]);
@@ -44,90 +59,606 @@ export default function AdminDashboard() {
   const [ticketFilter, setTicketFilter] = useState("all");
   const [selectedTicket, setSelectedTicket] = useState(null);
   const [ticketLoading, setTicketLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState("courses"); // "courses" or "tickets"
 
-  // load from FastAPI
+  // Users State
+  const [users, setUsers] = useState([]);
+  const [userStats, setUserStats] = useState({ total: 0, students: 0, admins: 0, new_this_week: 0, morgan_connected: 0 });
+  const [userSearch, setUserSearch] = useState("");
+  const [userRoleFilter, setUserRoleFilter] = useState("all");
+  const [usersLoading, setUsersLoading] = useState(false);
+
+  // System Health State
+  const [healthStatus, setHealthStatus] = useState(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+
+  // Knowledge Base State
+  const [kbFiles, setKbFiles] = useState([]);
+  const [selectedKbFile, setSelectedKbFile] = useState(null);
+  const [kbContent, setKbContent] = useState("");
+  const [kbLoading, setKbLoading] = useState(false);
+  const [ingesting, setIngesting] = useState(false);
+  const [kbSearch, setKbSearch] = useState("");
+  const [kbSearchResults, setKbSearchResults] = useState([]);
+  const [isListening, setIsListening] = useState(false);
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  const [highlightTerm, setHighlightTerm] = useState("");
+
+  // Find & Replace State
+  const [findText, setFindText] = useState("");
+  const [replaceText, setReplaceText] = useState("");
+  const [showFindReplace, setShowFindReplace] = useState(false);
+  const [matchCount, setMatchCount] = useState(0);
+  const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
+  const [matchedFiles, setMatchedFiles] = useState([]); // Files with matches
+  const [showMatchedFiles, setShowMatchedFiles] = useState(false);
+  const textareaRef = useRef(null);
+  const highlightRef = useRef(null);
+
+  // Analytics State
+  const [analytics, setAnalytics] = useState(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+
+  // ===========================================
+  // DATA LOADING FUNCTIONS
+  // ===========================================
+
   const loadCourses = async () => {
-    setMessage("Loading courses...");
     try {
       const res = await fetch(`${API_BASE}/api/curriculum`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setCourses(data);
-      setMessage("");
-    } catch (err) {
-      setMessage(`❌ ${err.message}`);
-    }
+      if (res.ok) setCourses(await res.json());
+    } catch (err) { console.error("Failed to load courses:", err); }
   };
+
+  const loadTickets = async (status = null) => {
+    setTicketLoading(true);
+    try {
+      const url = status && status !== "all" ? `${API_BASE}/api/tickets?status=${status}` : `${API_BASE}/api/tickets`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const data = await res.json();
+        setTickets(data.tickets || []);
+      }
+    } catch (err) { console.error("Failed to load tickets:", err); }
+    finally { setTicketLoading(false); }
+  };
+
+  const loadTicketStats = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/tickets/stats/summary`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) setTicketStats(await res.json());
+    } catch (err) { console.error("Failed to load ticket stats:", err); }
+  };
+
+  const loadUsers = async () => {
+    setUsersLoading(true);
+    try {
+      let url = `${API_BASE}/api/admin/users`;
+      const params = new URLSearchParams();
+      if (userSearch) params.append("search", userSearch);
+      if (userRoleFilter !== "all") params.append("role", userRoleFilter);
+      if (params.toString()) url += `?${params.toString()}`;
+
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const data = await res.json();
+        setUsers(data.users || []);
+      }
+    } catch (err) { console.error("Failed to load users:", err); }
+    finally { setUsersLoading(false); }
+  };
+
+  const loadUserStats = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/users/stats`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) setUserStats(await res.json());
+    } catch (err) { console.error("Failed to load user stats:", err); }
+  };
+
+  const loadHealth = async () => {
+    setHealthLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/health`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) setHealthStatus(await res.json());
+    } catch (err) { console.error("Failed to load health:", err); }
+    finally { setHealthLoading(false); }
+  };
+
+  const loadKbFiles = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/knowledge-base/files`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const data = await res.json();
+        setKbFiles(data.files || []);
+      }
+    } catch (err) { console.error("Failed to load KB files:", err); }
+  };
+
+  const loadKbFileContent = async (filename) => {
+    setKbLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/knowledge-base/${filename}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const data = await res.json();
+        setKbContent(JSON.stringify(data.content, null, 2));
+      }
+    } catch (err) { console.error("Failed to load KB file:", err); }
+    finally { setKbLoading(false); }
+  };
+
+  const loadAnalytics = async () => {
+    setAnalyticsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/analytics`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) setAnalytics(await res.json());
+    } catch (err) { console.error("Failed to load analytics:", err); }
+    finally { setAnalyticsLoading(false); }
+  };
+
+  const searchKnowledgeBase = async (searchTerm) => {
+    if (!searchTerm || searchTerm.length < 2) {
+      setKbSearchResults([]);
+      setHighlightTerm("");
+      setMatchedFiles([]);
+      setShowMatchedFiles(false);
+      return;
+    }
+    setHighlightTerm(searchTerm);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/knowledge-base/search?q=${encodeURIComponent(searchTerm)}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const results = data.results || [];
+        setKbSearchResults(results);
+
+        // Extract unique files with match counts
+        const fileMap = {};
+        results.forEach(r => {
+          if (!fileMap[r.filename]) {
+            fileMap[r.filename] = { filename: r.filename, matchCount: 0 };
+          }
+          fileMap[r.filename].matchCount++;
+        });
+        const files = Object.values(fileMap).sort((a, b) => b.matchCount - a.matchCount);
+        setMatchedFiles(files);
+        setShowMatchedFiles(files.length > 0);
+      }
+    } catch (err) { console.error("Failed to search KB:", err); }
+  };
+
+  // Voice Search Functions
+  const startVoiceSearch = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Voice search is not supported in your browser. Please use Chrome or Edge.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+      setIsListening(true);
+    };
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      console.log("Voice input:", transcript);
+
+      // Extract search keywords from natural language
+      const keywords = extractKeywords(transcript);
+      if (keywords) {
+        setKbSearch(keywords);
+        searchKnowledgeBase(keywords);
+      }
+    };
+
+    recognition.onerror = (event) => {
+      console.error("Voice recognition error:", event.error);
+      setIsListening(false);
+      if (event.error === 'not-allowed') {
+        alert("Microphone access denied. Please allow microphone access to use voice search.");
+      }
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognition.start();
+  };
+
+  const extractKeywords = (transcript) => {
+    // Remove common phrases and extract the key search terms
+    const lowerTranscript = transcript.toLowerCase();
+
+    // Common patterns to remove
+    const patternsToRemove = [
+      /^(can you |please |i want to |i need to |help me )/i,
+      /(search for |find |look for |look up |search |find me )/i,
+      /('s | the | a | an | to | for | of | in | on | with | and | or )/gi,
+      /(phone number|email|address|contact|information|info|details)/gi,
+      /(so i can |so we can |that i can |change it|edit it|update it)/gi,
+    ];
+
+    let cleaned = lowerTranscript;
+
+    // Extract names or specific terms (capitalized words or quoted text)
+    const nameMatch = transcript.match(/(?:for |find |search )([A-Z][a-z]+ [A-Z][a-z]+)/);
+    if (nameMatch) {
+      return nameMatch[1];
+    }
+
+    // Clean up common phrases
+    patternsToRemove.forEach(pattern => {
+      cleaned = cleaned.replace(pattern, ' ');
+    });
+
+    // Clean up and return
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+    // If we got something meaningful, return it
+    if (cleaned.length >= 2) {
+      return cleaned;
+    }
+
+    // Fallback: just use key words from original
+    const words = transcript.split(' ').filter(w => w.length > 3);
+    return words.slice(0, 3).join(' ');
+  };
+
+  const stopVoiceSearch = () => {
+    setIsListening(false);
+  };
+
+  // Check voice support on mount
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    setVoiceSupported(!!SpeechRecognition);
+  }, []);
 
   useEffect(() => {
     loadCourses();
     loadTickets();
     loadTicketStats();
+    loadUsers();
+    loadUserStats();
   }, []);
 
-  // Load support tickets
-  const loadTickets = async (status = null) => {
-    setTicketLoading(true);
-    const token = localStorage.getItem("token");
-    try {
-      const url = status && status !== "all"
-        ? `${API_BASE}/api/tickets?status=${status}`
-        : `${API_BASE}/api/tickets`;
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setTickets(data.tickets || []);
-    } catch (err) {
-      console.error("Failed to load tickets:", err);
-    } finally {
-      setTicketLoading(false);
-    }
-  };
+  useEffect(() => {
+    if (activeTab === "system") loadHealth();
+    if (activeTab === "knowledge") loadKbFiles();
+    if (activeTab === "analytics") loadAnalytics();
+  }, [activeTab]);
 
-  // Load ticket stats
-  const loadTicketStats = async () => {
-    const token = localStorage.getItem("token");
-    try {
-      const res = await fetch(`${API_BASE}/api/tickets/stats/summary`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setTicketStats(data);
-      }
-    } catch (err) {
-      console.error("Failed to load ticket stats:", err);
-    }
-  };
+  useEffect(() => {
+    loadUsers();
+  }, [userSearch, userRoleFilter]);
 
-  // Update ticket status
+  // ===========================================
+  // ACTION HANDLERS
+  // ===========================================
+
   const updateTicketStatus = async (ticketId, newStatus) => {
-    const token = localStorage.getItem("token");
     try {
       const res = await fetch(`${API_BASE}/api/tickets/${ticketId}`, {
         method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`
-        },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ status: newStatus })
       });
       if (res.ok) {
         loadTickets(ticketFilter === "all" ? null : ticketFilter);
         loadTicketStats();
-        if (selectedTicket?.id === ticketId) {
-          setSelectedTicket(prev => ({ ...prev, status: newStatus }));
-        }
+        if (selectedTicket?.id === ticketId) setSelectedTicket(prev => ({ ...prev, status: newStatus }));
+      }
+    } catch (err) { console.error("Failed to update ticket:", err); }
+  };
+
+  const handleAddCourse = async (e) => {
+    e.preventDefault();
+    setMessage("Adding course...");
+    const payload = {
+      course_code: course.course_code,
+      course_name: course.course_name,
+      credits: Number(course.credits),
+      prerequisites: course.prerequisites.split(",").map(s => s.trim()).filter(Boolean),
+      offered: course.offered.split(",").map(s => s.trim()).filter(Boolean),
+    };
+    try {
+      const res = await fetch(`${API_BASE}/api/curriculum/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.statusText);
+      setMessage(`Added ${data.course.course_code}`);
+      setCourse({ course_code: "", course_name: "", credits: "", prerequisites: "", offered: "" });
+      loadCourses();
+    } catch (err) { setMessage(`Error: ${err.message}`); }
+  };
+
+  const handleEditCourse = async (e) => {
+    e.preventDefault();
+    setMessage("Updating course...");
+    const payload = {
+      course_code: editingCourse.course_code,
+      course_name: editingCourse.course_name,
+      credits: Number(editingCourse.credits),
+      prerequisites: typeof editingCourse.prerequisites === 'string'
+        ? editingCourse.prerequisites.split(",").map(s => s.trim()).filter(Boolean)
+        : editingCourse.prerequisites || [],
+      offered: typeof editingCourse.offered === 'string'
+        ? editingCourse.offered.split(",").map(s => s.trim()).filter(Boolean)
+        : editingCourse.offered || [],
+    };
+    try {
+      const res = await fetch(`${API_BASE}/api/curriculum/${encodeURIComponent(editingCourse.course_code)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.statusText);
+      setMessage(`Updated ${editingCourse.course_code}`);
+      setEditingCourse(null);
+      loadCourses();
+    } catch (err) { setMessage(`Error: ${err.message}`); }
+  };
+
+  const handleDeleteCourse = async (code) => {
+    if (!window.confirm(`Delete ${code}?`)) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/curriculum/delete/${encodeURIComponent(code)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) loadCourses();
+    } catch (err) { console.error(err); }
+  };
+
+  const handleReingest = async () => {
+    setMessage("Re-ingesting data...");
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/knowledge-base/ingest`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (res.ok) setMessage("Ingestion completed!");
+      else throw new Error(data.detail);
+    } catch (err) { setMessage(`Error: ${err.message}`); }
+  };
+
+  const handleClearIndex = async () => {
+    if (!window.confirm("Clear all vectors from index? This cannot be undone.")) return;
+    setMessage("Clearing index...");
+    try {
+      const res = await fetch(`${API_BASE}/clear-index`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (res.ok) setMessage("Index cleared!");
+      else throw new Error(data.detail);
+    } catch (err) { setMessage(`Error: ${err.message}`); }
+  };
+
+  const handleUpdateUserRole = async (userId, newRole) => {
+    if (!window.confirm(`Change user role to ${newRole}?`)) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/users/${userId}/role?new_role=${newRole}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        loadUsers();
+        loadUserStats();
+      }
+    } catch (err) { console.error(err); }
+  };
+
+  const handleSaveKbFile = async () => {
+    if (!selectedKbFile) return;
+    setKbLoading(true);
+    try {
+      const content = JSON.parse(kbContent);
+      const res = await fetch(`${API_BASE}/api/admin/knowledge-base/${selectedKbFile}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(content)
+      });
+      if (res.ok) {
+        alert("File saved successfully!");
+        loadKbFiles();
+      } else {
+        const data = await res.json();
+        throw new Error(data.detail);
       }
     } catch (err) {
-      console.error("Failed to update ticket:", err);
+      alert(`Error: ${err.message}`);
+    } finally { setKbLoading(false); }
+  };
+
+  const handleTriggerIngestion = async () => {
+    setIngesting(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/knowledge-base/ingest`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (res.ok) alert("Ingestion completed successfully!");
+      else throw new Error(data.detail);
+    } catch (err) { alert(`Ingestion failed: ${err.message}`); }
+    finally { setIngesting(false); }
+  };
+
+  // ===========================================
+  // FIND & REPLACE FUNCTIONS
+  // ===========================================
+
+  // Count matches when findText changes
+  useEffect(() => {
+    if (findText && kbContent) {
+      const regex = new RegExp(findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      const matches = kbContent.match(regex);
+      setMatchCount(matches ? matches.length : 0);
+      setCurrentMatchIndex(0);
+    } else {
+      setMatchCount(0);
+      setCurrentMatchIndex(0);
+    }
+  }, [findText, kbContent]);
+
+  // Auto-scroll to first match when opening Find & Replace from search
+  useEffect(() => {
+    if (showFindReplace && findText && kbContent && textareaRef.current && !kbLoading) {
+      // Small delay to ensure textarea is rendered
+      const timer = setTimeout(() => {
+        const textarea = textareaRef.current;
+        if (textarea) {
+          const text = kbContent.toLowerCase();
+          const searchTerm = findText.toLowerCase();
+          const foundIndex = text.indexOf(searchTerm);
+          if (foundIndex !== -1) {
+            textarea.focus();
+            textarea.setSelectionRange(foundIndex, foundIndex + findText.length);
+            // Scroll to position
+            const lineHeight = 20;
+            const linesBeforeMatch = kbContent.substring(0, foundIndex).split('\n').length - 1;
+            textarea.scrollTop = Math.max(0, linesBeforeMatch * lineHeight - 100);
+            setCurrentMatchIndex(1);
+          }
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [showFindReplace, kbContent, kbLoading]);
+
+  const findNextMatch = () => {
+    if (!findText || !textareaRef.current) return;
+
+    const textarea = textareaRef.current;
+    const text = kbContent.toLowerCase();
+    const searchTerm = findText.toLowerCase();
+
+    // Start searching from current cursor position
+    let startPos = textarea.selectionEnd || 0;
+    let foundIndex = text.indexOf(searchTerm, startPos);
+
+    // Wrap around if not found
+    if (foundIndex === -1) {
+      foundIndex = text.indexOf(searchTerm, 0);
+    }
+
+    if (foundIndex !== -1) {
+      textarea.focus();
+      textarea.setSelectionRange(foundIndex, foundIndex + findText.length);
+
+      // Scroll to make selection visible
+      const lineHeight = 20;
+      const linesBeforeMatch = kbContent.substring(0, foundIndex).split('\n').length - 1;
+      textarea.scrollTop = linesBeforeMatch * lineHeight - 100;
+
+      setCurrentMatchIndex(prev => (prev % matchCount) + 1);
     }
   };
 
-  // Get category icon
+  const findPrevMatch = () => {
+    if (!findText || !textareaRef.current) return;
+
+    const textarea = textareaRef.current;
+    const text = kbContent.toLowerCase();
+    const searchTerm = findText.toLowerCase();
+
+    // Start searching backwards from current cursor position
+    let startPos = Math.max(0, textarea.selectionStart - 1);
+    let foundIndex = text.lastIndexOf(searchTerm, startPos);
+
+    // Wrap around if not found
+    if (foundIndex === -1) {
+      foundIndex = text.lastIndexOf(searchTerm);
+    }
+
+    if (foundIndex !== -1) {
+      textarea.focus();
+      textarea.setSelectionRange(foundIndex, foundIndex + findText.length);
+
+      const lineHeight = 20;
+      const linesBeforeMatch = kbContent.substring(0, foundIndex).split('\n').length - 1;
+      textarea.scrollTop = linesBeforeMatch * lineHeight - 100;
+
+      setCurrentMatchIndex(prev => prev > 1 ? prev - 1 : matchCount);
+    }
+  };
+
+  const replaceCurrentMatch = () => {
+    if (!findText || !textareaRef.current) return;
+
+    const textarea = textareaRef.current;
+    const selStart = textarea.selectionStart;
+    const selEnd = textarea.selectionEnd;
+    const selectedText = kbContent.substring(selStart, selEnd);
+
+    // Only replace if the selected text matches the find text (case insensitive)
+    if (selectedText.toLowerCase() === findText.toLowerCase()) {
+      const newContent = kbContent.substring(0, selStart) + replaceText + kbContent.substring(selEnd);
+      setKbContent(newContent);
+
+      // Move cursor after replacement
+      setTimeout(() => {
+        textarea.focus();
+        textarea.setSelectionRange(selStart + replaceText.length, selStart + replaceText.length);
+        findNextMatch();
+      }, 10);
+    } else {
+      // If nothing is selected, find the next match first
+      findNextMatch();
+    }
+  };
+
+  const replaceAllMatches = () => {
+    if (!findText) return;
+
+    const regex = new RegExp(findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    const newContent = kbContent.replace(regex, replaceText);
+    const replacedCount = matchCount;
+    setKbContent(newContent);
+    alert(`Replaced ${replacedCount} occurrence(s)`);
+  };
+
+  const openFindReplaceFromSearch = (filename, searchTerm, position) => {
+    setSelectedKbFile(filename);
+    setFindText(searchTerm);
+    setShowFindReplace(true);
+
+    // Load the file and then scroll to position
+    loadKbFileContent(filename).then(() => {
+      setTimeout(() => {
+        if (textareaRef.current) {
+          const textarea = textareaRef.current;
+          const text = kbContent.toLowerCase();
+          const foundIndex = text.indexOf(searchTerm.toLowerCase(), position > 100 ? position - 100 : 0);
+          if (foundIndex !== -1) {
+            textarea.focus();
+            textarea.setSelectionRange(foundIndex, foundIndex + searchTerm.length);
+            const lineHeight = 20;
+            const linesBeforeMatch = kbContent.substring(0, foundIndex).split('\n').length - 1;
+            textarea.scrollTop = linesBeforeMatch * lineHeight - 100;
+          }
+        }
+      }, 300);
+    });
+  };
+
+  // ===========================================
+  // HELPER FUNCTIONS
+  // ===========================================
+
   const getCategoryIcon = (category) => {
     switch (category) {
       case "bug": return <FaBug size={14} />;
@@ -137,7 +668,6 @@ export default function AdminDashboard() {
     }
   };
 
-  // Get status badge class
   const getStatusClass = (status) => {
     switch (status) {
       case "open": return "status-open";
@@ -148,198 +678,197 @@ export default function AdminDashboard() {
     }
   };
 
-  // Format date
   const formatDate = (dateStr) => {
+    if (!dateStr) return "N/A";
     return new Date(dateStr).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit"
+      month: "short", day: "numeric", year: "numeric"
     });
   };
 
-  // form input
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setCourse((c) => ({ ...c, [name]: value }));
+  const formatDateTime = (dateStr) => {
+    if (!dateStr) return "N/A";
+    return new Date(dateStr).toLocaleDateString("en-US", {
+      month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit"
+    });
   };
 
-  // add
-  const handleAddCourse = async (e) => {
-    e.preventDefault();
-    setMessage("Adding course...");
-    const payload = {
-      course_code: course.course_code,
-      course_name: course.course_name,
-      credits: Number(course.credits),
-      prerequisites: course.prerequisites
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
-      offered: course.offered
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
-    };
-    try {
-      const res = await fetch(`${API_BASE}/api/curriculum/add`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || data.message || res.statusText);
-      setMessage(`✔️ Added ${data.course.course_code}`);
-      setCourse({
-        course_code: "",
-        course_name: "",
-        credits: "",
-        prerequisites: "",
-        offered: "",
-      });
-      loadCourses();
-    } catch (err) {
-      setMessage(`❌ ${err.message}`);
+  // Generate highlighted HTML content for preview
+  const getHighlightedContent = () => {
+    if (!findText || !kbContent) return kbContent;
+
+    const escapedSearch = findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(${escapedSearch})`, 'gi');
+
+    // Escape HTML and then highlight matches
+    const escaped = kbContent
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    return escaped.replace(regex, '<mark class="highlight-match">$1</mark>');
+  };
+
+  // Sync scroll between highlight preview and textarea
+  const handleTextareaScroll = () => {
+    if (highlightRef.current && textareaRef.current) {
+      highlightRef.current.scrollTop = textareaRef.current.scrollTop;
+      highlightRef.current.scrollLeft = textareaRef.current.scrollLeft;
     }
   };
 
-  // delete course
-  const handleDelete = async (code) => {
-    if (!window.confirm(`Delete ${code}?`)) return;
-    setMessage(`Deleting ${code}...`);
-    try {
-      const res = await fetch(
-        `${API_BASE}/api/curriculum/delete/${encodeURIComponent(code)}`,
-        { method: "DELETE" }
-      );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || data.message || res.statusText);
-      setMessage(`✔️ ${data.message}`);
-      loadCourses();
-    } catch (err) {
-      setMessage(`❌ ${err.message}`);
-    }
+  const formatBytes = (bytes) => {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   };
 
-  // re-ingest
-  const handleReingest = async () => {
-    setMessage("Re-ingesting data...");
-    try {
-      const res = await fetch(`${API_BASE}/ingest`, { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || data.message || res.statusText);
-      setMessage(`✔️ ${data.message}`);
-    } catch (err) {
-      setMessage(`❌ ${err.message}`);
-    }
-  };
-
-  // clear index
-  const handleClearIndex = async () => {
-    setMessage("Clearing index...");
-    try {
-      const res = await fetch(`${API_BASE}/clear-index`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || data.message || res.statusText);
-      setMessage(`✔️ ${data.message}`);
-    } catch (err) {
-      setMessage(`❌ ${err.message}`);
-    }
-  };
+  // ===========================================
+  // RENDER
+  // ===========================================
 
   return (
     <div className="card page-container AdminDashboard">
       <header className="page-header">
-        <button
-          className="back-btn"
-          onClick={() => navigate("/chat")}
-          title="Back to Chat"
-        >
-          <FaArrowLeft size={16} />
+        <div className="header-left">
+          <FaCog className="page-icon" />
+          <h1 className="page-title">Admin Dashboard</h1>
+        </div>
+        <button className="back-home-btn" onClick={() => navigate("/chat")}>
+          <span>Back to Home</span>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M5 12h14M12 5l7 7-7 7"/>
+          </svg>
         </button>
-        <FaCog className="page-icon" />
-        <h1 className="page-title">Admin Dashboard</h1>
       </header>
 
       {/* Tab Navigation */}
       <div className="admin-tabs">
-        <button
-          className={`admin-tab ${activeTab === "courses" ? "active" : ""}`}
-          onClick={() => setActiveTab("courses")}
-        >
-          <FaCog size={16} />
-          <span>Curriculum</span>
+        <button className={`admin-tab ${activeTab === "users" ? "active" : ""}`} onClick={() => setActiveTab("users")}>
+          <FaUsers size={16} /><span>Users</span>
         </button>
-        <button
-          className={`admin-tab ${activeTab === "tickets" ? "active" : ""}`}
-          onClick={() => setActiveTab("tickets")}
-        >
-          <FaTicketAlt size={16} />
-          <span>Support Tickets</span>
-          {ticketStats.open > 0 && (
-            <span className="ticket-badge">{ticketStats.open}</span>
-          )}
+        <button className={`admin-tab ${activeTab === "courses" ? "active" : ""}`} onClick={() => setActiveTab("courses")}>
+          <FaCog size={16} /><span>Curriculum</span>
+        </button>
+        <button className={`admin-tab ${activeTab === "tickets" ? "active" : ""}`} onClick={() => setActiveTab("tickets")}>
+          <FaTicketAlt size={16} /><span>Tickets</span>
+          {ticketStats.open > 0 && <span className="ticket-badge">{ticketStats.open}</span>}
+        </button>
+        <button className={`admin-tab ${activeTab === "knowledge" ? "active" : ""}`} onClick={() => setActiveTab("knowledge")}>
+          <FaDatabase size={16} /><span>Knowledge Base</span>
+        </button>
+        <button className={`admin-tab ${activeTab === "analytics" ? "active" : ""}`} onClick={() => setActiveTab("analytics")}>
+          <FaChartBar size={16} /><span>Analytics</span>
+        </button>
+        <button className={`admin-tab ${activeTab === "system" ? "active" : ""}`} onClick={() => setActiveTab("system")}>
+          <FaServer size={16} /><span>System</span>
         </button>
       </div>
 
-      {/* Courses Tab */}
+      {/* =================== USERS TAB =================== */}
+      {activeTab === "users" && (
+        <div className="tab-content">
+          <div className="ticket-stats">
+            <div className="stat-card total">
+              <FaUsers className="stat-icon" />
+              <span className="stat-number">{userStats.total}</span>
+              <span className="stat-label">Total Users</span>
+            </div>
+            <div className="stat-card open">
+              <FaUserGraduate className="stat-icon" />
+              <span className="stat-number">{userStats.students}</span>
+              <span className="stat-label">Students</span>
+            </div>
+            <div className="stat-card progress">
+              <FaUserShield className="stat-icon" />
+              <span className="stat-number">{userStats.admins}</span>
+              <span className="stat-label">Admins</span>
+            </div>
+            <div className="stat-card resolved">
+              <FaCalendarPlus className="stat-icon" />
+              <span className="stat-number">{userStats.new_this_week}</span>
+              <span className="stat-label">New This Week</span>
+            </div>
+          </div>
+
+          <div className="search-filter-bar">
+            <div className="search-box">
+              <FaSearch size={14} />
+              <input
+                type="text"
+                placeholder="Search by email, name, or student ID..."
+                value={userSearch}
+                onChange={(e) => setUserSearch(e.target.value)}
+              />
+            </div>
+            <div className="filter-buttons">
+              {["all", "student", "admin"].map((role) => (
+                <button
+                  key={role}
+                  className={`filter-btn ${userRoleFilter === role ? "active" : ""}`}
+                  onClick={() => setUserRoleFilter(role)}
+                >
+                  {role === "all" ? "All" : role.charAt(0).toUpperCase() + role.slice(1)}s
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="table-container">
+            {usersLoading ? (
+              <div className="loading-state">Loading users...</div>
+            ) : (
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>Email</th>
+                    <th>Name</th>
+                    <th>Role</th>
+                    <th>Major</th>
+                    <th>Morgan</th>
+                    <th>Joined</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map((u) => (
+                    <tr key={u.id}>
+                      <td>{u.email}</td>
+                      <td>{u.name || "-"}</td>
+                      <td><span className={`role-badge ${u.role}`}>{u.role}</span></td>
+                      <td>{u.major || "-"}</td>
+                      <td>{u.morgan_connected ? <FaLink size={14} className="connected" /> : "-"}</td>
+                      <td>{formatDate(u.created_at)}</td>
+                      <td>
+                        <select
+                          value={u.role}
+                          onChange={(e) => handleUpdateUserRole(u.id, e.target.value)}
+                          className="role-select"
+                        >
+                          <option value="student">Student</option>
+                          <option value="admin">Admin</option>
+                        </select>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* =================== COURSES TAB =================== */}
       {activeTab === "courses" && (
-        <>
-          <p>Use the controls below to manage your curriculum data.</p>
-
-          <section className="admin-actions" style={{ marginBottom: 24 }}>
-            <button onClick={handleReingest} className="action-btn">
-              Re-ingest Data
-            </button>
-            <button onClick={handleClearIndex} className="action-btn">
-              Clear Index
-            </button>
-          </section>
-
+        <div className="tab-content">
           <section>
             <h2>Add New Course</h2>
             <form onSubmit={handleAddCourse} className="admin-form">
-              <input
-                name="course_code"
-                placeholder="Course Code (e.g. COSC 101)"
-                value={course.course_code}
-                onChange={handleChange}
-                required
-              />
-              <input
-                name="course_name"
-                placeholder="Course Name"
-                value={course.course_name}
-                onChange={handleChange}
-                required
-              />
-              <input
-                name="credits"
-                type="number"
-                placeholder="Credits"
-                value={course.credits}
-                onChange={handleChange}
-                required
-              />
-              <input
-                name="prerequisites"
-                placeholder="Prerequisites (comma-separated)"
-                value={course.prerequisites}
-                onChange={handleChange}
-              />
-              <input
-                name="offered"
-                placeholder="Offered Semesters (comma-separated)"
-                value={course.offered}
-                onChange={handleChange}
-              />
-              <button type="submit" className="action-btn">
-                Add Course
-              </button>
+              <input name="course_code" placeholder="Course Code (e.g. COSC 101)" value={course.course_code} onChange={(e) => setCourse({...course, course_code: e.target.value})} required />
+              <input name="course_name" placeholder="Course Name" value={course.course_name} onChange={(e) => setCourse({...course, course_name: e.target.value})} required />
+              <input name="credits" type="number" placeholder="Credits" value={course.credits} onChange={(e) => setCourse({...course, credits: e.target.value})} required />
+              <input name="prerequisites" placeholder="Prerequisites (comma-separated)" value={course.prerequisites} onChange={(e) => setCourse({...course, prerequisites: e.target.value})} />
+              <input name="offered" placeholder="Offered Semesters (comma-separated)" value={course.offered} onChange={(e) => setCourse({...course, offered: e.target.value})} />
+              <button type="submit" className="action-btn">Add Course</button>
             </form>
           </section>
 
@@ -347,13 +876,7 @@ export default function AdminDashboard() {
             <h2>Existing Courses ({courses.length})</h2>
             <table className="admin-table">
               <thead>
-                <tr>
-                  <th>Code</th>
-                  <th>Name</th>
-                  <th>Credits</th>
-                  <th>Offered</th>
-                  <th>Actions</th>
-                </tr>
+                <tr><th>Code</th><th>Name</th><th>Credits</th><th>Offered</th><th>Actions</th></tr>
               </thead>
               <tbody>
                 {courses.map((c) => (
@@ -361,10 +884,19 @@ export default function AdminDashboard() {
                     <td>{c.course_code}</td>
                     <td>{c.course_name}</td>
                     <td>{c.credits}</td>
-                    <td>{c.offered.join(", ")}</td>
-                    <td>
-                      <button onClick={() => handleDelete(c.course_code)}>
-                        Delete
+                    <td>{Array.isArray(c.offered) ? c.offered.join(", ") : c.offered}</td>
+                    <td className="action-cell">
+                      <button className="edit-btn-labeled" onClick={() => setEditingCourse({
+                        ...c,
+                        prerequisites: Array.isArray(c.prerequisites) ? c.prerequisites.join(", ") : c.prerequisites || "",
+                        offered: Array.isArray(c.offered) ? c.offered.join(", ") : c.offered || ""
+                      })}>
+                        <FaEdit size={16} />
+                        <span>Edit</span>
+                      </button>
+                      <button className="delete-btn-labeled" onClick={() => handleDeleteCourse(c.course_code)}>
+                        <FaTrash size={16} />
+                        <span>Delete</span>
                       </button>
                     </td>
                   </tr>
@@ -373,117 +905,48 @@ export default function AdminDashboard() {
             </table>
           </section>
 
-          {message && <p style={{ marginTop: 16, fontStyle: "italic" }}>{message}</p>}
-        </>
+          {message && <p className="message">{message}</p>}
+        </div>
       )}
 
-      {/* Tickets Tab */}
+      {/* =================== TICKETS TAB =================== */}
       {activeTab === "tickets" && (
         <div className="tickets-section">
-          {/* Stats Cards */}
           <div className="ticket-stats">
-            <div className="stat-card total">
-              <FaInbox className="stat-icon" />
-              <span className="stat-number">{ticketStats.total}</span>
-              <span className="stat-label">Total</span>
-            </div>
-            <div className="stat-card open">
-              <FaExclamationCircle className="stat-icon" />
-              <span className="stat-number">{ticketStats.open}</span>
-              <span className="stat-label">Open</span>
-            </div>
-            <div className="stat-card progress">
-              <FaSpinner className="stat-icon" />
-              <span className="stat-number">{ticketStats.in_progress}</span>
-              <span className="stat-label">In Progress</span>
-            </div>
-            <div className="stat-card resolved">
-              <FaCheckCircle className="stat-icon" />
-              <span className="stat-number">{ticketStats.resolved}</span>
-              <span className="stat-label">Resolved</span>
-            </div>
+            <div className="stat-card total"><FaInbox className="stat-icon" /><span className="stat-number">{ticketStats.total}</span><span className="stat-label">Total</span></div>
+            <div className="stat-card open"><FaExclamationCircle className="stat-icon" /><span className="stat-number">{ticketStats.open}</span><span className="stat-label">Open</span></div>
+            <div className="stat-card progress"><FaSpinner className="stat-icon" /><span className="stat-number">{ticketStats.in_progress}</span><span className="stat-label">In Progress</span></div>
+            <div className="stat-card resolved"><FaCheckCircle className="stat-icon" /><span className="stat-number">{ticketStats.resolved}</span><span className="stat-label">Resolved</span></div>
           </div>
 
-          {/* Filter Buttons */}
           <div className="ticket-filters">
             {["all", "open", "in_progress", "resolved"].map((filter) => (
-              <button
-                key={filter}
-                className={`filter-btn ${ticketFilter === filter ? "active" : ""}`}
-                onClick={() => {
-                  setTicketFilter(filter);
-                  loadTickets(filter === "all" ? null : filter);
-                }}
-              >
+              <button key={filter} className={`filter-btn ${ticketFilter === filter ? "active" : ""}`}
+                onClick={() => { setTicketFilter(filter); loadTickets(filter === "all" ? null : filter); }}>
                 {filter === "all" ? "All" : filter.replace("_", " ")}
               </button>
             ))}
           </div>
 
-          {/* Tickets List */}
           <div className="tickets-list">
-            {ticketLoading ? (
-              <div className="tickets-loading">Loading tickets...</div>
-            ) : tickets.length === 0 ? (
-              <div className="tickets-empty">No tickets found</div>
-            ) : (
+            {ticketLoading ? <div className="tickets-loading">Loading tickets...</div> : tickets.length === 0 ? <div className="tickets-empty">No tickets found</div> : (
               tickets.map((ticket) => (
                 <div key={ticket.id} className="ticket-card">
                   <div className="ticket-header-row">
-                    <div className="ticket-category">
-                      {getCategoryIcon(ticket.category)}
-                      <span>{ticket.category}</span>
-                    </div>
-                    <span className={`ticket-status ${getStatusClass(ticket.status)}`}>
-                      {ticket.status.replace("_", " ")}
-                    </span>
+                    <div className="ticket-category">{getCategoryIcon(ticket.category)}<span>{ticket.category}</span></div>
+                    <span className={`ticket-status ${getStatusClass(ticket.status)}`}>{ticket.status.replace("_", " ")}</span>
                   </div>
-
                   <h3 className="ticket-subject">{ticket.subject}</h3>
-
-                  <p className="ticket-preview">
-                    {ticket.description.length > 150
-                      ? ticket.description.slice(0, 150) + "..."
-                      : ticket.description}
-                  </p>
-
+                  <p className="ticket-preview">{ticket.description.length > 150 ? ticket.description.slice(0, 150) + "..." : ticket.description}</p>
                   <div className="ticket-footer">
                     <div className="ticket-meta">
-                      <span className="ticket-user">
-                        <FaUser size={11} />
-                        {ticket.user_email || "Unknown"}
-                      </span>
-                      <span className="ticket-date">
-                        <FaClock size={11} />
-                        {formatDate(ticket.created_at)}
-                      </span>
+                      <span className="ticket-user"><FaUser size={11} />{ticket.user_email || "Unknown"}</span>
+                      <span className="ticket-date"><FaClock size={11} />{formatDateTime(ticket.created_at)}</span>
                     </div>
                     <div className="ticket-actions">
-                      <button
-                        className="view-btn"
-                        onClick={() => setSelectedTicket(ticket)}
-                        title="View details"
-                      >
-                        <FaEye size={14} />
-                      </button>
-                      {ticket.status === "open" && (
-                        <button
-                          className="progress-btn"
-                          onClick={() => updateTicketStatus(ticket.id, "in_progress")}
-                          title="Mark as in progress"
-                        >
-                          <FaClock size={14} />
-                        </button>
-                      )}
-                      {ticket.status !== "resolved" && (
-                        <button
-                          className="resolve-btn"
-                          onClick={() => updateTicketStatus(ticket.id, "resolved")}
-                          title="Mark as resolved"
-                        >
-                          <FaCheck size={14} />
-                        </button>
-                      )}
+                      <button className="view-btn" onClick={() => setSelectedTicket(ticket)} title="View"><FaEye size={14} /></button>
+                      {ticket.status === "open" && <button className="progress-btn" onClick={() => updateTicketStatus(ticket.id, "in_progress")} title="In Progress"><FaClock size={14} /></button>}
+                      {ticket.status !== "resolved" && <button className="resolve-btn" onClick={() => updateTicketStatus(ticket.id, "resolved")} title="Resolve"><FaCheck size={14} /></button>}
                     </div>
                   </div>
                 </div>
@@ -493,68 +956,379 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* Ticket Detail Modal */}
+      {/* =================== KNOWLEDGE BASE TAB =================== */}
+      {activeTab === "knowledge" && (
+        <div className="tab-content">
+          <div className="kb-header">
+            <h2>Knowledge Base Files</h2>
+            <p>Edit JSON files that power the chatbot's knowledge. Changes require re-ingestion.</p>
+          </div>
+
+          {/* Search Bar with Voice */}
+          <div className="kb-search-bar">
+            <div className="search-box-with-voice">
+              <div className="search-box">
+                <FaSearch size={14} />
+                <input
+                  type="text"
+                  placeholder="Search across all knowledge base files..."
+                  value={kbSearch}
+                  onChange={(e) => {
+                    setKbSearch(e.target.value);
+                    searchKnowledgeBase(e.target.value);
+                  }}
+                />
+                {kbSearch && (
+                  <button className="clear-search" onClick={() => { setKbSearch(""); setKbSearchResults([]); setHighlightTerm(""); }}>
+                    <FaTimes size={12} />
+                  </button>
+                )}
+              </div>
+              {voiceSupported && (
+                <button
+                  className={`voice-search-btn ${isListening ? "listening" : ""}`}
+                  onClick={isListening ? stopVoiceSearch : startVoiceSearch}
+                  title={isListening ? "Stop listening" : "Voice search - speak to search"}
+                >
+                  {isListening ? (
+                    <>
+                      <FaStop size={18} />
+                      <span>Listening...</span>
+                    </>
+                  ) : (
+                    <>
+                      <FaMicrophone size={18} />
+                      <span>Voice Search</span>
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+            {isListening && (
+              <div className="voice-listening-indicator">
+                <span className="pulse-dot"></span>
+                <span>Speak now... (e.g., "Find Paul Wang phone number")</span>
+              </div>
+            )}
+          </div>
+
+          {/* Search Results Summary */}
+          {kbSearchResults.length > 0 && (
+            <div className="kb-search-summary">
+              <span className="search-summary-text">
+                Found <strong>{kbSearchResults.length}</strong> matches in <strong>{matchedFiles.length}</strong> files for "<strong>{kbSearch}</strong>"
+              </span>
+              <button className="clear-search-btn" onClick={() => {
+                setKbSearch("");
+                setKbSearchResults([]);
+                setMatchedFiles([]);
+                setShowMatchedFiles(false);
+                setFindText("");
+                setShowFindReplace(false);
+              }}>
+                <FaTimes size={12} /> Clear Search
+              </button>
+            </div>
+          )}
+
+          <div className={`kb-layout ${showMatchedFiles ? "with-matches" : ""}`}>
+            {/* Matched Files Sidebar - Shows when searching */}
+            {showMatchedFiles && matchedFiles.length > 0 && (
+              <div className="kb-matched-files">
+                <h3>
+                  <FaSearch size={14} /> Matched Files ({matchedFiles.length})
+                </h3>
+                {matchedFiles.map((file) => (
+                  <div
+                    key={file.filename}
+                    className={`matched-file-item ${selectedKbFile === file.filename ? "active" : ""}`}
+                    onClick={() => {
+                      setSelectedKbFile(file.filename);
+                      setFindText(kbSearch);
+                      setShowFindReplace(true);
+                      loadKbFileContent(file.filename);
+                    }}
+                  >
+                    <span className="matched-filename">{file.filename}</span>
+                    <span className="match-badge">{file.matchCount} {file.matchCount === 1 ? 'match' : 'matches'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Regular Files Sidebar */}
+            <div className="kb-sidebar">
+              <h3>All Files ({kbFiles.length})</h3>
+              {kbFiles.map((file) => (
+                <div
+                  key={file.filename}
+                  className={`kb-file-item ${selectedKbFile === file.filename ? "active" : ""}`}
+                  onClick={() => {
+                    setSelectedKbFile(file.filename);
+                    loadKbFileContent(file.filename);
+                    // Clear find if not from search
+                    if (!showMatchedFiles) {
+                      setFindText("");
+                      setShowFindReplace(false);
+                    }
+                  }}
+                >
+                  <span className="kb-filename">{file.filename}</span>
+                  <span className="kb-filesize">{formatBytes(file.size)}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="kb-editor">
+              {selectedKbFile ? (
+                <>
+                  <div className="kb-editor-header">
+                    <h3>{selectedKbFile}</h3>
+                    <div className="kb-editor-actions">
+                      <button
+                        className={`action-btn ${showFindReplace ? "active" : ""}`}
+                        onClick={() => setShowFindReplace(!showFindReplace)}
+                        title="Find & Replace (Ctrl+H)"
+                      >
+                        <FaSearch size={14} /> Find & Replace
+                      </button>
+                      <button className="action-btn save-btn" onClick={handleSaveKbFile} disabled={kbLoading}>
+                        <FaSave size={14} /> Save Changes
+                      </button>
+                      <button className="action-btn secondary" onClick={handleTriggerIngestion} disabled={ingesting}>
+                        <FaSync size={14} className={ingesting ? "spinning" : ""} /> {ingesting ? "Ingesting..." : "Re-ingest All"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Find & Replace Toolbar */}
+                  {showFindReplace && (
+                    <div className="find-replace-toolbar">
+                      <div className="find-replace-row">
+                        <label>Find:</label>
+                        <input
+                          type="text"
+                          value={findText}
+                          onChange={(e) => setFindText(e.target.value)}
+                          placeholder="Search text..."
+                          onKeyDown={(e) => e.key === 'Enter' && findNextMatch()}
+                        />
+                        <span className="match-counter">
+                          {matchCount > 0 ? `${currentMatchIndex || 1} of ${matchCount}` : "No matches"}
+                        </span>
+                        <button onClick={findPrevMatch} disabled={matchCount === 0} title="Previous match">
+                          ▲
+                        </button>
+                        <button onClick={findNextMatch} disabled={matchCount === 0} title="Next match">
+                          ▼
+                        </button>
+                      </div>
+                      <div className="find-replace-row">
+                        <label>Replace:</label>
+                        <input
+                          type="text"
+                          value={replaceText}
+                          onChange={(e) => setReplaceText(e.target.value)}
+                          placeholder="Replace with..."
+                          onKeyDown={(e) => e.key === 'Enter' && replaceCurrentMatch()}
+                        />
+                        <button onClick={replaceCurrentMatch} disabled={matchCount === 0} className="replace-btn">
+                          Replace
+                        </button>
+                        <button onClick={replaceAllMatches} disabled={matchCount === 0} className="replace-all-btn">
+                          Replace All
+                        </button>
+                      </div>
+                      <button className="close-find-replace" onClick={() => setShowFindReplace(false)}>
+                        <FaTimes size={12} />
+                      </button>
+                    </div>
+                  )}
+
+                  {kbLoading ? (
+                    <div className="loading-state">Loading file...</div>
+                  ) : (
+                    <div className="kb-editor-container">
+                      {/* Highlighted backdrop - shows yellow highlights */}
+                      {findText && (
+                        <div
+                          ref={highlightRef}
+                          className="kb-highlight-backdrop"
+                          dangerouslySetInnerHTML={{ __html: getHighlightedContent() }}
+                        />
+                      )}
+                      {/* Editable textarea on top */}
+                      <textarea
+                        ref={textareaRef}
+                        className={`kb-textarea ${findText ? "with-highlights" : ""}`}
+                        value={kbContent}
+                        onChange={(e) => setKbContent(e.target.value)}
+                        onScroll={handleTextareaScroll}
+                        spellCheck={false}
+                      />
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="kb-placeholder">Select a file to edit</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =================== ANALYTICS TAB =================== */}
+      {activeTab === "analytics" && (
+        <div className="tab-content">
+          {analyticsLoading ? (
+            <div className="loading-state">Loading analytics...</div>
+          ) : analytics ? (
+            <>
+              <div className="ticket-stats">
+                <div className="stat-card total"><FaUsers className="stat-icon" /><span className="stat-number">{analytics.total_users}</span><span className="stat-label">Total Users</span></div>
+                <div className="stat-card open"><FaTicketAlt className="stat-icon" /><span className="stat-number">{analytics.total_tickets}</span><span className="stat-label">Total Tickets</span></div>
+                <div className="stat-card progress"><FaExclamationCircle className="stat-icon" /><span className="stat-number">{analytics.open_tickets}</span><span className="stat-label">Open Tickets</span></div>
+              </div>
+
+              <div className="analytics-section">
+                <h3>User Signups (Last 7 Days)</h3>
+                <div className="chart-container">
+                  {analytics.signups_by_day?.map((day, i) => (
+                    <div key={i} className="chart-bar-wrapper">
+                      <div className="chart-bar" style={{ height: `${Math.max(day.count * 30, 5)}px` }}>
+                        <span className="chart-value">{day.count}</span>
+                      </div>
+                      <span className="chart-label">{day.day}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="empty-state">No analytics data available</div>
+          )}
+        </div>
+      )}
+
+      {/* =================== SYSTEM TAB =================== */}
+      {activeTab === "system" && (
+        <div className="tab-content">
+          <div className="system-header">
+            <h2>System Health</h2>
+            <button className="action-btn" onClick={loadHealth}><FaSync size={14} /> Refresh</button>
+          </div>
+
+          {healthLoading ? (
+            <div className="loading-state">Checking system health...</div>
+          ) : healthStatus ? (
+            <>
+              <div className="health-cards">
+                <div className={`health-card ${healthStatus.database?.status === "connected" ? "healthy" : "error"}`}>
+                  <FaDatabase className="health-icon" />
+                  <div className="health-info">
+                    <h4>Database (RDS)</h4>
+                    <span className="health-status">{healthStatus.database?.status}</span>
+                    <p>{healthStatus.database?.message}</p>
+                  </div>
+                </div>
+
+                <div className={`health-card ${healthStatus.pinecone?.status === "connected" ? "healthy" : healthStatus.pinecone?.status === "not_configured" ? "warning" : "error"}`}>
+                  <FaServer className="health-icon" />
+                  <div className="health-info">
+                    <h4>Pinecone Vector DB</h4>
+                    <span className="health-status">{healthStatus.pinecone?.status}</span>
+                    <p>{healthStatus.pinecone?.message}</p>
+                    {healthStatus.vector_count > 0 && <p className="vector-count">{healthStatus.vector_count.toLocaleString()} vectors</p>}
+                  </div>
+                </div>
+
+                <div className={`health-card ${healthStatus.openai?.status === "configured" ? "healthy" : "warning"}`}>
+                  <FaLightbulb className="health-icon" />
+                  <div className="health-info">
+                    <h4>OpenAI API</h4>
+                    <span className="health-status">{healthStatus.openai?.status}</span>
+                    <p>{healthStatus.openai?.message}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="system-actions">
+                <h3>Quick Actions</h3>
+                <div className="action-buttons">
+                  <button className="action-btn" onClick={handleReingest}><FaSync size={14} /> Re-ingest Data</button>
+                  <button className="action-btn danger" onClick={handleClearIndex}><FaTrash size={14} /> Clear Index</button>
+                </div>
+                {message && <p className="message">{message}</p>}
+              </div>
+            </>
+          ) : (
+            <div className="empty-state">Unable to load health status</div>
+          )}
+        </div>
+      )}
+
+      {/* =================== EDIT COURSE MODAL =================== */}
+      {editingCourse && (
+        <div className="ticket-modal-overlay" onClick={() => setEditingCourse(null)}>
+          <div className="ticket-detail-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Edit Course: {editingCourse.course_code}</h2>
+              <button className="modal-close" onClick={() => setEditingCourse(null)}><FaTimes size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <form onSubmit={handleEditCourse} className="edit-form">
+                <div className="form-group">
+                  <label>Course Code</label>
+                  <input value={editingCourse.course_code} disabled />
+                </div>
+                <div className="form-group">
+                  <label>Course Name</label>
+                  <input value={editingCourse.course_name} onChange={(e) => setEditingCourse({...editingCourse, course_name: e.target.value})} required />
+                </div>
+                <div className="form-group">
+                  <label>Credits</label>
+                  <input type="number" value={editingCourse.credits} onChange={(e) => setEditingCourse({...editingCourse, credits: e.target.value})} required />
+                </div>
+                <div className="form-group">
+                  <label>Prerequisites (comma-separated)</label>
+                  <input value={editingCourse.prerequisites} onChange={(e) => setEditingCourse({...editingCourse, prerequisites: e.target.value})} />
+                </div>
+                <div className="form-group">
+                  <label>Offered Semesters (comma-separated)</label>
+                  <input value={editingCourse.offered} onChange={(e) => setEditingCourse({...editingCourse, offered: e.target.value})} />
+                </div>
+                <div className="modal-actions">
+                  <button type="button" className="action-btn secondary" onClick={() => setEditingCourse(null)}>Cancel</button>
+                  <button type="submit" className="action-btn">Save Changes</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =================== TICKET DETAIL MODAL =================== */}
       {selectedTicket && (
         <div className="ticket-modal-overlay" onClick={() => setSelectedTicket(null)}>
           <div className="ticket-detail-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <div className="modal-title-row">
-                {getCategoryIcon(selectedTicket.category)}
-                <h2>{selectedTicket.subject}</h2>
-              </div>
-              <button className="modal-close" onClick={() => setSelectedTicket(null)}>
-                <FaTimes size={18} />
-              </button>
+              <div className="modal-title-row">{getCategoryIcon(selectedTicket.category)}<h2>{selectedTicket.subject}</h2></div>
+              <button className="modal-close" onClick={() => setSelectedTicket(null)}><FaTimes size={18} /></button>
             </div>
-
             <div className="modal-body">
               <div className="modal-meta">
-                <span className={`ticket-status ${getStatusClass(selectedTicket.status)}`}>
-                  {selectedTicket.status.replace("_", " ")}
-                </span>
-                <span className="ticket-user">
-                  <FaUser size={12} />
-                  {selectedTicket.user_email || "Unknown"}
-                </span>
-                <span className="ticket-date">
-                  <FaClock size={12} />
-                  {formatDate(selectedTicket.created_at)}
-                </span>
+                <span className={`ticket-status ${getStatusClass(selectedTicket.status)}`}>{selectedTicket.status.replace("_", " ")}</span>
+                <span className="ticket-user"><FaUser size={12} />{selectedTicket.user_email || "Unknown"}</span>
+                <span className="ticket-date"><FaClock size={12} />{formatDateTime(selectedTicket.created_at)}</span>
               </div>
-
-              <div className="modal-description">
-                <h4>Description</h4>
-                <p>{selectedTicket.description}</p>
-              </div>
-
-              {selectedTicket.attachment_name && (
-                <div className="modal-attachment">
-                  <h4>Attachment</h4>
-                  <span>{selectedTicket.attachment_name}</span>
-                </div>
-              )}
-
+              <div className="modal-description"><h4>Description</h4><p>{selectedTicket.description}</p></div>
+              {selectedTicket.attachment_name && <div className="modal-attachment"><h4>Attachment</h4><span>{selectedTicket.attachment_name}</span></div>}
               <div className="modal-actions">
                 <h4>Update Status</h4>
                 <div className="status-buttons">
-                  <button
-                    className={`status-btn open ${selectedTicket.status === "open" ? "active" : ""}`}
-                    onClick={() => updateTicketStatus(selectedTicket.id, "open")}
-                  >
-                    Open
-                  </button>
-                  <button
-                    className={`status-btn progress ${selectedTicket.status === "in_progress" ? "active" : ""}`}
-                    onClick={() => updateTicketStatus(selectedTicket.id, "in_progress")}
-                  >
-                    In Progress
-                  </button>
-                  <button
-                    className={`status-btn resolved ${selectedTicket.status === "resolved" ? "active" : ""}`}
-                    onClick={() => updateTicketStatus(selectedTicket.id, "resolved")}
-                  >
-                    Resolved
-                  </button>
+                  <button className={`status-btn open ${selectedTicket.status === "open" ? "active" : ""}`} onClick={() => updateTicketStatus(selectedTicket.id, "open")}>Open</button>
+                  <button className={`status-btn progress ${selectedTicket.status === "in_progress" ? "active" : ""}`} onClick={() => updateTicketStatus(selectedTicket.id, "in_progress")}>In Progress</button>
+                  <button className={`status-btn resolved ${selectedTicket.status === "resolved" ? "active" : ""}`} onClick={() => updateTicketStatus(selectedTicket.id, "resolved")}>Resolved</button>
                 </div>
               </div>
             </div>
