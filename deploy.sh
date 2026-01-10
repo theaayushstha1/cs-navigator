@@ -92,8 +92,13 @@ DOCKER
     # Build and Start
     echo "🏗️  Building Docker..."
     sudo docker-compose down
-    sudo docker-compose up --build -d
-    sudo docker image prune -a -f 
+
+    # Clean up old images BEFORE building to prevent disk full errors
+    echo "🧹 Cleaning old Docker images..."
+    sudo docker system prune -a -f
+    sudo docker volume prune -f
+
+    sudo docker-compose up --build -d 
 
     echo "✅ Deployment finished successfully!"
 EOF
