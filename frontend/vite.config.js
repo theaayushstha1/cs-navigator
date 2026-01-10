@@ -2,30 +2,33 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+// Use port 5000 for deployed, 8000 for local development
+const BACKEND_PORT = process.env.VITE_BACKEND_PORT || '8000'
+const BACKEND_URL = `http://localhost:${BACKEND_PORT}`
+
 export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:5000',
+        target: BACKEND_URL,
         changeOrigin: true,
-        
       },
       '/chat': {
-        target: 'http://localhost:5000',
+        target: BACKEND_URL,
         changeOrigin: true,
       },
       '/reset-history': {
-        target: 'http://localhost:5000',
+        target: BACKEND_URL,
         changeOrigin: true,
       },
       '/chat-history': {
-        target: 'http://localhost:5000',
+        target: BACKEND_URL,
         changeOrigin: true,
       },
-      '/curriculum': {
-        target: 'http://localhost:5000',
+      '/uploads': {
+        target: BACKEND_URL,
         changeOrigin: true,
       }
     },

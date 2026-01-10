@@ -1604,16 +1604,89 @@ def parse_degreeworks_pdf(text: str) -> dict:
         data['catalog_year'] = catalog_match.group(1)
         print(f"✅ Found Catalog Year: {data['catalog_year']}")
 
-    # ============ COURSES ============
-    courses_completed = []
-    # Various course code patterns
-    course_patterns = [
-        r'([A-Z]{2,4})\s*(\d{3}[A-Z]?)\s+([A-Za-z][A-Za-z\s&\-,\.]+?)\s+([ABCDF][+-]?)\s+(\d(?:\.\d{1,2})?)',
-        r'([A-Z]{2,4})\s*(\d{3}[A-Z]?)\s+([ABCDF][+-]?)\s+(\d(?:\.\d{1,2})?)',
-        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)',  # Just course codes
+    # ============ IN-PROGRESS COURSES (Parse FIRST) ============
+    # Parse IP courses BEFORE completed courses so they don't get incorrectly categorized
+    # DegreeWorks format: "COSC 458 SOFTWARE ENGINEERING IP (3) SPRING 2026"
+    courses_in_progress = []
+    seen_in_progress = set()
+
+    print("=" * 40)
+    print("PARSING IN-PROGRESS COURSES...")
+
+    # Pattern 1: DegreeWorks format - Course with IP grade and credits in parentheses
+    # Format: COSC 458 SOFTWARE ENGINEERING IP (3) SPRING 2026
+    ip_patterns = [
+        # Full format with course name: COSC 458 SOFTWARE ENGINEERING IP (3)
+        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+([A-Z][A-Za-z\s&\-,\./]+?)\s+IP\s+\((\d)\)',
+        # Short format: COSC 458 IP (3)
+        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+IP\s+\((\d)\)',
     ]
 
+    for pattern in ip_patterns:
+        for match in re.finditer(pattern, text_clean):
+            groups = match.groups()
+            dept = groups[0]
+            num = groups[1]
+            code = f"{dept} {num}"
+
+            if code in seen_in_progress:
+                continue
+            seen_in_progress.add(code)
+
+            course = {'code': code, 'status': 'in_progress'}
+            if len(groups) >= 4:
+                course['name'] = groups[2].strip()[:50]
+                course['credits'] = int(groups[3])
+            elif len(groups) >= 3:
+                try:
+                    course['credits'] = int(groups[2])
+                except:
+                    pass
+
+            courses_in_progress.append(course)
+            print(f"   Found IP course: {code}")
+
+    # Pattern 2: Look for "Preregistered" section (DegreeWorks specific)
+    preregistered_match = re.search(r'Preregistered[:\s]*Credits[:\s]*\d+', text_clean, re.IGNORECASE)
+    if preregistered_match:
+        start_pos = preregistered_match.end()
+        preregistered_text = text_clean[start_pos:start_pos+2000]
+
+        # Find courses in preregistered section
+        ip_courses = re.findall(r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+([A-Z][A-Za-z\s&\-,\./]+?)\s+IP\s+\((\d)\)', preregistered_text)
+        for dept, num, name, credits in ip_courses:
+            code = f"{dept} {num}"
+            if code not in seen_in_progress:
+                seen_in_progress.add(code)
+                courses_in_progress.append({
+                    'code': code,
+                    'name': name.strip()[:50],
+                    'credits': int(credits),
+                    'status': 'in_progress'
+                })
+                print(f"   Found IP course (preregistered): {code}")
+
+    if courses_in_progress:
+        data['courses_in_progress'] = json.dumps(courses_in_progress[:20])
+        print(f"Found {len(courses_in_progress)} in-progress courses")
+    else:
+        print("No in-progress courses found")
+
+    # ============ COMPLETED COURSES ============
+    print("=" * 40)
+    print("PARSING COMPLETED COURSES...")
+    courses_completed = []
     seen_courses = set()
+
+    # Only match courses with actual letter grades (A, B, C, D, F) or transfer grades (TRA, TRB)
+    # DO NOT use broad patterns that match all course codes
+    course_patterns = [
+        # Format: COSC 111 INTRO TO COMPUTER SCI I A 4 SPRING 2024
+        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+([A-Za-z][A-Za-z\s&\-,\.]+?)\s+(A[+-]?|B[+-]?|C[+-]?|D[+-]?|F|TRA|TRB|TR[A-Z]?|PT)\s+(\d(?:\.\d{1,2})?)',
+        # Format: COSC 111 A 4
+        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+(A[+-]?|B[+-]?|C[+-]?|D[+-]?|F|TRA|TRB|TR[A-Z]?|PT)\s+(\d(?:\.\d{1,2})?)',
+    ]
+
     for pattern in course_patterns:
         for match in re.finditer(pattern, text_clean):
             groups = match.groups()
@@ -1621,7 +1694,8 @@ def parse_degreeworks_pdf(text: str) -> dict:
             num = groups[1]
             code = f"{dept} {num}"
 
-            if code in seen_courses:
+            # Skip if already seen as completed OR if it's an in-progress course
+            if code in seen_courses or code in seen_in_progress:
                 continue
             seen_courses.add(code)
 
@@ -1638,18 +1712,19 @@ def parse_degreeworks_pdf(text: str) -> dict:
 
     if courses_completed:
         data['courses_completed'] = json.dumps(courses_completed[:50])
-        print(f"✅ Found {len(courses_completed)} courses")
+        print(f"Found {len(courses_completed)} completed courses")
 
     # Store raw text for debugging
     data['raw_data'] = text[:30000]
 
     print("=" * 60)
-    print("📊 EXTRACTION SUMMARY:")
+    print("EXTRACTION SUMMARY:")
     print(f"   GPA: {data.get('overall_gpa', 'NOT FOUND')}")
     print(f"   Credits: {data.get('total_credits_earned', 'NOT FOUND')}")
     print(f"   Classification: {data.get('classification', 'NOT FOUND')}")
     print(f"   Program: {data.get('degree_program', 'NOT FOUND')}")
-    print(f"   Name: {data.get('student_name', 'NOT FOUND')}")
+    print(f"   Completed Courses: {len(courses_completed)}")
+    print(f"   In-Progress Courses: {len(courses_in_progress)}")
     print("=" * 60)
 
     return data
@@ -2421,20 +2496,34 @@ async def delete_course(code: str, user=Depends(get_current_user)):
 
 @app.get("/api/curriculum")
 async def get_curriculum():
+    """Returns full curriculum data including degree info, courses, and elective requirements"""
     try:
         data = json.load(open(CLASSES_FILE, encoding="utf-8"))
+
+        # New structure with degree_info, courses, and elective_requirements
+        if isinstance(data, dict) and "courses" in data:
+            return {
+                "degree_info": data.get("degree_info", {}),
+                "courses": data.get("courses", []),
+                "elective_requirements": data.get("elective_requirements", {})
+            }
+
+        # Legacy support for old structure
         if isinstance(data, list):
-            return data
-        for key in ("computer_science_courses","courses","classes"):
+            return {"degree_info": {}, "courses": data, "elective_requirements": {}}
+
+        for key in ("computer_science_courses", "classes"):
             arr = data.get(key)
-            if isinstance(arr,list):
-                return arr
+            if isinstance(arr, list):
+                return {"degree_info": {}, "courses": arr, "elective_requirements": {}}
+
         cs = data.get("computer_science_courses")
-        if isinstance(cs,dict) and isinstance(cs.get("computer_science_courses"),list):
-            return cs["computer_science_courses"]
-        return []
+        if isinstance(cs, dict) and isinstance(cs.get("computer_science_courses"), list):
+            return {"degree_info": {}, "courses": cs["computer_science_courses"], "elective_requirements": {}}
+
+        return {"degree_info": {}, "courses": [], "elective_requirements": {}}
     except FileNotFoundError:
-        return []
+        return {"degree_info": {}, "courses": [], "elective_requirements": {}}
 
 @app.get("/health")
 def health():
