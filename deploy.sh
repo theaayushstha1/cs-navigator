@@ -1,106 +1,94 @@
 #!/bin/bash
+set -euo pipefail
 
-# --- CONFIGURATION ---
-SERVER_USER="ec2-user"
-SERVER_IP="18.214.136.155"
-KEY_PATH="cs-chatbot-key.pem"
+# Always run from the folder where this script lives
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-echo "🚀 Starting Deployment to $SERVER_IP (PORT 5000)..."
+# Config
+DOCKER_USERNAME="sakina593"
+FRONTEND_IMAGE="${DOCKER_USERNAME}/chatbot-frontend"
+BACKEND_IMAGE="${DOCKER_USERNAME}/chatbot-backend"
 
-# 1. Clean local artifacts
-rm -f app_bundle.tar.gz
+EC2_HOST="18.214.136.155"
+EC2_USER="ec2-user"
+EC2_KEY="cs-chatbot-key.pem"
 
-# 2. Package files (Exclude local junk)
-echo "📦 Packaging files..."
-COPYFILE_DISABLE=1 tar \
-    --exclude='node_modules' \
-    --exclude='.git' \
-    --exclude='.venv' \
-    --exclude='venv' \
-    --exclude='backend/.venv' \
-    --exclude='__pycache__' \
-    --exclude='app_bundle.tar.gz' \
-    --exclude='uploads' \
-    --exclude='.DS_Store' \
-    --exclude='._*' \
-    --exclude='frontend/.env*' \
-    -czf app_bundle.tar.gz .
+API_URL="http://${EC2_HOST}:5000"
 
-if [ ! -f "app_bundle.tar.gz" ]; then
-    echo "❌ Packaging failed."
-    exit 1
-fi
+log(){ echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1"; }
+die(){ echo "[ERROR] $1" >&2; exit 1; }
 
-# 3. Upload
-echo "Tb Uploading bundle..."
-scp -i "$KEY_PATH" -o StrictHostKeyChecking=no app_bundle.tar.gz "$SERVER_USER@$SERVER_IP:/home/$SERVER_USER/"
+check_prerequisites() {
+  command -v docker >/dev/null 2>&1 || die "Docker is not installed"
+  command -v ssh   >/dev/null 2>&1 || die "SSH is not installed"
 
-if [ $? -ne 0 ]; then
-    echo "❌ Upload failed."
-    exit 1
-fi
+  [ -f "$EC2_KEY" ] || die "PEM key not found: $SCRIPT_DIR/$EC2_KEY"
+  chmod 400 "$EC2_KEY" || true
 
-# 4. Remote Build & Configure
-echo "🔧 Building on server..."
-ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_IP" << 'EOF'
-    set -e
+  docker info >/dev/null 2>&1 || die "Docker daemon is not running"
+  [ -f "$SCRIPT_DIR/docker-compose.yml" ] || die "docker-compose.yml not found in $SCRIPT_DIR"
+}
 
-    echo "🧹 Cleaning old files..."
-    sudo rm -rf cs-chatbot
-    mkdir -p cs-chatbot
-    
-    mv app_bundle.tar.gz cs-chatbot/
-    cd cs-chatbot
-    tar -xzf app_bundle.tar.gz --warning=no-unknown-keyword || true
-    rm app_bundle.tar.gz
+build_images() {
+  log "Building frontend..."
+  cd frontend
+  docker build \
+    --build-arg VITE_API_BASE_URL="${API_URL}" \
+    --platform linux/amd64 \
+    -t "${FRONTEND_IMAGE}:latest" \
+    . || die "Frontend build failed"
+  cd "$SCRIPT_DIR"
 
-    # 🔥 GENERATE DOCKER-COMPOSE (Mapping Port 5000)
-    echo "⚙️  Generating Docker Config..."
-    cat > docker-compose.yml <<DOCKER
-version: '3.8'
-services:
-  backend:
-    build: ./backend
-    container_name: ec2-user-backend-1
-    command: uvicorn main:app --host 0.0.0.0 --port 5000
-    ports:
-      - "5000:5000"
-    env_file: .env
-    volumes:
-      - ./backend/uploads:/app/backend/uploads
+  log "Building backend..."
+  cd backend
+  docker build \
+    --platform linux/amd64 \
+    -t "${BACKEND_IMAGE}:latest" \
+    . || die "Backend build failed"
+  cd "$SCRIPT_DIR"
+}
 
-  frontend:
-    build: ./frontend
-    container_name: ec2-user-frontend-1
-    ports:
-      - "3000:80"
-    depends_on:
-      - backend
-DOCKER
+push_images() {
+  log "Pushing images to Docker Hub..."
+  if ! docker info 2>/dev/null | grep -q "Username: ${DOCKER_USERNAME}"; then
+    docker login || die "Docker login failed"
+  fi
+  docker push "${FRONTEND_IMAGE}:latest" || die "Frontend push failed"
+  docker push "${BACKEND_IMAGE}:latest"  || die "Backend push failed"
+}
 
-    # 🔥 FORCE FRONTEND ENV (To point to Port 5000)
-    echo "📝 Configuring Frontend for Port 5000..."
-    echo "VITE_API_BASE_URL=http://18.214.136.155:5000" > frontend/.env
-    echo "VITE_API_URL=http://18.214.136.155:5000" >> frontend/.env
+test_ssh() {
+  log "Testing SSH..."
+  ssh -i "$EC2_KEY" -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
+    "${EC2_USER}@${EC2_HOST}" "echo ok" >/dev/null 2>&1 || die "SSH failed (check key + SG)"
+}
 
-    # Check for Backend Secrets
-    if [ ! -f .env ]; then
-        echo "❌ ERROR: Root .env file missing! Deployment stopped."
-        exit 1
-    fi
+deploy_to_ec2() {
+  log "Copying docker-compose.yml and .env..."
+  scp -i "$EC2_KEY" -o StrictHostKeyChecking=no \
+    "$SCRIPT_DIR/docker-compose.yml" "$SCRIPT_DIR/.env" "${EC2_USER}@${EC2_HOST}:~/" || die "SCP failed"
 
-    # Build and Start
-    echo "🏗️  Building Docker..."
-    sudo docker-compose down
-
-    # Clean up old images BEFORE building to prevent disk full errors
-    echo "🧹 Cleaning old Docker images..."
-    sudo docker system prune -a -f
-    sudo docker volume prune -f
-
-    sudo docker-compose up --build -d 
-
-    echo "✅ Deployment finished successfully!"
+  log "Deploying on EC2..."
+  ssh -i "$EC2_KEY" -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" << 'EOF'
+set -e
+docker pull sakina593/chatbot-frontend:latest
+docker pull sakina593/chatbot-backend:latest
+docker-compose down || true
+docker image prune -f
+docker-compose up -d
+docker-compose ps
 EOF
+}
 
-rm app_bundle.tar.gz
+main() {
+  log "Starting deploy..."
+  check_prerequisites
+  build_images
+  push_images
+  test_ssh
+  deploy_to_ec2
+  log "Done. Frontend: http://18.214.136.155:3000"
+}
+
+main "$@"
