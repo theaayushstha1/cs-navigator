@@ -30,6 +30,9 @@ import { FaCalendarPlus } from "@react-icons/all-files/fa/FaCalendarPlus";
 import { FaLink } from "@react-icons/all-files/fa/FaLink";
 import { FaMicrophone } from "@react-icons/all-files/fa/FaMicrophone";
 import { FaStop } from "@react-icons/all-files/fa/FaStop";
+import { FaFileAlt } from "@react-icons/all-files/fa/FaFileAlt";
+import { FaRoad } from "@react-icons/all-files/fa/FaRoad";
+import DocumentationViewer from "./DocumentationViewer";
 import "./AdminDashboard.css";
 
 // API Base URL - Smart switching
@@ -98,6 +101,10 @@ export default function AdminDashboard() {
   const [analytics, setAnalytics] = useState(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
 
+  // Documentation Viewer State
+  const [showDocViewer, setShowDocViewer] = useState(false);
+  const [docViewerMode, setDocViewerMode] = useState("docs"); // "docs" or "roadmap"
+
   // ===========================================
   // DATA LOADING FUNCTIONS
   // ===========================================
@@ -105,7 +112,11 @@ export default function AdminDashboard() {
   const loadCourses = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/curriculum`);
-      if (res.ok) setCourses(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        // API returns {degree_info, courses, elective_requirements} - extract just courses array
+        setCourses(data.courses || data || []);
+      }
     } catch (err) { console.error("Failed to load courses:", err); }
   };
 
@@ -1335,6 +1346,34 @@ export default function AdminDashboard() {
           </div>
         </div>
       )}
+
+      {/* Admin Footer with Documentation Icons */}
+      <div className="admin-footer">
+        <button
+          className="footer-icon-btn"
+          onClick={() => { setDocViewerMode("technical"); setShowDocViewer(true); }}
+          title="View Technical Documentation"
+        >
+          <FaFileAlt size={20} />
+          <span>Docs</span>
+        </button>
+        <button
+          className="footer-icon-btn"
+          onClick={() => { setDocViewerMode("roadmap"); setShowDocViewer(true); }}
+          title="View Development Roadmap"
+        >
+          <FaRoad size={20} />
+          <span>Roadmap</span>
+        </button>
+      </div>
+
+      {/* Documentation Viewer Modal */}
+      <DocumentationViewer
+        isOpen={showDocViewer}
+        onClose={() => setShowDocViewer(false)}
+        darkMode={true}
+        mode={docViewerMode}
+      />
     </div>
   );
 }

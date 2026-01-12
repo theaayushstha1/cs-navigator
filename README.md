@@ -1,116 +1,238 @@
-# 🐻 CS Navigator - Morgan State University
+# CS Navigator
 
-An AI-powered **RAG (Retrieval-Augmented Generation)** chatbot designed to assist Computer Science students at Morgan State University. This system helps students navigate course requirements, find resources, and get instant answers to academic queries.
+**An AI-Powered Academic Assistant for University Students**
 
----
-
-## 🖼️ Application Preview
-
-![CS Navigator UI Preview](https://i.imgur.com/FKzJhWx.png)
-
-
-
-## 🚀 Features
-
-- **Cloud Database:** Integrated with AWS RDS (MySQL) for secure, persistent data storage.  
-- **AI Engine:** Uses OpenAI and Pinecone Vector Database for intelligent document retrieval.  
-- **Secure Authentication:** JWT-based login and signup system.  
-- **Dockerized:** One-command deployment using Docker Compose and production-ready images.  
+CS Navigator is a full-stack RAG (Retrieval-Augmented Generation) chatbot that helps Computer Science students at Morgan State University navigate their academic journey. It answers questions about courses, degree requirements, campus resources, and career guidance using AI-powered semantic search.
 
 ---
 
-## 🛠️ Tech Stack
+## Demo
 
-- **Frontend:** React (Vite) + Tailwind CSS  
-- **Backend:** Python (FastAPI)  
-- **Database:** AWS RDS (MySQL)  
-- **Vector DB:** Pinecone  
-- **DevOps:** Docker & AWS EC2  
+**Live Application:** [http://18.214.136.155:3000](http://18.214.136.155:3000)
 
 ---
 
-## ⚙️ Installation & Setup
-
-### 1. Clone the Repository
+## System Architecture
 
 ```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         CLIENT LAYER                                │
+│  ┌─────────────┐                                                   │
+│  │   React     │  Single Page Application (Vite + Tailwind CSS)    │
+│  │   Frontend  │  Voice input/output, Multi-session chat           │
+│  └──────┬──────┘                                                   │
+└─────────┼───────────────────────────────────────────────────────────┘
+          │ HTTPS
+┌─────────┼───────────────────────────────────────────────────────────┐
+│         ▼              APPLICATION LAYER                            │
+│  ┌─────────────┐     ┌─────────────────────────────────────────┐   │
+│  │   Nginx     │────▶│          FastAPI Backend                │   │
+│  │   Proxy     │     │  - JWT Authentication                   │   │
+│  └─────────────┘     │  - REST API (25+ endpoints)             │   │
+│                      │  - File upload handling                 │   │
+│                      └──────────────┬──────────────────────────┘   │
+└─────────────────────────────────────┼───────────────────────────────┘
+                                      │
+┌─────────────────────────────────────┼───────────────────────────────┐
+│                        AI/ML LAYER  │                               │
+│  ┌──────────────────────────────────▼─────────────────────────┐    │
+│  │                    LangChain RAG Pipeline                   │    │
+│  │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │    │
+│  │  │   Query     │───▶│   Vector    │───▶│   Context   │     │    │
+│  │  │   Embedding │    │   Search    │    │   Assembly  │     │    │
+│  │  └─────────────┘    └─────────────┘    └──────┬──────┘     │    │
+│  │                                               │             │    │
+│  │                                        ┌──────▼──────┐      │    │
+│  │                                        │   OpenAI    │      │    │
+│  │                                        │   GPT-3.5   │      │    │
+│  │                                        └─────────────┘      │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                          DATA LAYER                                 │
+│  ┌─────────────────┐          ┌─────────────────┐                  │
+│  │  AWS RDS MySQL  │          │ Pinecone Vector │                  │
+│  │  - Users        │          │ Database        │                  │
+│  │  - Chat History │          │ - 11 Knowledge  │                  │
+│  │  - Sessions     │          │   Sources       │                  │
+│  │  - DegreeWorks  │          │ - Semantic      │                  │
+│  └─────────────────┘          │   Embeddings    │                  │
+│                               └─────────────────┘                  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## How RAG Works
+
+```
+User Question: "What are the prerequisites for COSC 311?"
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 1. EMBED: Convert question to 1536-dimensional vector       │
+│    using OpenAI text-embedding-3-small                      │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. RETRIEVE: Search Pinecone for semantically similar       │
+│    documents (top 5 matches from knowledge base)            │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. AUGMENT: Combine retrieved context with user question    │
+│    into a structured prompt                                 │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. GENERATE: Send to GPT-3.5 to produce grounded response   │
+│    based on actual university data                          │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+Answer: "COSC 311 (Data Structures) requires COSC 211
+        (Object-Oriented Programming) and MATH 241..."
+```
+
+---
+
+## Technology Stack
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| Frontend | React 19 + Vite | Fast, modern SPA |
+| Styling | Tailwind CSS | Utility-first CSS |
+| Backend | FastAPI (Python 3.11) | High-performance API |
+| Database | AWS RDS MySQL | User data, chat history |
+| Vector DB | Pinecone | Semantic search |
+| AI Model | OpenAI GPT-3.5-turbo | Response generation |
+| Embeddings | text-embedding-3-small | Vector conversion |
+| Auth | JWT + bcrypt | Secure authentication |
+| Deployment | Docker + AWS EC2 | Containerized hosting |
+
+---
+
+## Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **AI Chat** | Context-aware responses grounded in university data |
+| **Voice Mode** | Speech-to-text input, text-to-speech output |
+| **Curriculum Tracker** | Visual progress through CS degree requirements |
+| **DegreeWorks Parser** | Upload PDF transcripts for automatic grade import |
+| **Multi-Session** | Create and manage multiple conversation threads |
+| **Admin Dashboard** | Manage knowledge base, view analytics, handle tickets |
+
+---
+
+## Project Structure
+
+```
+cs-chatbot-morganstate/
+├── frontend/                 # React application
+│   ├── src/
+│   │   ├── components/       # UI components
+│   │   ├── pages/            # Route pages
+│   │   └── App.jsx           # Main app entry
+│   └── Dockerfile
+│
+├── backend/                  # FastAPI application
+│   ├── main.py               # API endpoints (~3000 lines)
+│   ├── security.py           # JWT authentication
+│   ├── ingestion.py          # Vector DB ingestion
+│   ├── datasource/           # Knowledge base JSON files
+│   └── Dockerfile
+│
+├── docker-compose.yml        # Container orchestration
+├── deploy.sh                 # One-command deployment
+└── README.md
+```
+
+---
+
+## Quick Start
+
+### Prerequisites
+- Docker Desktop
+- OpenAI API Key
+- Pinecone API Key
+
+### Local Development
+
+```bash
+# 1. Clone repository
 git clone https://github.com/theaayushstha1/cs-chatbot-morganstate.git
 cd cs-chatbot-morganstate
+
+# 2. Create .env file in backend/
+OPENAI_API_KEY=your_key
+PINECONE_API_KEY=your_key
+PINECONE_INDEX=your_index
+JWT_SECRET=your_secret
+DATABASE_URL=mysql+pymysql://user:pass@host:3306/db
+
+# 3. Run with Docker
+docker-compose up --build
+
+# 4. Access application
+# Frontend: http://localhost:3000
+# Backend:  http://localhost:5000
 ```
 
-### 2. Configure Environment Variables
+### Production Deployment
 
-Create a `.env` file in the **backend** directory and add your keys (do not commit this file):
-
-```
-OPENAI_API_KEY=your_openai_key_here
-PINECONE_API_KEY=your_pinecone_key_here
-PINECONE_ENV=your_pinecone_env
-PINECONE_INDEX_NAME=your_index_name
-PINECONE_NAMESPACE=docs
-JWT_SECRET=some_long_random_secret
-DATABASE_URL=mysql+pymysql://user:password@aws-endpoint:3306/db_name
-```
-
-Create a `.env` file in the **frontend** directory:
-
-```
-VITE_API_BASE_URL=http://localhost:5000
-```
-
-Make sure `.gitignore` is configured so that all `.env` files and key files (like `*.pem`) are never committed.
-
----
-
-### 3. Run with Docker (Local)
-
-From the project root:
-
-```
-docker compose up --build
-```
-
-The application will be available at:
-
-- **Frontend:** `http://localhost:3000`  
-- **Backend API & Docs:** `http://localhost:5000/docs`  
-
----
-
-### 4. Production Deployment (AWS EC2)
-
-This project includes helper scripts for smoother deployment:
-
-- `deploy.sh` – builds images, pushes to Docker Hub, and redeploys to an EC2 instance.  
-- `quickdeploy.sh` – pulls latest images and restarts containers on EC2.  
-- `viewlogs.sh` – streams Docker Compose logs from the EC2 instance.  
-
-Before using them, update the configuration variables inside these scripts:
-
-- `EC2_HOST`
-- `EC2_USER`
-- `EC2_KEY`
-- `DOCKER_USERNAME`
-
-Then:
-
-```
-chmod +x deploy.sh quickdeploy.sh viewlogs.sh
-./deploy.sh
+```bash
+# One-command deploy to EC2
+bash deploy.sh
 ```
 
 ---
 
-## 👥 Contributors
+## API Overview
 
-- **Aayush Shrestha** – Cloud Architecture & Backend Integration  
-- **Sakina Shrestha** – Initial Core Development  
-- **Computer Science Department** – Morgan State University  
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/chat` | POST | Yes | Send message, receive AI response |
+| `/api/register` | POST | No | Create user account |
+| `/api/login` | POST | No | Authenticate, receive JWT |
+| `/api/profile` | GET/PUT | Yes | User profile management |
+| `/chat-history` | GET | Yes | Retrieve conversation history |
+| `/sessions` | GET/POST/DELETE | Yes | Manage chat sessions |
+| `/api/curriculum` | GET | Yes | CS curriculum data |
+| `/api/degreeworks/upload-pdf` | POST | Yes | Upload transcript PDF |
 
 ---
 
-## 📄 License
+## Knowledge Base
 
-This project is licensed under the MIT License – see the [LICENSE](./LICENSE) file for details.
-```
+The chatbot is trained on 11 curated knowledge sources:
 
+1. **CS Courses** - All 45+ CS course descriptions
+2. **Curriculum Requirements** - 120 credit hour breakdown
+3. **Faculty Directory** - Professors and office hours
+4. **Career Resources** - Internships, jobs, resume tips
+5. **Campus Facilities** - Labs, library, study spaces
+6. **Academic Policies** - Grading, registration, deadlines
+7. **Student Organizations** - CS clubs and events
+8. **Research Opportunities** - Labs and projects
+9. **Graduate Programs** - MS/PhD pathways
+10. **FAQ** - Common student questions
+11. **Contact Information** - Department contacts
+
+---
+
+## Contributors
+
+- **Aayush Shrestha** - Cloud Architecture & Backend
+- **Sakina Shrestha** - Core Development
+- **Morgan State University** - Computer Science Department
+
+---
+
+## License
+
+MIT License - See [LICENSE](./LICENSE) for details.

@@ -13,6 +13,12 @@ import { FaChartLine } from "@react-icons/all-files/fa/FaChartLine";
 import { FaStar } from "@react-icons/all-files/fa/FaStar";
 import "./CurriculumPage.css";
 
+// API Base URL
+const hostname = window.location.hostname;
+const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
+  ? "http://127.0.0.1:8000"
+  : "http://18.214.136.155:5000";
+
 // Helper to get grade color
 const getGradeColor = (grade) => {
   if (!grade) return "var(--text-secondary)";
@@ -59,7 +65,7 @@ export default function CurriculumPage() {
         const token = localStorage.getItem("token");
 
         // Fetch curriculum data
-        const curriculumResponse = await fetch("/api/curriculum");
+        const curriculumResponse = await fetch(`${API_BASE}/api/curriculum`);
         if (!curriculumResponse.ok) {
           throw new Error("Failed to fetch curriculum data");
         }
@@ -100,7 +106,7 @@ export default function CurriculumPage() {
         // Fetch DegreeWorks data if logged in
         if (token) {
           try {
-            const dwResponse = await fetch("/api/degreeworks", {
+            const dwResponse = await fetch(`${API_BASE}/api/degreeworks`, {
               headers: { Authorization: `Bearer ${token}` }
             });
             if (dwResponse.ok) {

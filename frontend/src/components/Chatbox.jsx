@@ -19,12 +19,12 @@ import "./Chatbox.css";
 
 // Default suggestions (fallback) - 6 questions
 const DEFAULT_SUGGESTIONS = [
-  "Who is the chair of Computer Science department?",
-  "What are the degree requirements for CS major?",
-  "What programming languages should I learn?",
-  "How do I contact my academic advisor?",
+  "Who is the chair of Computer Science?",
+  "What are the prerequisites for COSC 311?",
   "What internship opportunities are available?",
-  "When is the deadline for course registration?"
+  "How do I contact my academic advisor?",
+  "What courses should I take for cybersecurity?",
+  "What research opportunities exist in CS?"
 ];
 
 // --- SMART API SWITCHING ---

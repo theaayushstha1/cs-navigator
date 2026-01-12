@@ -2023,3 +2023,172 @@ body.dark .chart-value {
   }
 }
 
+
+
+/* ========================================
+   📚 DOCUMENTATION AND ROADMAP TAB STYLES
+   ======================================== */
+
+.docs-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 20px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.docs-header {
+  text-align: center;
+  margin-bottom: 48px;
+}
+
+.docs-icon {
+  color: #0052CC;
+  margin-bottom: 16px;
+}
+
+.docs-header h2 {
+  font-size: 32px;
+  font-weight: 700;
+  color: #E2E8F0;
+  margin: 0 0 12px;
+}
+
+.docs-header p {
+  font-size: 16px;
+  color: #94A3B8;
+  margin: 0;
+}
+
+.docs-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 24px;
+  width: 100%;
+}
+
+.doc-card {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 32px 24px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.doc-card:hover {
+  background: rgba(0, 82, 204, 0.1);
+  border-color: #0052CC;
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 82, 204, 0.2);
+}
+
+.doc-card svg {
+  color: #0052CC;
+  transition: transform 0.3s ease;
+}
+
+.doc-card:hover svg {
+  transform: scale(1.1);
+}
+
+.doc-card h3 {
+  font-size: 20px;
+  font-weight: 600;
+  color: #E2E8F0;
+  margin: 0;
+}
+
+.doc-card p {
+  font-size: 14px;
+  color: #94A3B8;
+  margin: 0;
+  line-height: 1.6;
+}
+
+/* ========================================
+   📌 ADMIN FOOTER WITH DOCUMENTATION ICONS
+   Subtle, tiny, admin-only visibility
+   ======================================== */
+
+.admin-footer {
+  position: fixed;
+  bottom: 8px;
+  right: 8px;
+  padding: 4px 6px;
+  display: flex;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  z-index: 50;
+  opacity: 0.4;
+  transition: opacity 0.3s ease;
+}
+
+.admin-footer:hover {
+  opacity: 1;
+}
+
+.footer-icon-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #9CA3AF;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 10px;
+  font-weight: 400;
+  box-shadow: none;
+}
+
+.footer-icon-btn span {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.footer-icon-btn svg {
+  width: 12px;
+  height: 12px;
+  transition: transform 0.2s ease;
+}
+
+.footer-icon-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: #6B7280;
+  transform: none;
+  box-shadow: none;
+}
+
+.footer-icon-btn:hover svg {
+  transform: scale(1.1);
+}
+
+/* Dark mode - blend into dark background */
+body.dark .admin-footer {
+  opacity: 0.3;
+}
+
+body.dark .admin-footer:hover {
+  opacity: 0.9;
+}
+
+body.dark .footer-icon-btn {
+  color: #6B7280;
+}
+
+body.dark .footer-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #9CA3AF;
+}

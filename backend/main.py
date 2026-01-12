@@ -7,10 +7,11 @@ print("✅✅✅ main.py loaded successfully")
 import os
 import re
 import json
-import time
+# import time  # Commented: currently unused, kept for potential future use
 import shutil # 🔥 NEW: For file operations
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 # 🔥 FIXED IMPORTS: Use 'pypdf' which you installed, not 'PyPDF2'
 import pypdf 
@@ -110,7 +111,7 @@ class ChatHistory(Base):
     session_id = Column(String(255), default="default") # 🔥 NEW: Support multiple threads
     user_query = Column(Text)
     bot_response = Column(Text)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 def init_db():
     """Initializes the database tables and runs migrations."""
@@ -267,7 +268,42 @@ init_db()
 # ==============================================================================
 # 4. FASTAPI APP SETUP
 # ==============================================================================
-app = FastAPI(title="CS Chatbot API", version="2.1.0")
+# AI System globals (initialized in lifespan)
+pc = None
+retriever = None
+qa = None
+llm = None
+
+def build_qa_chain():
+    """Initialize AI components on startup"""
+    global retriever, qa, llm, pc
+    if not all([PINECONE_API_KEY, OPENAI_API_KEY, PINECONE_INDEX]):
+        print("⚠️ API Keys missing. Chatbot will be offline.")
+        return
+    try:
+        pc = Pinecone(api_key=PINECONE_API_KEY)
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=OPENAI_API_KEY)
+        store = PineconeVectorStore.from_existing_index(
+            index_name=PINECONE_INDEX,
+            embedding=embeddings,
+            namespace=PINECONE_NAMESPACE,
+        )
+        retriever = store.as_retriever(search_type="similarity", search_kwargs={"k": 5})
+        llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-3.5-turbo", temperature=0)
+        qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents=True)
+        print("✅ AI System Initialized")
+    except Exception as e:
+        print(f"❌ AI Init Failed: {e}")
+
+@asynccontextmanager
+async def lifespan(app):
+    """Modern lifespan event handler for FastAPI"""
+    # Startup
+    build_qa_chain()
+    yield
+    # Shutdown (cleanup if needed)
+
+app = FastAPI(title="CS Chatbot API", version="2.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -614,7 +650,7 @@ async def sync_degreeworks(
             existing.courses_remaining = json.dumps(req.courses_remaining) if req.courses_remaining else None
             existing.requirements_status = json.dumps(req.requirements_status) if req.requirements_status else None
             existing.raw_data = req.raw_data
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = datetime.now(timezone.utc)
         else:
             # Create new record
             new_data = DegreeWorksData(
@@ -640,7 +676,7 @@ async def sync_degreeworks(
 
         # Update user's morgan_connected status
         db_user.morgan_connected = True
-        db_user.morgan_connected_at = datetime.utcnow()
+        db_user.morgan_connected_at = datetime.now(timezone.utc)
 
         # Update name if provided and not already set
         if req.student_name and not db_user.name:
@@ -979,7 +1015,7 @@ async def upload_degreeworks_pdf(
             for key, value in data.items():
                 if value is not None and hasattr(existing, key):
                     setattr(existing, key, value)
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = datetime.now(timezone.utc)
         else:
             # Create new
             new_data = DegreeWorksData(user_id=user["user_id"], **data)
@@ -987,7 +1023,7 @@ async def upload_degreeworks_pdf(
 
         # Update user's morgan_connected status
         db_user.morgan_connected = True
-        db_user.morgan_connected_at = datetime.utcnow()
+        db_user.morgan_connected_at = datetime.now(timezone.utc)
 
         # Update user name if found
         if data.get('student_name') and not db_user.name:
@@ -1053,7 +1089,7 @@ async def scrape_degreeworks_html(
             for key, value in data.items():
                 if value is not None and hasattr(existing, key):
                     setattr(existing, key, value)
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = datetime.now(timezone.utc)
         else:
             # Create new
             new_data = DegreeWorksData(user_id=user["user_id"], **data)
@@ -1061,7 +1097,7 @@ async def scrape_degreeworks_html(
 
         # Update user's morgan_connected status
         db_user.morgan_connected = True
-        db_user.morgan_connected_at = datetime.utcnow()
+        db_user.morgan_connected_at = datetime.now(timezone.utc)
 
         # Update user name if found
         if data.get('student_name') and not db_user.name:
@@ -1141,17 +1177,35 @@ def parse_degreeworks_html(html: str) -> dict:
     gpa_patterns = [
         r'overall\s*gpa[:\s]*(\d\.\d{1,2})',
         r'cumulative\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'gpa[:\s]*(\d\.\d{1,2})',
+        r'gpa[:\s]+(\d\.\d{1,2})',
+        r'gpa\s*:\s*(\d\.\d{1,2})',
+        r'gpa\s+(\d\.\d{1,2})',
+        r'total\s*gpa[:\s]*(\d\.\d{1,2})',
+        r'career\s*gpa[:\s]*(\d\.\d{1,2})',
         r'>(\d\.\d{2})<.*?gpa',
         r'gpa.*?>(\d\.\d{2})<',
     ]
     for pattern in gpa_patterns:
         match = re.search(pattern, text_lower)
         if match:
-            gpa = float(match.group(1))
-            if 0 <= gpa <= 4.0:
-                data['overall_gpa'] = gpa
-                break
+            try:
+                gpa = float(match.group(1))
+                if 0 <= gpa <= 4.0:
+                    data['overall_gpa'] = gpa
+                    break
+            except:
+                pass
+
+    # Fallback: Find any decimal that looks like GPA
+    if not data.get('overall_gpa'):
+        # Look near GPA keyword
+        gpa_area = re.search(r'gpa.{0,30}', text_lower)
+        if gpa_area:
+            gpa_match = re.search(r'(\d\.\d{1,2})', gpa_area.group())
+            if gpa_match:
+                gpa = float(gpa_match.group(1))
+                if 1.0 <= gpa <= 4.0:
+                    data['overall_gpa'] = gpa
 
     # Major GPA
     major_gpa_patterns = [
@@ -1169,6 +1223,8 @@ def parse_degreeworks_html(html: str) -> dict:
         r'classification[:\s]*(freshman|sophomore|junior|senior|graduate)',
         r'class[:\s]*(freshman|sophomore|junior|senior|graduate)',
         r'standing[:\s]*(freshman|sophomore|junior|senior|graduate)',
+        r'level[:\s]*(freshman|sophomore|junior|senior|graduate)',
+        r'student\s*level[:\s]*(freshman|sophomore|junior|senior|graduate)',
         r'>(freshman|sophomore|junior|senior|graduate)<',
     ]
     for pattern in class_patterns:
@@ -1176,6 +1232,18 @@ def parse_degreeworks_html(html: str) -> dict:
         if match:
             data['classification'] = match.group(1).title()
             break
+
+    # If classification not found, try to determine from credits
+    if not data.get('classification') and data.get('total_credits_earned'):
+        credits = data['total_credits_earned']
+        if credits >= 90:
+            data['classification'] = 'Senior'
+        elif credits >= 60:
+            data['classification'] = 'Junior'
+        elif credits >= 30:
+            data['classification'] = 'Sophomore'
+        else:
+            data['classification'] = 'Freshman'
 
     # Degree/Program/Major
     degree_patterns = [
@@ -1195,18 +1263,24 @@ def parse_degreeworks_html(html: str) -> dict:
 
     # Credits - look for various patterns
     credits_patterns = [
-        r'(?:total|earned|completed)\s*(?:credits|hours)[:\s]*(\d{1,3}(?:\.\d)?)',
-        r'(\d{1,3}(?:\.\d)?)\s*(?:credits|hours)\s*(?:earned|completed|total)',
-        r'credits\s*earned[:\s]*(\d{1,3}(?:\.\d)?)',
-        r'hours\s*earned[:\s]*(\d{1,3}(?:\.\d)?)',
+        r'(?:total|earned|completed)\s*(?:credits|hours)[:\s]*(\d{2,3}(?:\.\d)?)',
+        r'(\d{2,3}(?:\.\d)?)\s*(?:credits|hours)\s*(?:earned|completed|total)',
+        r'credits\s*(?:earned|applied)[:\s]*(\d{2,3}(?:\.\d)?)',
+        r'hours\s*earned[:\s]*(\d{2,3}(?:\.\d)?)',
+        r'credits\s*:\s*(\d{2,3}(?:\.\d)?)',
+        r'total\s*credits[:\s]*(\d{2,3}(?:\.\d)?)',
     ]
     for pattern in credits_patterns:
         match = re.search(pattern, text_lower)
         if match:
-            credits = float(match.group(1))
-            if 0 < credits <= 200:
-                data['total_credits_earned'] = credits
-                break
+            try:
+                credits = float(match.group(1))
+                # Valid range for student credits (20-200), avoid 100 (often percentage)
+                if 20 < credits <= 200 and credits != 100:
+                    data['total_credits_earned'] = credits
+                    break
+            except:
+                pass
 
     # Credits Required
     req_patterns = [
@@ -1322,8 +1396,6 @@ def parse_degreeworks_pdf(text: str) -> dict:
     Super enhanced to handle Morgan State DegreeWorks PDF formats.
     """
     data = {}
-    text_lower = text.lower()
-
     # Clean up text - remove extra whitespace but preserve structure
     text_clean = re.sub(r'[ \t]+', ' ', text)
     text_lower_clean = text_clean.lower()
@@ -1339,7 +1411,7 @@ def parse_degreeworks_pdf(text: str) -> dict:
     # Try many different patterns to find GPA
     gpa_found = False
 
-    # Pattern group 1: Explicit GPA labels
+    # Pattern group 1: Explicit GPA labels (most reliable)
     gpa_patterns_explicit = [
         r'overall\s*gpa[:\s]*(\d\.\d{1,2})',
         r'cumulative\s*gpa[:\s]*(\d\.\d{1,2})',
@@ -1350,6 +1422,11 @@ def parse_degreeworks_pdf(text: str) -> dict:
         r'cum\s*gpa[:\s]*(\d\.\d{1,2})',
         r'inst\s*gpa[:\s]*(\d\.\d{1,2})',  # Institutional GPA
         r'ovr\s*gpa[:\s]*(\d\.\d{1,2})',   # Abbreviated
+        r'total\s*gpa[:\s]*(\d\.\d{1,2})',
+        r'current\s*gpa[:\s]*(\d\.\d{1,2})',
+        r'career\s*gpa[:\s]*(\d\.\d{1,2})',  # Banner/DegreeWorks terminology
+        r'gpa\s*:\s*(\d\.\d{1,2})',  # GPA : 3.50
+        r'gpa\s+(\d\.\d{1,2})',  # GPA 3.50 (no colon)
     ]
 
     for pattern in gpa_patterns_explicit:
@@ -1410,11 +1487,13 @@ def parse_degreeworks_pdf(text: str) -> dict:
 
     # First, try to get credits if we don't have them yet
     if not data.get('total_credits_earned'):
-        # Quick credits search
-        credits_match = re.search(r'(\d{3}(?:\.\d)?)\s*(?:credits|hours)', text_lower_clean)
+        # Quick credits search - allow 2-3 digit numbers (e.g., 45, 124)
+        credits_match = re.search(r'(\d{2,3}(?:\.\d)?)\s*(?:credits|hours)', text_lower_clean)
         if credits_match:
             try:
-                data['total_credits_earned'] = float(credits_match.group(1))
+                cred_val = float(credits_match.group(1))
+                if 20 <= cred_val <= 200:  # Valid credit range
+                    data['total_credits_earned'] = cred_val
             except:
                 pass
 
@@ -1430,13 +1509,43 @@ def parse_degreeworks_pdf(text: str) -> dict:
         else:
             data['classification'] = 'Freshman'
         print(f"✅ Classification from credits ({credits}): {data['classification']}")
-    else:
-        # Fallback: Look for explicit "Senior", "Junior" etc. in specific contexts
-        # But ONLY if preceded by "Classification" to avoid course names
-        class_match = re.search(r'classification[:\s]*(senior|junior|sophomore|freshman|graduate)', text_lower_clean)
-        if class_match:
-            data['classification'] = class_match.group(1).title()
-            print(f"✅ Classification from label: {data['classification']}")
+
+    # If classification not set yet, try multiple fallback patterns
+    if not data.get('classification'):
+        # Pattern 1: Look for explicit "Classification: Senior" format
+        class_patterns = [
+            r'classification[:\s]*(senior|junior|sophomore|freshman|graduate)',
+            r'class[:\s]*(senior|junior|sophomore|freshman|graduate)',
+            r'standing[:\s]*(senior|junior|sophomore|freshman|graduate)',
+            r'level[:\s]*(senior|junior|sophomore|freshman|graduate)',
+            r'student\s+level[:\s]*(senior|junior|sophomore|freshman|graduate)',
+            r'academic\s+level[:\s]*(senior|junior|sophomore|freshman|graduate)',
+        ]
+        for pattern in class_patterns:
+            class_match = re.search(pattern, text_lower_clean)
+            if class_match:
+                data['classification'] = class_match.group(1).title()
+                print(f"✅ Classification from label: {data['classification']}")
+                break
+
+        # Pattern 2: Look for standalone classification words with context clues
+        if not data.get('classification'):
+            # Check if "Senior" appears more than once (likely classification not course)
+            for cls in ['Senior', 'Junior', 'Sophomore', 'Freshman', 'Graduate']:
+                cls_lower = cls.lower()
+                # Count occurrences
+                count = len(re.findall(rf'\b{cls_lower}\b', text_lower_clean))
+                # If it appears multiple times or near key words, it's likely classification
+                if count >= 2:
+                    data['classification'] = cls
+                    print(f"✅ Classification from frequency ({cls} appeared {count} times): {cls}")
+                    break
+                # Check if near classification-related keywords
+                context_match = re.search(rf'(level|status|standing|class|year).*?\b{cls_lower}\b|\b{cls_lower}\b.*?(level|status|standing|class|year)', text_lower_clean)
+                if context_match:
+                    data['classification'] = cls
+                    print(f"✅ Classification from context: {cls}")
+                    break
 
     # ============ CREDITS ============
     credits_found = False
@@ -1900,7 +2009,7 @@ async def update_ticket(
         ticket.status = update.status
         if update.status == "resolved":
             ticket.resolved_by = user["user_id"]
-            ticket.resolved_at = datetime.utcnow()
+            ticket.resolved_at = datetime.now(timezone.utc)
 
     if update.priority:
         ticket.priority = update.priority
@@ -1934,33 +2043,6 @@ async def get_ticket_stats(
         "resolved": resolved
     }
 
-
-# --- AI Initialization ---
-pc = None
-retriever = None
-qa = None
-llm = None
-
-@app.on_event("startup")
-def build_qa_chain():
-    global retriever, qa, llm, pc
-    if not all([PINECONE_API_KEY, OPENAI_API_KEY, PINECONE_INDEX]):
-        print("⚠️ API Keys missing. Chatbot will be offline.")
-        return
-    try:
-        pc = Pinecone(api_key=PINECONE_API_KEY)
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=OPENAI_API_KEY)
-        store = PineconeVectorStore.from_existing_index(
-            index_name=PINECONE_INDEX,
-            embedding=embeddings,
-            namespace=PINECONE_NAMESPACE,
-        )
-        retriever = store.as_retriever(search_type="similarity", search_kwargs={"k": 5})
-        llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-3.5-turbo", temperature=0)
-        qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents=True)
-        print("✅ AI System Initialized")
-    except Exception as e:
-        print(f"❌ AI Init Failed: {e}")
 
 # 🔥 NEW HELPER: Extract Text from Files (Updated to use 'pypdf')
 def extract_file_content(filepath: str) -> str:
@@ -2282,7 +2364,7 @@ async def reset_chat_history(user=Depends(get_current_user), db: Session = Depen
 
 # --- Voice Mode Endpoints ---
 @app.post("/api/tts")
-async def text_to_speech(req: TTSRequest, user=Depends(get_current_user)):
+async def text_to_speech(req: TTSRequest, _user=Depends(get_current_user)):
     """Convert text to speech using OpenAI TTS API"""
     if not OPENAI_API_KEY:
         raise HTTPException(500, "OpenAI API key not configured")
@@ -2348,6 +2430,11 @@ async def get_popular_questions(db: Session = Depends(get_db)):
             if 'uploads' in normalized or 'chat_files' in normalized:
                 return None
             if any(fu in normalized for fu in ['tell me more', 'what about', 'explain more']):
+                return None
+            # Skip outdated semester-specific questions (past semesters)
+            outdated_patterns = ['fall 2024', 'fall 2025', 'spring 2024', 'spring 2025',
+                                 'summer 2024', 'summer 2025', 'did i take', 'have i taken']
+            if any(op in normalized for op in outdated_patterns):
                 return None
             return original
 
@@ -2419,21 +2506,53 @@ async def get_popular_questions(db: Session = Depends(get_db)):
                     trending_questions.append(fb)
                     break
 
-        # Combine: 2 frequent + 2 trending + 2 general = 6 total
-        all_questions = frequent_questions[:2] + trending_questions[:2] + general_questions[:2]
+        # Combine and deduplicate: 2 frequent + 2 trending + 2 general = 6 total
+        seen = set()
+        all_questions = []
 
-        return {"questions": all_questions}
+        def add_if_unique(question):
+            key = question.lower().strip()
+            if key not in seen:
+                seen.add(key)
+                all_questions.append(question)
+                return True
+            return False
+
+        # Add frequent questions first
+        for q in frequent_questions[:2]:
+            add_if_unique(q)
+
+        # Add trending questions
+        for q in trending_questions[:2]:
+            add_if_unique(q)
+
+        # Add general questions
+        for q in general_questions:
+            add_if_unique(q)
+
+        # If we still don't have 6, add more fallbacks
+        extra_fallbacks = [
+            "What courses should I take for cybersecurity?",
+            "What research opportunities exist in CS?",
+            "Who is the chair of Computer Science?"
+        ]
+        for q in extra_fallbacks:
+            if len(all_questions) >= 6:
+                break
+            add_if_unique(q)
+
+        return {"questions": all_questions[:6]}
 
     except Exception as e:
         print(f"Error fetching popular questions: {e}")
         return {
             "questions": [
-                "Who is the chair of Computer Science department?",
-                "What are the degree requirements for CS major?",
-                "What programming languages should I learn?",
-                "When is the deadline for course registration?",
+                "Who is the chair of Computer Science?",
+                "What are the prerequisites for COSC 311?",
                 "What internship opportunities are available?",
-                "How do I contact my academic advisor?"
+                "How do I contact my academic advisor?",
+                "What courses should I take for cybersecurity?",
+                "What research opportunities exist in CS?"
             ]
         }
 
@@ -2481,7 +2600,7 @@ async def add_course(course: Course, user=Depends(get_current_user)):
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admins only")
     arr = json.load(open(CLASSES_FILE, encoding="utf-8"))
-    arr.append(course.dict())
+    arr.append(course.model_dump())
     json.dump(arr, open(CLASSES_FILE, "w", encoding="utf-8"), indent=2)
     return {"message": "Course added", "course": course}
 
@@ -2584,7 +2703,7 @@ async def get_user_stats(user: dict = Depends(get_current_user), db: Session = D
         raise HTTPException(status_code=403, detail="Admin access required")
 
     from datetime import timedelta
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     week_ago = now - timedelta(days=7)
     month_ago = now - timedelta(days=30)
 
@@ -2639,7 +2758,7 @@ async def get_system_health(user: dict = Depends(get_current_user), db: Session 
         "pinecone": {"status": "unknown", "message": ""},
         "openai": {"status": "unknown", "message": ""},
         "vector_count": 0,
-        "last_check": datetime.utcnow().isoformat()
+        "last_check": datetime.now(timezone.utc).isoformat()
     }
 
     # Check Database
@@ -2685,7 +2804,7 @@ async def update_course(code: str, course: Course, user=Depends(get_current_user
     found = False
     for i, c in enumerate(arr):
         if c.get("course_code") == code:
-            arr[i] = course.dict()
+            arr[i] = course.model_dump()
             found = True
             break
 
@@ -2785,7 +2904,7 @@ async def search_kb_files(q: str, user: dict = Depends(get_current_user)):
                     if match_count >= 10:
                         break
 
-            except Exception as e:
+            except Exception:
                 continue
 
     # Sort by filename, then position
@@ -2848,9 +2967,8 @@ async def trigger_ingestion(user: dict = Depends(get_current_user)):
     try:
         # Import and run ingestion
         from ingestion import ingest_data
-        import asyncio
         await ingest_data()
-        return {"message": "Ingestion completed successfully", "timestamp": datetime.utcnow().isoformat()}
+        return {"message": "Ingestion completed successfully", "timestamp": datetime.now(timezone.utc).isoformat()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
 
@@ -2862,7 +2980,7 @@ async def get_analytics(user: dict = Depends(get_current_user), db: Session = De
         raise HTTPException(status_code=403, detail="Admin access required")
 
     from datetime import timedelta
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # User signups by day (last 7 days)
     signups_by_day = []

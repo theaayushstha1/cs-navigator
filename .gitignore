@@ -40,7 +40,19 @@ frontend/build/
 
 # Logs
 *.log
+
 # Keys (AWS / SSH / TLS)
 *.pem
 *.key
 app_bundle.tar.gz
+
+# Internal documentation (not for public repo)
+COMPREHENSIVE_DOCUMENTATION.md
+FUTURE_ROADMAP_AND_RESEARCH.md
+VISUAL_DIAGRAMS_REFERENCE.md
+README_DOCUMENTATION.md
+
+# Misc
+*.tar.gz
+*.zip
+jan.txt

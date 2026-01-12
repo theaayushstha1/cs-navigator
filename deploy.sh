@@ -5,6 +5,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Disable BuildKit to avoid Windows file access issues
+export DOCKER_BUILDKIT=0
+
 # Config
 DOCKER_USERNAME="sakina593"
 FRONTEND_IMAGE="${DOCKER_USERNAME}/chatbot-frontend"
@@ -24,29 +27,25 @@ check_prerequisites() {
   command -v ssh   >/dev/null 2>&1 || die "SSH is not installed"
 
   [ -f "$EC2_KEY" ] || die "PEM key not found: $SCRIPT_DIR/$EC2_KEY"
-  chmod 400 "$EC2_KEY" || true
+  chmod 400 "$EC2_KEY" 2>/dev/null || true
 
   docker info >/dev/null 2>&1 || die "Docker daemon is not running"
   [ -f "$SCRIPT_DIR/docker-compose.yml" ] || die "docker-compose.yml not found in $SCRIPT_DIR"
 }
 
 build_images() {
-  log "Building frontend..."
-  cd frontend
+  log "Building frontend (locally)..."
   docker build \
     --build-arg VITE_API_BASE_URL="${API_URL}" \
     --platform linux/amd64 \
     -t "${FRONTEND_IMAGE}:latest" \
-    . || die "Frontend build failed"
-  cd "$SCRIPT_DIR"
+    "$SCRIPT_DIR/frontend" || die "Frontend build failed"
 
-  log "Building backend..."
-  cd backend
+  log "Building backend (locally)..."
   docker build \
     --platform linux/amd64 \
     -t "${BACKEND_IMAGE}:latest" \
-    . || die "Backend build failed"
-  cd "$SCRIPT_DIR"
+    "$SCRIPT_DIR/backend" || die "Backend build failed"
 }
 
 push_images() {
@@ -65,30 +64,41 @@ test_ssh() {
 }
 
 deploy_to_ec2() {
-  log "Copying docker-compose.yml and .env..."
+  log "Copying docker-compose.yml and .env to EC2..."
   scp -i "$EC2_KEY" -o StrictHostKeyChecking=no \
     "$SCRIPT_DIR/docker-compose.yml" "$SCRIPT_DIR/.env" "${EC2_USER}@${EC2_HOST}:~/" || die "SCP failed"
 
-  log "Deploying on EC2..."
+  log "Deploying on EC2 (pull only, no build)..."
   ssh -i "$EC2_KEY" -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" << 'EOF'
 set -e
+echo "Pulling latest images..."
 docker pull sakina593/chatbot-frontend:latest
 docker pull sakina593/chatbot-backend:latest
+echo "Stopping old containers..."
 docker-compose down || true
+echo "Cleaning up old images..."
 docker image prune -f
+echo "Starting new containers..."
 docker-compose up -d
+echo "Container status:"
 docker-compose ps
 EOF
 }
 
 main() {
-  log "Starting deploy..."
+  log "========================================="
+  log "Starting deployment..."
+  log "========================================="
   check_prerequisites
   build_images
   push_images
   test_ssh
   deploy_to_ec2
-  log "Done. Frontend: http://18.214.136.155:3000"
+  log "========================================="
+  log "Deployment complete!"
+  log "Frontend: http://${EC2_HOST}:3000"
+  log "Backend:  http://${EC2_HOST}:5000"
+  log "========================================="
 }
 
 main "$@"

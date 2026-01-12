@@ -486,6 +486,20 @@ body.sidebar-collapsed .chat-sidebar {
   background: rgba(255, 255, 255, 0.3);
 }
 
+/* Documentation Button Style */
+.setting-btn.doc-btn {
+  border-color: #667eea;
+  color: #E2E8F0;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+}
+
+.setting-btn.doc-btn:hover {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.2) 100%);
+  border-color: #667eea;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
 /* Support Button Style */
 .setting-btn.support-btn {
   border-color: var(--msu-blue);
