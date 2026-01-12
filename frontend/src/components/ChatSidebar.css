@@ -790,7 +790,7 @@ body.sidebar-collapsed .chat-sidebar {
   font-size: 0.9rem;
 }
 
-/* Mobile */
+/* Mobile - Tablet */
 @media (max-width: 768px) {
   .chat-sidebar {
     transform: translateX(-280px);
@@ -821,5 +821,177 @@ body.sidebar-collapsed .chat-sidebar {
   .category-btn {
     flex-direction: row;
     justify-content: center;
+  }
+}
+
+/* Mobile - Small phones */
+@media (max-width: 480px) {
+  .chat-sidebar {
+    width: 85vw;
+    max-width: 280px;
+    top: 60px;
+    height: calc(100vh - 60px);
+  }
+
+  body.sidebar-collapsed .chat-sidebar {
+    transform: translateX(-100%);
+  }
+
+  /* Add overlay when sidebar is open on mobile */
+  body:not(.sidebar-collapsed)::after {
+    content: '';
+    position: fixed;
+    top: 60px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 499;
+    animation: fadeIn 0.2s ease;
+  }
+
+  .sidebar-top {
+    padding: 12px;
+    gap: 6px;
+  }
+
+  .sidebar-action-btn {
+    padding: 10px 14px;
+    font-size: 0.85rem;
+    gap: 10px;
+  }
+
+  .search-input {
+    padding: 9px 12px 9px 36px;
+    font-size: 0.85rem;
+  }
+
+  .section-header {
+    padding: 6px 14px;
+    font-size: 0.7rem;
+  }
+
+  .chat-history-item {
+    padding: 9px 10px;
+    font-size: 0.85rem;
+  }
+
+  .chat-title {
+    font-size: 0.85rem;
+  }
+
+  /* Bottom section - more compact */
+  .sidebar-settings-wrapper {
+    padding: 10px;
+    gap: 6px;
+  }
+
+  .sidebar-settings-row {
+    gap: 6px;
+  }
+
+  .setting-btn {
+    padding: 9px 10px;
+    font-size: 0.8rem;
+    gap: 6px;
+  }
+
+  .user-profile {
+    padding: 10px;
+    gap: 10px;
+  }
+
+  .user-avatar {
+    width: 32px;
+    height: 32px;
+  }
+
+  .user-email {
+    font-size: 0.8rem;
+  }
+
+  .user-status {
+    font-size: 0.7rem;
+  }
+
+  .logout-icon-btn {
+    padding: 6px;
+  }
+
+  /* Context menu mobile adjustments */
+  .context-menu {
+    min-width: 180px;
+  }
+
+  .context-menu-item {
+    padding: 9px 10px;
+    font-size: 0.85rem;
+    gap: 10px;
+  }
+
+  /* Support ticket modal on mobile */
+  .ticket-modal {
+    width: 95%;
+    max-width: 100%;
+    margin: 10px;
+    max-height: 80vh;
+  }
+
+  .ticket-header {
+    padding: 16px;
+  }
+
+  .ticket-header h2 {
+    font-size: 1.1rem;
+  }
+
+  .ticket-form {
+    padding: 16px;
+    gap: 16px;
+  }
+
+  .ticket-field input,
+  .ticket-field textarea {
+    padding: 10px 14px;
+    font-size: 0.85rem;
+  }
+
+  .ticket-submit-btn {
+    padding: 12px 20px;
+    font-size: 0.9rem;
+  }
+}
+
+/* Extra small mobile devices */
+@media (max-width: 380px) {
+  .chat-sidebar {
+    width: 90vw;
+  }
+
+  .sidebar-top {
+    padding: 10px;
+  }
+
+  .sidebar-action-btn {
+    padding: 9px 12px;
+    font-size: 0.8rem;
+  }
+
+  .setting-btn {
+    padding: 8px 8px;
+    font-size: 0.75rem;
+  }
+
+  .user-profile {
+    padding: 8px;
+  }
+
+  .user-avatar {
+    width: 28px;
+    height: 28px;
+  }
+
+  .user-email {
+    font-size: 0.75rem;
   }
 }
