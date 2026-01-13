@@ -3,10 +3,13 @@
    ═══════════════════════════════════════════════════════════════════════════ */
 
 .auth {
-  min-height: 100vh;
+  min-height: calc(100vh - 70px); /* Account for navbar height */
+  margin-top: 70px; /* Push below navbar */
   display: grid;
   grid-template-columns: 1.15fr 1fr;
   background: #0f172a;
+  position: relative;
+  z-index: 1; /* Below navbar (z-index: 1000) */
 }
 
 /* ─── LEFT PANEL: Brand & Features ─── */
@@ -225,6 +228,8 @@
     linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
   background-size: 50px 50px;
   animation: gridMove 30s linear infinite;
+  pointer-events: none; /* CRITICAL: Allow touch/click through to inputs */
+  -webkit-touch-callout: none;
 }
 
 @keyframes gridMove {
@@ -249,28 +254,26 @@
 /* Form card */
 .auth__card {
   position: relative;
-  z-index: 1;
+  z-index: 10; /* Higher z-index to ensure it's above overlays */
   width: 100%;
   max-width: 420px;
   padding: 40px;
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: #ffffff; /* Solid white - no transparency issues on mobile */
+  border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: 24px;
   box-shadow:
-    0 25px 50px -12px rgba(0, 0, 0, 0.4),
+    0 25px 50px -12px rgba(0, 0, 0, 0.25),
     0 0 0 1px rgba(255, 255, 255, 0.1);
-  animation: cardAppear 0.6s ease-out;
+  /* Removed backdrop-filter - causes touch issues on mobile Safari/Chrome */
 }
 
+/* Card animation - disabled on mobile to prevent touch issues */
 @keyframes cardAppear {
   from {
     opacity: 0;
-    transform: translateY(30px) scale(0.95);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
   }
 }
 
@@ -321,10 +324,17 @@
   color: var(--msu-blue);
   text-decoration: none;
   font-weight: 600;
-  transition: all 0.2s ease;
+  transition: color 0.2s ease;
+  position: relative;
+  z-index: 2;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: rgba(0, 45, 114, 0.2);
+  touch-action: manipulation;
+  padding: 4px 2px; /* Larger touch target */
 }
 
-.auth__link:hover {
+.auth__link:hover,
+.auth__link:active {
   color: var(--msu-gold);
   text-decoration: underline;
 }
@@ -365,18 +375,25 @@
 
 .field__control {
   position: relative;
+  z-index: 1;
 }
 
 .field__icon {
   position: absolute;
-  left: 16px;
+  left: 14px;
   top: 50%;
   transform: translateY(-50%);
   width: 18px;
   height: 18px;
-  color: #94a3b8;
+  min-width: 18px;
+  min-height: 18px;
+  color: #64748b;
   pointer-events: none;
   transition: color 0.2s ease;
+  z-index: 2;
+  /* SVG display properties */
+  display: block;
+  overflow: visible;
 }
 
 .field__control:focus-within .field__icon {
@@ -385,13 +402,21 @@
 
 .field input {
   width: 100%;
-  padding: 14px 16px 14px 48px;
+  padding: 14px 16px 14px 42px; /* Left padding for icon space */
   border: 2px solid #e2e8f0;
   border-radius: 12px;
-  font-size: 1rem;
-  background: #f8fafc;
-  color: var(--text-main);
-  transition: all 0.2s ease;
+  font-size: 16px; /* CRITICAL: 16px prevents iOS zoom on focus */
+  background: #ffffff !important; /* Always white background */
+  color: #1a1a2e !important; /* Always dark text - fixes dark mode visibility */
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  /* iOS Safari fixes */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  -webkit-tap-highlight-color: rgba(0, 45, 114, 0.1);
+  touch-action: manipulation;
+  pointer-events: auto;
+  /* No position/z-index - let icon overlay naturally */
 }
 
 .field input:hover {
@@ -423,7 +448,11 @@
   border-radius: 8px;
   font-size: 0.85rem;
   font-weight: 500;
-  transition: all 0.2s ease;
+  transition: background 0.2s ease, color 0.2s ease;
+  z-index: 3;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: rgba(0, 45, 114, 0.1);
+  touch-action: manipulation;
 }
 
 .field__action:hover {
@@ -439,37 +468,24 @@
   font-size: 1rem;
   font-weight: 600;
   color: white;
-  background: linear-gradient(135deg, var(--msu-blue) 0%, #1a4a8a 100%);
+  background: var(--msu-blue);
   border: none;
   border-radius: 12px;
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: background 0.2s ease, transform 0.2s ease;
   position: relative;
-  overflow: hidden;
-}
-
-.auth__submit::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
-  transition: left 0.5s ease;
+  z-index: 2;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: rgba(255, 183, 3, 0.3);
+  touch-action: manipulation;
 }
 
 .auth__submit:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 25px rgba(0, 45, 114, 0.35);
-}
-
-.auth__submit:hover::before {
-  left: 100%;
+  background: var(--msu-blue-hover);
 }
 
 .auth__submit:active:not(:disabled) {
-  transform: translateY(0);
+  transform: scale(0.98);
 }
 
 .auth__submit:disabled {
@@ -566,27 +582,120 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
-/* Autofill fix */
+/* Autofill fix - ALWAYS use dark text on white background */
 input:-webkit-autofill,
 input:-webkit-autofill:hover,
-input:-webkit-autofill:focus {
-  -webkit-text-fill-color: var(--text-main);
-  box-shadow: 0 0 0px 1000px #f8fafc inset !important;
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-text-fill-color: #1a1a2e !important; /* Always dark text */
+  box-shadow: 0 0 0px 1000px #ffffff inset !important; /* Always white background */
   transition: background-color 9999s ease-in-out 0s;
+  caret-color: #1a1a2e; /* Dark cursor */
+}
+
+/* Force dark text in auth inputs regardless of theme */
+.auth input,
+.auth input:focus,
+.auth input:active,
+.auth input::placeholder {
+  -webkit-text-fill-color: #1a1a2e !important;
+  color: #1a1a2e !important;
+}
+
+.auth input::placeholder {
+  -webkit-text-fill-color: #94a3b8 !important;
+  color: #94a3b8 !important;
+  opacity: 1;
 }
 
 /* ─── RESPONSIVE ─── */
+
+/* Large Desktop (1440px+) */
+@media (min-width: 1440px) {
+  .auth {
+    grid-template-columns: 1.2fr 1fr;
+  }
+
+  .auth__brandInner {
+    max-width: 580px;
+    margin-left: 60px;
+  }
+
+  .auth__logoMain {
+    width: 360px;
+  }
+
+  .auth__brandTitle {
+    font-size: 3.5rem;
+  }
+
+  .auth__card {
+    max-width: 460px;
+    padding: 48px;
+  }
+}
+
+/* Desktop (1280px - 1439px) */
+@media (min-width: 1280px) and (max-width: 1439px) {
+  .auth__brandInner {
+    margin-left: 48px;
+  }
+}
+
+/* iPad Pro Landscape & Small Laptops (1024px - 1279px) */
+@media (max-width: 1279px) and (min-width: 1025px) {
+  .auth {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .auth__brandInner {
+    margin-left: 32px;
+    max-width: 420px;
+  }
+
+  .auth__logoMain {
+    width: 260px;
+  }
+
+  .auth__brandTitle {
+    font-size: 2.5rem;
+  }
+
+  .auth__brandSubtitle {
+    font-size: 1rem;
+  }
+
+  .auth__feature {
+    padding: 12px 16px;
+  }
+}
+
+/* iPad Pro Portrait & Tablets (768px - 1024px) */
 @media (max-width: 1024px) {
   .auth {
     grid-template-columns: 1fr;
+    min-height: calc(100vh - 65px); /* Account for tablet navbar */
+    margin-top: 65px;
   }
 
   .auth__brand {
     display: none;
+    pointer-events: none; /* Extra safety */
   }
 
   .auth__main {
     padding: 24px;
+    min-height: calc(100vh - 65px);
+    align-items: center;
+    padding-top: 20px;
+  }
+
+  /* CRITICAL: Remove all overlays/pseudo-elements on mobile */
+  .auth__main::before,
+  .auth__main::after {
+    display: none !important;
+    pointer-events: none !important;
+    content: none !important;
   }
 
   .auth__mobileLogoWrap {
@@ -594,30 +703,367 @@ input:-webkit-autofill:focus {
   }
 
   .auth__card {
-    max-width: 100%;
-    padding: 32px 24px;
+    max-width: 480px;
+    width: 100%;
+    padding: 32px 28px;
+    background: #ffffff !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
   }
 
   .auth__badge {
     display: none;
   }
+
+  .field input {
+    font-size: 16px !important; /* Prevent iOS zoom */
+    background: #ffffff !important;
+    pointer-events: auto !important;
+  }
+
+  /* Ensure all interactive elements work on touch */
+  .field__action,
+  .auth__submit,
+  .auth__link {
+    pointer-events: auto !important;
+  }
 }
 
-@media (max-width: 480px) {
+/* iPad Mini & Small Tablets (600px - 767px) */
+@media (max-width: 767px) and (min-width: 600px) {
   .auth__main {
-    padding: 16px;
+    padding: 20px;
+    padding-top: 8vh;
   }
 
   .auth__card {
-    padding: 28px 20px;
+    max-width: 420px;
+    padding: 28px 24px;
+  }
+
+  .auth__title {
+    font-size: 1.6rem;
+  }
+}
+
+/* Large Phones - iPhone Pro Max, Plus (414px - 599px) */
+@media (max-width: 599px) and (min-width: 414px) {
+  .auth {
+    min-height: calc(100vh - 60px);
+    margin-top: 60px;
+  }
+
+  .auth__main {
+    padding: 20px;
+    padding-top: 20px;
+    min-height: calc(100vh - 60px);
+    /* Safe area for notched iPhones */
+    padding-bottom: env(safe-area-inset-bottom, 20px);
+  }
+
+  .auth__card {
+    padding: 28px 24px;
     border-radius: 20px;
+    max-width: 100%;
   }
 
   .auth__title {
     font-size: 1.5rem;
   }
 
+  .auth__titleSub {
+    font-size: 0.9rem;
+  }
+
   .field input {
-    padding: 12px 12px 12px 44px;
+    padding: 14px 14px 14px 42px;
+    font-size: 16px;
+  }
+
+  .field__icon {
+    left: 14px;
+  }
+
+  .auth__submit {
+    padding: 14px 20px;
+  }
+
+  .auth__mobileLogo {
+    width: 56px;
+    height: 56px;
+  }
+}
+
+/* Medium Phones - iPhone 12/13/14, Standard Android (375px - 413px) */
+@media (max-width: 413px) and (min-width: 375px) {
+  .auth {
+    min-height: calc(100vh - 56px);
+    margin-top: 56px;
+  }
+
+  .auth__main {
+    padding: 16px;
+    padding-top: 16px;
+    min-height: calc(100vh - 56px);
+    padding-bottom: env(safe-area-inset-bottom, 16px);
+  }
+
+  .auth__card {
+    padding: 24px 20px;
+    border-radius: 18px;
+  }
+
+  .auth__title {
+    font-size: 1.4rem;
+  }
+
+  .auth__titleSub {
+    font-size: 0.875rem;
+  }
+
+  .auth__header {
+    margin-bottom: 24px;
+  }
+
+  .field {
+    margin-bottom: 16px;
+  }
+
+  .field label {
+    font-size: 0.8rem;
+  }
+
+  .field input {
+    padding: 12px 12px 12px 38px;
+    font-size: 16px;
+    border-radius: 10px;
+  }
+
+  .field__icon {
+    left: 12px;
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    min-height: 16px;
+  }
+
+  .field__action {
+    padding: 6px 10px;
+    font-size: 0.8rem;
+  }
+
+  .auth__submit {
+    padding: 14px 18px;
+    font-size: 0.95rem;
+    border-radius: 10px;
+  }
+
+  .auth__footer {
+    margin-top: 20px;
+    padding-top: 16px;
+    font-size: 0.9rem;
+  }
+
+  .auth__mobileLogo {
+    width: 52px;
+    height: 52px;
+    border-radius: 14px;
+  }
+
+  .auth__mobileLogoWrap {
+    margin-bottom: 20px;
+  }
+}
+
+/* Small Phones - iPhone SE, iPhone Mini, Small Android (320px - 374px) */
+@media (max-width: 374px) {
+  .auth {
+    min-height: calc(100vh - 52px);
+    margin-top: 52px;
+  }
+
+  .auth__main {
+    padding: 12px;
+    padding-top: 12px;
+    min-height: calc(100vh - 52px);
+    padding-bottom: env(safe-area-inset-bottom, 12px);
+  }
+
+  .auth__card {
+    padding: 20px 16px;
+    border-radius: 16px;
+  }
+
+  .auth__title {
+    font-size: 1.25rem;
+  }
+
+  .auth__titleSub {
+    font-size: 0.8rem;
+  }
+
+  .auth__header {
+    margin-bottom: 20px;
+  }
+
+  .field {
+    margin-bottom: 14px;
+  }
+
+  .field label {
+    font-size: 0.75rem;
+    margin-bottom: 6px;
+  }
+
+  .field input {
+    padding: 11px 10px 11px 36px;
+    font-size: 16px;
+    border-radius: 8px;
+    border-width: 1.5px;
+  }
+
+  .field__icon {
+    left: 10px;
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    min-height: 14px;
+  }
+
+  .field__action {
+    padding: 5px 8px;
+    font-size: 0.75rem;
+    right: 8px;
+  }
+
+  .auth__submit {
+    padding: 12px 16px;
+    font-size: 0.9rem;
+    border-radius: 8px;
+  }
+
+  .auth__footer {
+    margin-top: 16px;
+    padding-top: 14px;
+    font-size: 0.85rem;
+  }
+
+  .auth__error {
+    padding: 10px 12px;
+    font-size: 0.8rem;
+    border-radius: 8px;
+  }
+
+  .auth__mobileLogo {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+  }
+
+  .auth__mobileLogoWrap {
+    margin-bottom: 16px;
+  }
+
+  .password-strength {
+    margin-top: 8px;
+  }
+
+  .password-strength__text {
+    font-size: 0.7rem;
+  }
+}
+
+/* Very Small Phones (under 320px - rare but exists) */
+@media (max-width: 319px) {
+  .auth__main {
+    padding: 10px;
+  }
+
+  .auth__card {
+    padding: 16px 12px;
+  }
+
+  .auth__title {
+    font-size: 1.1rem;
+  }
+
+  .field input {
+    padding: 10px 8px 10px 34px;
+  }
+
+  .field__icon {
+    left: 8px;
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    min-height: 14px;
+  }
+}
+
+/* Landscape Mode on Phones */
+@media (max-height: 500px) and (orientation: landscape) {
+  .auth__main {
+    padding: 16px;
+    padding-top: 16px;
+    align-items: flex-start;
+    overflow-y: auto;
+  }
+
+  .auth__card {
+    padding: 20px;
+    margin: 0 auto;
+  }
+
+  .auth__mobileLogoWrap {
+    display: none;
+  }
+
+  .auth__header {
+    margin-bottom: 16px;
+  }
+
+  .field {
+    margin-bottom: 12px;
+  }
+
+  .auth__footer {
+    margin-top: 12px;
+    padding-top: 12px;
+  }
+}
+
+/* iOS Safari specific - ensure inputs are always tappable */
+@supports (-webkit-touch-callout: none) {
+  .auth__main::before {
+    pointer-events: none !important;
+    display: none !important; /* Completely remove on iOS */
+  }
+
+  .auth__card {
+    background: #ffffff !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+
+  .field input,
+  .field__action,
+  .auth__submit,
+  .auth__link {
+    -webkit-tap-highlight-color: rgba(0, 45, 114, 0.1);
+    touch-action: manipulation;
+    pointer-events: auto !important;
+  }
+
+  .field__icon {
+    z-index: 2;
+  }
+
+  .auth {
+    min-height: -webkit-fill-available;
+  }
+
+  /* Ensure all form elements are interactive */
+  .auth__card * {
+    pointer-events: auto;
   }
 }

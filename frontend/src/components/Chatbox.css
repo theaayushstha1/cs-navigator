@@ -525,14 +525,27 @@ body.sidebar-collapsed .chat-input-container {
   border: none;
   outline: none;
   padding: 8px 12px;
-  font-size: 0.95rem;
+  font-size: 16px; /* CRITICAL: 16px prevents iOS zoom on focus */
   font-family: inherit;
   background: transparent;
   color: var(--text-main);
+  /* iOS fixes */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .chat-input-field::placeholder {
   color: var(--text-secondary);
+}
+
+/* iOS Safari specific - ensure input is always focusable */
+@supports (-webkit-touch-callout: none) {
+  .chat-input-field {
+    font-size: 16px !important;
+  }
 }
 
 .action-btn-icon {
@@ -654,8 +667,49 @@ body.dark .send-btn:hover:not(:disabled) {
   transform: scale(1.1);
 }
 
-/* Mobile responsive */
-@media (max-width: 768px) {
+/* ─── RESPONSIVE BREAKPOINTS ─── */
+
+/* Large Desktop (1440px+) */
+@media (min-width: 1440px) {
+  .chat-messages {
+    padding: 40px 32px 130px 32px;
+  }
+
+  .message-bubble {
+    max-width: 750px;
+  }
+
+  .chat-input-wrapper {
+    max-width: 1000px;
+  }
+
+  .welcome-container {
+    max-width: 900px;
+  }
+}
+
+/* iPad Pro Landscape (1024px - 1279px) */
+@media (max-width: 1279px) and (min-width: 1024px) {
+  .chat-main {
+    margin-left: 280px;
+    width: calc(100% - 280px);
+  }
+
+  .chat-input-container {
+    left: 280px;
+  }
+
+  .message-bubble {
+    max-width: 600px;
+  }
+
+  .chat-input-wrapper {
+    max-width: 800px;
+  }
+}
+
+/* iPad Pro Portrait & iPad Landscape (768px - 1023px) */
+@media (max-width: 1023px) and (min-width: 768px) {
   .chat-main {
     margin-left: 0 !important;
     width: 100% !important;
@@ -666,7 +720,46 @@ body.dark .send-btn:hover:not(:disabled) {
   }
 
   .chat-messages {
-    padding: 20px 16px 100px 16px;
+    padding: 24px 20px 110px 20px;
+  }
+
+  .message-bubble {
+    max-width: 75%;
+  }
+
+  .welcome-container {
+    padding: 60px 20px;
+  }
+
+  .welcome-title {
+    font-size: 2rem;
+  }
+
+  .suggestions {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .chat-input-wrapper {
+    max-width: 700px;
+  }
+}
+
+/* Mobile responsive (phones) */
+@media (max-width: 767px) {
+  .chat-main {
+    margin-left: 0 !important;
+    width: 100% !important;
+    height: calc(100vh - 70px);
+    height: calc(100dvh - 70px); /* Dynamic viewport for mobile */
+  }
+
+  .chat-input-container {
+    left: 0 !important;
+    padding-bottom: env(safe-area-inset-bottom, 16px);
+  }
+
+  .chat-messages {
+    padding: 20px 16px 110px 16px;
     gap: 16px;
   }
 
@@ -678,7 +771,11 @@ body.dark .send-btn:hover:not(:disabled) {
     font-size: 1.5rem;
   }
 
-  /* Fix message layout on tablet */
+  .welcome-container {
+    padding: 50px 16px;
+  }
+
+  /* Fix message layout on mobile */
   .message {
     width: 100% !important;
     flex-wrap: nowrap !important;
@@ -701,6 +798,14 @@ body.dark .send-btn:hover:not(:disabled) {
     white-space: normal !important;
     word-break: normal !important;
     overflow-wrap: anywhere !important;
+  }
+
+  .chat-input-field {
+    font-size: 16px !important; /* Prevent iOS zoom */
+  }
+
+  .suggestions {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1449,4 +1554,354 @@ body.dark .live-mode-btn.active {
   background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
   border-color: #ef4444;
   color: white;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   🔥 FEEDBACK MENU STYLES - Rate & Report Bot Responses
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Wrapper for message bubble + feedback menu */
+.message-bubble-wrapper {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+/* Container for feedback menu - positioned to the right of message */
+.feedback-menu-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  align-self: center;
+  flex-shrink: 0;
+}
+
+/* Three-dot menu button - hidden by default, visible on hover */
+.feedback-menu-btn {
+  opacity: 0;
+  background: transparent;
+  border: none;
+  padding: 6px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+
+/* Show on message hover */
+.message.bot:hover .feedback-menu-btn {
+  opacity: 1;
+}
+
+.feedback-menu-btn:hover {
+  background: var(--bg-card);
+  color: var(--msu-blue);
+}
+
+/* Dropdown menu */
+.feedback-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  z-index: 100;
+  min-width: 160px;
+  animation: feedbackDropdown 0.15s ease-out;
+}
+
+@keyframes feedbackDropdown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Feedback options */
+.feedback-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--text-main);
+  border-radius: 8px;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+
+.feedback-option:hover {
+  background: rgba(0, 45, 114, 0.08);
+}
+
+.feedback-option--helpful:hover {
+  background: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
+}
+
+.feedback-option--not-helpful:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
+
+.feedback-option--report:hover {
+  background: rgba(245, 158, 11, 0.1);
+  color: #d97706;
+}
+
+/* Feedback status badge - shown after feedback is given */
+.feedback-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  animation: feedbackPop 0.3s ease-out;
+}
+
+@keyframes feedbackPop {
+  0% { transform: scale(0.8); opacity: 0; }
+  50% { transform: scale(1.05); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.feedback-status--helpful {
+  background: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
+}
+
+.feedback-status--not_helpful {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
+
+.feedback-status--report {
+  background: rgba(245, 158, 11, 0.1);
+  color: #d97706;
+}
+
+/* ─── REPORT MODAL ─── */
+.report-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.report-modal {
+  background: var(--bg-card);
+  border-radius: 20px;
+  width: 90%;
+  max-width: 480px;
+  box-shadow: var(--shadow-lg);
+  animation: modalSlide 0.25s ease-out;
+  overflow: hidden;
+}
+
+@keyframes modalSlide {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.report-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.report-modal-header h3 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.report-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.report-modal-close:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+.report-modal-body {
+  padding: 24px;
+}
+
+.report-modal-body p {
+  margin: 0 0 16px 0;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.report-textarea {
+  width: 100%;
+  padding: 14px 16px;
+  border: 2px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-body);
+  color: var(--text-main);
+  font-size: 0.95rem;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 100px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.report-textarea:focus {
+  outline: none;
+  border-color: var(--msu-blue);
+  box-shadow: 0 0 0 4px rgba(0, 45, 114, 0.1);
+}
+
+.report-textarea::placeholder {
+  color: var(--text-secondary);
+}
+
+.report-modal-footer {
+  display: flex;
+  gap: 12px;
+  padding: 16px 24px 24px;
+  justify-content: flex-end;
+}
+
+.report-cancel-btn {
+  padding: 12px 20px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-main);
+  font-size: 0.9rem;
+  font-weight: 500;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.report-cancel-btn:hover {
+  background: var(--bg-body);
+  border-color: var(--text-secondary);
+}
+
+.report-submit-btn {
+  padding: 12px 24px;
+  border: none;
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  color: white;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.report-submit-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+.report-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Dark mode adjustments */
+body.dark .feedback-dropdown {
+  background: #1e293b;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+body.dark .feedback-option:hover {
+  background: rgba(255, 183, 3, 0.1);
+}
+
+body.dark .report-modal {
+  background: #1e293b;
+}
+
+body.dark .report-textarea {
+  background: #0f172a;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+body.dark .report-textarea:focus {
+  border-color: var(--msu-gold);
+  box-shadow: 0 0 0 4px rgba(255, 183, 3, 0.1);
+}
+
+/* Mobile responsiveness */
+@media (max-width: 768px) {
+  .feedback-menu-btn {
+    opacity: 1; /* Always visible on mobile since no hover */
+  }
+
+  .feedback-dropdown {
+    min-width: 140px;
+  }
+
+  .feedback-option {
+    padding: 8px 10px;
+    font-size: 0.8rem;
+  }
+
+  .report-modal {
+    width: 95%;
+    margin: 16px;
+  }
+
+  .report-modal-header {
+    padding: 16px 20px;
+  }
+
+  .report-modal-body {
+    padding: 20px;
+  }
+
+  .report-modal-footer {
+    padding: 12px 20px 20px;
+  }
 }

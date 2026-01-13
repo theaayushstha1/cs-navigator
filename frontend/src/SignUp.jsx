@@ -2,22 +2,23 @@ import React, { useState, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import AuthLayout from "./components/auth/AuthLayout";
 
+// Icons with explicit dimensions for proper rendering
 const EnvelopeIcon = (props) => (
-  <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+  <svg {...props} width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
     <polyline points="22,6 12,13 2,6"/>
   </svg>
 );
 
 const LockIcon = (props) => (
-  <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+  <svg {...props} width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
     <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
   </svg>
 );
 
 const CheckIcon = (props) => (
-  <svg {...props} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+  <svg {...props} width="16" height="16" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="20 6 9 17 4 12"/>
   </svg>
 );

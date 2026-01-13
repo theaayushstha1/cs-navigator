@@ -7,6 +7,10 @@ import { FaPaperclip } from "@react-icons/all-files/fa/FaPaperclip";
 import { FaVolumeUp } from "@react-icons/all-files/fa/FaVolumeUp";
 import { FaTimes } from "@react-icons/all-files/fa/FaTimes";
 import { FaStop } from "@react-icons/all-files/fa/FaStop";
+import { FaEllipsisV } from "@react-icons/all-files/fa/FaEllipsisV";
+import { FaThumbsUp } from "@react-icons/all-files/fa/FaThumbsUp";
+import { FaThumbsDown } from "@react-icons/all-files/fa/FaThumbsDown";
+import { FaFlag } from "@react-icons/all-files/fa/FaFlag";
 import { BsSoundwave, BsArrowUpCircleFill } from "react-icons/bs";
 
 // 🔥 Icons for File Cards
@@ -64,6 +68,12 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const [isVoiceMode, setIsVoiceMode] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("idle"); // idle, listening, processing, speaking
+
+  // 🔥 Feedback State
+  const [feedbackMenuOpen, setFeedbackMenuOpen] = useState(null); // index of message with open menu
+  const [feedbackGiven, setFeedbackGiven] = useState({}); // {messageIndex: 'helpful' | 'not_helpful' | 'reported'}
+  const [reportModal, setReportModal] = useState(null); // index of message being reported
+  const [reportText, setReportText] = useState("");
 
   // --- REFS ---
   const messagesEndRef = useRef(null);
@@ -499,6 +509,59 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
       }
   };
 
+  // 🔥 FEEDBACK HANDLERS
+  const handleFeedback = async (messageIndex, feedbackType, messageText) => {
+    const token = localStorage.getItem("token");
+
+    try {
+      await fetch(`${API_BASE}/api/feedback`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          message_text: messageText,
+          feedback_type: feedbackType, // 'helpful', 'not_helpful', 'report'
+          report_details: feedbackType === 'report' ? reportText : null,
+          session_id: sessionId || "default"
+        })
+      });
+
+      // Update local state to show feedback was given
+      setFeedbackGiven(prev => ({ ...prev, [messageIndex]: feedbackType }));
+      setFeedbackMenuOpen(null);
+
+      if (feedbackType === 'report') {
+        setReportModal(null);
+        setReportText("");
+      }
+    } catch (error) {
+      console.error("Failed to submit feedback:", error);
+    }
+  };
+
+  const openReportModal = (messageIndex) => {
+    setReportModal(messageIndex);
+    setFeedbackMenuOpen(null);
+  };
+
+  const closeReportModal = () => {
+    setReportModal(null);
+    setReportText("");
+  };
+
+  // Close feedback menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (feedbackMenuOpen !== null && !e.target.closest('.feedback-menu-container')) {
+        setFeedbackMenuOpen(null);
+      }
+    };
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, [feedbackMenuOpen]);
+
   // 🔥 MAIN SEND LOGIC
   const handleSend = async (e) => {
     e.preventDefault();
@@ -608,51 +671,108 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
         ) : (
           messages.map((msg, i) => (
             <div key={i} className={`message ${msg.sender}`}>
-              <img 
-                src={msg.sender === "user" ? userProfilePicture : "/bot_avatar.jpg"} 
-                alt={msg.sender} 
+              <img
+                src={msg.sender === "user" ? userProfilePicture : "/bot_avatar.jpg"}
+                alt={msg.sender}
                 className="avatar-img"
                 onError={(e) => { if (msg.sender === "user") e.target.src = "/user_icon.jpg"; }}
               />
               <div className="message-content">
-                <div className="message-bubble">
-                  
-                  {/* 🔥 UPDATED: Use ReactMarkdown for Bullets, Bold, & File Cards */}
-                  <ReactMarkdown 
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                        // Custom Renderer for Links to handle File Cards
-                        a: ({node, href, children, ...props}) => {
-                            const isFile = href.includes("uploads/chat_files") || href.includes("uploads/profile_pictures");
-                            
-                            if (isFile) {
-                                return (
-                                    <a href={href} target="_blank" rel="noopener noreferrer" className="file-card">
-                                        <div className="file-icon-wrapper">
-                                            {getFileIcon(children[0])}
-                                        </div>
-                                        <div className="file-info">
-                                            <span className="file-name">{children}</span>
-                                            <span className="file-action">Click to view file</span>
-                                        </div>
-                                    </a>
-                                );
-                            }
-                            return <a href={href} target="_blank" rel="noopener noreferrer" className="message-link" {...props}>{children}</a>;
-                        }
-                    }}
-                  >
-                    {msg.text}
-                  </ReactMarkdown>
+                <div className="message-bubble-wrapper">
+                  <div className="message-bubble">
 
-                  {msg.sender === "bot" && (
-                    <button 
-                      className="tts-btn" 
-                      onClick={() => speak(msg.text)} 
-                      title="Read response aloud"
+                    {/* 🔥 UPDATED: Use ReactMarkdown for Bullets, Bold, & File Cards */}
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                          // Custom Renderer for Links to handle File Cards
+                          a: ({node, href, children, ...props}) => {
+                              const isFile = href.includes("uploads/chat_files") || href.includes("uploads/profile_pictures");
+
+                              if (isFile) {
+                                  return (
+                                      <a href={href} target="_blank" rel="noopener noreferrer" className="file-card">
+                                          <div className="file-icon-wrapper">
+                                              {getFileIcon(children[0])}
+                                          </div>
+                                          <div className="file-info">
+                                              <span className="file-name">{children}</span>
+                                              <span className="file-action">Click to view file</span>
+                                          </div>
+                                      </a>
+                                  );
+                              }
+                              return <a href={href} target="_blank" rel="noopener noreferrer" className="message-link" {...props}>{children}</a>;
+                          }
+                      }}
                     >
-                      <FaVolumeUp size={14}/>
-                    </button>
+                      {msg.text}
+                    </ReactMarkdown>
+
+                    {msg.sender === "bot" && (
+                      <button
+                        className="tts-btn"
+                        onClick={() => speak(msg.text)}
+                        title="Read response aloud"
+                      >
+                        <FaVolumeUp size={14}/>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* 🔥 FEEDBACK MENU - Right side of bot messages */}
+                  {msg.sender === "bot" && (
+                    <div className="feedback-menu-container">
+                      {/* Show feedback status if already given */}
+                      {feedbackGiven[i] ? (
+                        <div className={`feedback-status feedback-status--${feedbackGiven[i]}`}>
+                          {feedbackGiven[i] === 'helpful' && <FaThumbsUp size={12} />}
+                          {feedbackGiven[i] === 'not_helpful' && <FaThumbsDown size={12} />}
+                          {feedbackGiven[i] === 'report' && <FaFlag size={12} />}
+                        </div>
+                      ) : (
+                        <>
+                          {/* Three-dot menu button - visible on hover */}
+                          <button
+                            className="feedback-menu-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setFeedbackMenuOpen(feedbackMenuOpen === i ? null : i);
+                            }}
+                            title="Rate this response"
+                          >
+                            <FaEllipsisV size={14} />
+                          </button>
+
+                          {/* Dropdown menu */}
+                          {feedbackMenuOpen === i && (
+                            <div className="feedback-dropdown">
+                              <button
+                                className="feedback-option feedback-option--helpful"
+                                onClick={() => handleFeedback(i, 'helpful', msg.text)}
+                              >
+                                <FaThumbsUp size={14} />
+                                <span>Helpful</span>
+                              </button>
+                              <button
+                                className="feedback-option feedback-option--not-helpful"
+                                onClick={() => handleFeedback(i, 'not_helpful', msg.text)}
+                              >
+                                <FaThumbsDown size={14} />
+                                <span>Not Helpful</span>
+                              </button>
+                              <button
+                                className="feedback-option feedback-option--report"
+                                onClick={() => openReportModal(i)}
+                              >
+                                <FaFlag size={14} />
+                                <span>Report Issue</span>
+                              </button>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
                   )}
                 </div>
                 <div className="timestamp">{msg.time}</div>
@@ -699,6 +819,42 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
               <button className="voice-end-btn" onClick={toggleVoiceMode}>
                 End
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* 🔥 REPORT MODAL */}
+        {reportModal !== null && (
+          <div className="report-modal-overlay" onClick={closeReportModal}>
+            <div className="report-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="report-modal-header">
+                <h3>Report an Issue</h3>
+                <button className="report-modal-close" onClick={closeReportModal}>
+                  <FaTimes size={16} />
+                </button>
+              </div>
+              <div className="report-modal-body">
+                <p>Help us improve! What was wrong with this response?</p>
+                <textarea
+                  className="report-textarea"
+                  placeholder="Describe the issue (e.g., incorrect information, unhelpful response, inappropriate content...)"
+                  value={reportText}
+                  onChange={(e) => setReportText(e.target.value)}
+                  rows={4}
+                />
+              </div>
+              <div className="report-modal-footer">
+                <button className="report-cancel-btn" onClick={closeReportModal}>
+                  Cancel
+                </button>
+                <button
+                  className="report-submit-btn"
+                  onClick={() => handleFeedback(reportModal, 'report', messages[reportModal]?.text)}
+                  disabled={!reportText.trim()}
+                >
+                  Submit Report
+                </button>
+              </div>
             </div>
           </div>
         )}

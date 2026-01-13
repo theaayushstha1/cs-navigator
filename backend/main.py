@@ -113,6 +113,19 @@ class ChatHistory(Base):
     bot_response = Column(Text)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
+class Feedback(Base):
+    """
+    🔥 NEW: Stores user feedback on bot responses for improving the chatbot.
+    """
+    __tablename__ = "feedback"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    session_id = Column(String(255), default="default")
+    message_text = Column(Text)  # The bot message that was rated
+    feedback_type = Column(String(50))  # 'helpful', 'not_helpful', 'report'
+    report_details = Column(Text, nullable=True)  # Additional details for reports
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
 def init_db():
     """Initializes the database tables and runs migrations."""
     # 1. Create tables if missing
@@ -2044,6 +2057,82 @@ async def get_ticket_stats(
     }
 
 
+# ==============================================================================
+# 🔥 FEEDBACK ENDPOINT - Rate & Report Bot Responses
+# ==============================================================================
+class FeedbackCreate(BaseModel):
+    message_text: str
+    feedback_type: str  # 'helpful', 'not_helpful', 'report'
+    report_details: Optional[str] = None
+    session_id: Optional[str] = "default"
+
+
+@app.post("/api/feedback")
+async def submit_feedback(
+    feedback: FeedbackCreate,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Submit feedback on a bot response to help improve the chatbot"""
+    try:
+        new_feedback = Feedback(
+            user_id=user["user_id"],
+            session_id=feedback.session_id,
+            message_text=feedback.message_text[:2000],  # Limit to 2000 chars
+            feedback_type=feedback.feedback_type,
+            report_details=feedback.report_details[:1000] if feedback.report_details else None
+        )
+        db.add(new_feedback)
+        db.commit()
+
+        # Log for analytics
+        emoji = "👍" if feedback.feedback_type == "helpful" else "👎" if feedback.feedback_type == "not_helpful" else "🚩"
+        print(f"{emoji} Feedback received: {feedback.feedback_type} from user {user['email']}")
+
+        return {"success": True, "message": "Thank you for your feedback!"}
+
+    except Exception as e:
+        print(f"❌ Feedback error: {e}")
+        raise HTTPException(500, f"Failed to save feedback: {str(e)}")
+
+
+@app.get("/api/feedback/stats")
+async def get_feedback_stats(
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get feedback statistics (admin only)"""
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin access required")
+
+    total = db.query(Feedback).count()
+    helpful = db.query(Feedback).filter(Feedback.feedback_type == "helpful").count()
+    not_helpful = db.query(Feedback).filter(Feedback.feedback_type == "not_helpful").count()
+    reports = db.query(Feedback).filter(Feedback.feedback_type == "report").count()
+
+    # Get recent reports for review
+    recent_reports = db.query(Feedback).filter(
+        Feedback.feedback_type == "report"
+    ).order_by(Feedback.timestamp.desc()).limit(10).all()
+
+    return {
+        "total": total,
+        "helpful": helpful,
+        "not_helpful": not_helpful,
+        "reports": reports,
+        "satisfaction_rate": round((helpful / total * 100), 1) if total > 0 else 0,
+        "recent_reports": [
+            {
+                "id": r.id,
+                "message_preview": r.message_text[:100] + "..." if len(r.message_text) > 100 else r.message_text,
+                "details": r.report_details,
+                "timestamp": r.timestamp.isoformat()
+            }
+            for r in recent_reports
+        ]
+    }
+
+
 # 🔥 NEW HELPER: Extract Text from Files (Updated to use 'pypdf')
 def extract_file_content(filepath: str) -> str:
     """Reads text from PDF, DOCX, or TXT files."""
@@ -2220,19 +2309,63 @@ If you have the student's profile data above, use it to give personalized recomm
         else:
             try:
                 # 🔥 NEW: Detect if this is a follow-up question
+                # IMPORTANT: Include pronouns (him/her/his/their) for person references
                 follow_up_indicators = ['it', 'they', 'them', 'this', 'that', 'more', 'else', 'also',
                                         'another', 'what about', 'how about', 'tell me more', 'explain',
-                                        'who is', 'what is', 'details', 'specifically']
-                is_follow_up = any(indicator in user_q.lower() for indicator in follow_up_indicators) and len(recent_history) > 0
+                                        'who is', 'what is', 'details', 'specifically',
+                                        'him', 'her', 'his', 'hers', 'their', 'theirs', 'he', 'she']
+                is_follow_up = any(indicator in user_q.lower().split() for indicator in follow_up_indicators) and len(recent_history) > 0
 
-                # 🔥 NEW: If follow-up, enhance query with context from last exchange
+                # 🔥 SMART PRONOUN RESOLUTION: Extract person name from last response
+                referenced_person = None
                 enhanced_query = user_q
+
                 if is_follow_up and recent_history:
                     last_exchange = recent_history[-1]
-                    # Add context from previous Q&A to help retriever find relevant docs
-                    enhanced_query = f"Context: The user previously asked about '{last_exchange.user_query}' and I answered about {last_exchange.bot_response[:200]}. Now they ask: {user_q}"
+                    prev_query = last_exchange.user_query
+                    prev_response = last_exchange.bot_response
 
-                # Get relevant documents from RAG
+                    # Extract person names from the bot's last response using multiple patterns
+                    name_patterns = [
+                        # "advisor is First Last" - MOST IMPORTANT for advisor questions
+                        r'(?:advisor|Advisor)\s+is\s+([A-Z][a-z]+\s+[A-Z][a-z]+)',
+                        # "Dr. First Last" or "Dr. First Middle Last"
+                        r'(?:Dr\.|Professor|Prof\.)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})',
+                        # Full names with quotes like Shuangbao "Paul" Wang
+                        r'([A-Z][a-z]+\s+["\'][A-Z][a-z]+["\']\s+[A-Z][a-z]+)',
+                        # "First Last is the" or "First Last, the" patterns
+                        r'([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+is\s+the|\s*,\s*the|\s+can\s+be)',
+                        # Chair/Department head patterns
+                        r'(?:Chair|chair|Department\s+Chair|department\s+head)(?:[^.]*?)(?:is\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})',
+                        # General "is First Last" pattern (catches "advisor is X", "chair is X", etc.)
+                        r'\bis\s+([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\.|\,|\s+If|\s+You)',
+                    ]
+
+                    for pattern in name_patterns:
+                        match = re.search(pattern, prev_response)
+                        if match:
+                            referenced_person = match.group(1).strip()
+                            break
+
+                    # If we found a person, replace pronouns in the query for better RAG retrieval
+                    if referenced_person:
+                        print(f"🔍 Pronoun Resolution: Detected reference to '{referenced_person}'")
+                        # Create a query that explicitly mentions the person for RAG
+                        pronoun_query = user_q.lower()
+                        if any(p in pronoun_query for p in ['his ', 'her ', 'him ', 'their ', 'he ', 'she ']):
+                            # Replace pronouns with the person's name for RAG query
+                            rag_query = re.sub(r'\b(his|her|him|their|he|she)\b', referenced_person, user_q, flags=re.IGNORECASE)
+                            enhanced_query = f"{referenced_person} {rag_query}"
+                            print(f"🔍 Enhanced RAG query: '{enhanced_query}'")
+                        else:
+                            enhanced_query = f"{referenced_person} {user_q}"
+                    else:
+                        print(f"⚠️ Pronoun Resolution: Could not extract person name from previous response")
+                        # Fallback: use previous context
+                        enhanced_query = f"""Previous context: {prev_response[:200]}
+Current question: {user_q}"""
+
+                # Get relevant documents from RAG - use person-specific query
                 docs = retriever.get_relevant_documents(enhanced_query if is_follow_up else user_q)
                 context_docs = "\n\n".join([doc.page_content for doc in docs[:4]])
 
@@ -2271,14 +2404,32 @@ Your role:
 - Remember the conversation context and provide coherent follow-up responses
 - Be specific and helpful - provide names, details, and actionable information
 
+⚠️ CRITICAL - PRONOUN RESOLUTION RULES:
+When the user uses pronouns like "him", "her", "his", "their", "he", "she":
+1. FIRST check the CONVERSATION HISTORY to find who they're referring to
+2. Pronouns refer to the PERSON MENTIONED IN THE PREVIOUS MESSAGES, NOT the student's advisor
+3. Example: If previous message discussed "Dr. Paul Wang", then "his research" means Dr. Paul Wang's research
+4. NEVER assume pronouns refer to the student's advisor unless the advisor was explicitly mentioned
+5. The conversation context section tells you WHO was discussed - use that for pronoun resolution
+
 Important rules:
 1. If a DegreeWorks document is provided, READ it to find GPA, courses, credits, etc.
 2. The answer to personal academic questions is IN the document - search for it
-3. Pay attention to pronouns and references to previous topics
+3. For follow-up questions with pronouns (him/her/his), resolve them to the person in the PREVIOUS conversation, NOT the student's advisor
 4. If you truly can't find something in the document, say so honestly"""
 
                 # Build the full message with context
                 full_message = ""
+
+                # 🔥 CRITICAL: If we detected a referenced person from pronouns, tell the LLM explicitly
+                if referenced_person and is_follow_up:
+                    full_message += f"""
+⚠️ IMPORTANT PRONOUN CONTEXT:
+The user is asking about: **{referenced_person}**
+Any pronouns (his/her/him/their) in the current question refer to {referenced_person}, NOT the student's advisor.
+{"="*60}
+
+"""
 
                 # Add student profile if available
                 if student_context:
@@ -2289,6 +2440,10 @@ Important rules:
 
                 full_message += f"Relevant knowledge base information:\n{context_docs}\n\n"
                 full_message += f"Current question: {user_q}\n\n"
+
+                if referenced_person and is_follow_up:
+                    full_message += f"REMINDER: This question is about {referenced_person}. Answer about {referenced_person}, not the student's advisor.\n\n"
+
                 full_message += "Please provide a helpful, specific answer. If this is a follow-up question, make sure to connect it to the previous conversation context. If you have student profile data, use it to personalize your response."
 
                 # Use LLM directly with full context

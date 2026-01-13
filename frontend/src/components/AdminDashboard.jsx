@@ -32,6 +32,10 @@ import { FaMicrophone } from "@react-icons/all-files/fa/FaMicrophone";
 import { FaStop } from "@react-icons/all-files/fa/FaStop";
 import { FaFileAlt } from "@react-icons/all-files/fa/FaFileAlt";
 import { FaRoad } from "@react-icons/all-files/fa/FaRoad";
+import { FaThumbsUp } from "@react-icons/all-files/fa/FaThumbsUp";
+import { FaThumbsDown } from "@react-icons/all-files/fa/FaThumbsDown";
+import { FaFlag } from "@react-icons/all-files/fa/FaFlag";
+import { FaSmile } from "@react-icons/all-files/fa/FaSmile";
 import DocumentationViewer from "./DocumentationViewer";
 import "./AdminDashboard.css";
 
@@ -104,6 +108,13 @@ export default function AdminDashboard() {
   // Documentation Viewer State
   const [showDocViewer, setShowDocViewer] = useState(false);
   const [docViewerMode, setDocViewerMode] = useState("docs"); // "docs" or "roadmap"
+
+  // Feedback State
+  const [feedbackData, setFeedbackData] = useState([]);
+  const [feedbackStats, setFeedbackStats] = useState({ total: 0, helpful: 0, not_helpful: 0, reports: 0, satisfaction_rate: 0 });
+  const [feedbackFilter, setFeedbackFilter] = useState("all");
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [selectedFeedback, setSelectedFeedback] = useState(null);
 
   // ===========================================
   // DATA LOADING FUNCTIONS
@@ -203,6 +214,33 @@ export default function AdminDashboard() {
       if (res.ok) setAnalytics(await res.json());
     } catch (err) { console.error("Failed to load analytics:", err); }
     finally { setAnalyticsLoading(false); }
+  };
+
+  const loadFeedbackStats = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/feedback/stats`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const data = await res.json();
+        setFeedbackStats(data);
+        setFeedbackData(data.recent_reports || []);
+      }
+    } catch (err) { console.error("Failed to load feedback stats:", err); }
+  };
+
+  const loadAllFeedback = async (filterType = null) => {
+    setFeedbackLoading(true);
+    try {
+      let url = `${API_BASE}/api/feedback/all`;
+      if (filterType && filterType !== "all") {
+        url += `?type=${filterType}`;
+      }
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const data = await res.json();
+        setFeedbackData(data.feedback || []);
+      }
+    } catch (err) { console.error("Failed to load feedback:", err); }
+    finally { setFeedbackLoading(false); }
   };
 
   const searchKnowledgeBase = async (searchTerm) => {
@@ -343,6 +381,7 @@ export default function AdminDashboard() {
     if (activeTab === "system") loadHealth();
     if (activeTab === "knowledge") loadKbFiles();
     if (activeTab === "analytics") loadAnalytics();
+    if (activeTab === "feedback") loadFeedbackStats();
   }, [activeTab]);
 
   useEffect(() => {
@@ -769,6 +808,10 @@ export default function AdminDashboard() {
         </button>
         <button className={`admin-tab ${activeTab === "analytics" ? "active" : ""}`} onClick={() => setActiveTab("analytics")}>
           <FaChartBar size={16} /><span>Analytics</span>
+        </button>
+        <button className={`admin-tab ${activeTab === "feedback" ? "active" : ""}`} onClick={() => setActiveTab("feedback")}>
+          <FaSmile size={16} /><span>Feedback</span>
+          {feedbackStats.reports > 0 && <span className="ticket-badge">{feedbackStats.reports}</span>}
         </button>
         <button className={`admin-tab ${activeTab === "system" ? "active" : ""}`} onClick={() => setActiveTab("system")}>
           <FaServer size={16} /><span>System</span>
@@ -1218,6 +1261,83 @@ export default function AdminDashboard() {
           ) : (
             <div className="empty-state">No analytics data available</div>
           )}
+        </div>
+      )}
+
+      {/* =================== FEEDBACK TAB =================== */}
+      {activeTab === "feedback" && (
+        <div className="tab-content">
+          {/* Feedback Stats */}
+          <div className="ticket-stats">
+            <div className="stat-card total">
+              <FaSmile className="stat-icon" />
+              <span className="stat-number">{feedbackStats.total}</span>
+              <span className="stat-label">Total Feedback</span>
+            </div>
+            <div className="stat-card" style={{ background: 'linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%)', color: '#166534' }}>
+              <FaThumbsUp className="stat-icon" style={{ color: '#22c55e' }} />
+              <span className="stat-number" style={{ color: '#166534' }}>{feedbackStats.helpful}</span>
+              <span className="stat-label" style={{ color: '#166534' }}>Helpful</span>
+            </div>
+            <div className="stat-card" style={{ background: 'linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)', color: '#991b1b' }}>
+              <FaThumbsDown className="stat-icon" style={{ color: '#ef4444' }} />
+              <span className="stat-number" style={{ color: '#991b1b' }}>{feedbackStats.not_helpful}</span>
+              <span className="stat-label" style={{ color: '#991b1b' }}>Not Helpful</span>
+            </div>
+            <div className="stat-card" style={{ background: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)', color: '#92400e' }}>
+              <FaFlag className="stat-icon" style={{ color: '#f59e0b' }} />
+              <span className="stat-number" style={{ color: '#92400e' }}>{feedbackStats.reports}</span>
+              <span className="stat-label" style={{ color: '#92400e' }}>Reports</span>
+            </div>
+          </div>
+
+          {/* Satisfaction Rate */}
+          <div className="satisfaction-card">
+            <h3>User Satisfaction Rate</h3>
+            <div className="satisfaction-bar-container">
+              <div
+                className="satisfaction-bar"
+                style={{ width: `${feedbackStats.satisfaction_rate || 0}%` }}
+              />
+            </div>
+            <span className="satisfaction-percent">{feedbackStats.satisfaction_rate || 0}%</span>
+          </div>
+
+          {/* Recent Reports Section */}
+          <div className="feedback-reports-section">
+            <h3><FaFlag size={16} /> Recent Reports ({feedbackStats.reports})</h3>
+            {feedbackStats.recent_reports && feedbackStats.recent_reports.length > 0 ? (
+              <div className="feedback-list">
+                {feedbackStats.recent_reports.map((report) => (
+                  <div key={report.id} className="feedback-card report">
+                    <div className="feedback-header">
+                      <span className="feedback-type-badge report">
+                        <FaFlag size={12} /> Report
+                      </span>
+                      <span className="feedback-date">
+                        <FaClock size={11} /> {formatDateTime(report.timestamp)}
+                      </span>
+                    </div>
+                    <div className="feedback-message">
+                      <strong>Bot Response:</strong>
+                      <p>{report.message_preview}</p>
+                    </div>
+                    {report.details && (
+                      <div className="feedback-details">
+                        <strong>User's Report:</strong>
+                        <p>{report.details}</p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">
+                <FaCheckCircle size={32} style={{ color: '#22c55e', marginBottom: 12 }} />
+                <p>No reports yet! Users are happy with the responses.</p>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
