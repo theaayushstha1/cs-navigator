@@ -4,12 +4,9 @@
 
 .auth {
   min-height: calc(100vh - 70px); /* Account for navbar height */
-  margin-top: 70px; /* Push below navbar */
   display: grid;
   grid-template-columns: 1.15fr 1fr;
   background: #0f172a;
-  position: relative;
-  z-index: 1; /* Below navbar (z-index: 1000) */
 }
 
 /* ─── LEFT PANEL: Brand & Features ─── */
