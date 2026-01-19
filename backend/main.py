@@ -18,7 +18,7 @@ import pypdf
 import docx
 from langchain.schema import SystemMessage, HumanMessage 
 
-from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile
+from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -301,7 +301,10 @@ def build_qa_chain():
             embedding=embeddings,
             namespace=PINECONE_NAMESPACE,
         )
-        retriever = store.as_retriever(search_type="similarity", search_kwargs={"k": 5})
+        retriever = store.as_retriever(
+            search_type="mmr",
+            search_kwargs={"k": 8, "fetch_k": 20, "lambda_mult": 0.7}
+        )
         llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-3.5-turbo", temperature=0)
         qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents=True)
         print("✅ AI System Initialized")
@@ -395,6 +398,31 @@ class LoginRequest(BaseModel):
 class QueryRequest(BaseModel):
     query: str
     session_id: str = "default" # 🔥 NEW: Accept session ID
+
+class GuestQueryRequest(BaseModel):
+    query: str
+
+# ==============================================================================
+# GUEST RATE LIMITING (Simple In-Memory)
+# ==============================================================================
+from collections import defaultdict
+import time as time_module
+
+guest_rate_limits = defaultdict(list)  # IP -> list of timestamps
+GUEST_RATE_LIMIT = 10  # requests per minute
+GUEST_RATE_WINDOW = 60  # seconds
+
+def check_guest_rate_limit(ip: str) -> bool:
+    """Check if IP is within rate limit. Returns True if allowed, False if blocked."""
+    current_time = time_module.time()
+    # Clean old entries
+    guest_rate_limits[ip] = [t for t in guest_rate_limits[ip] if current_time - t < GUEST_RATE_WINDOW]
+    # Check limit
+    if len(guest_rate_limits[ip]) >= GUEST_RATE_LIMIT:
+        return False
+    # Add new request
+    guest_rate_limits[ip].append(current_time)
+    return True
 
 class Course(BaseModel):
     course_code: str
@@ -2404,6 +2432,15 @@ Your role:
 - Remember the conversation context and provide coherent follow-up responses
 - Be specific and helpful - provide names, details, and actionable information
 
+⚠️ CRITICAL GROUNDING RULES - YOU MUST FOLLOW THESE:
+1. ONLY answer based on the KNOWLEDGE BASE CONTEXT provided below
+2. If the context does NOT contain specific information (like a name, email, or detail):
+   - Say: "I don't have that specific information in my knowledge base. Please contact the CS department at compsci@morgan.edu or (443) 885-3962"
+   - DO NOT generate placeholder text like [INSERT X HERE] or [INSERT PROFESSOR NAME HERE]
+   - DO NOT make up names, emails, phone numbers, or contact information
+3. If you're unsure about an answer, be honest about your limitations
+4. For professor queries: If you can't find the professor in the context, don't guess - admit the limitation
+
 ⚠️ CRITICAL - PRONOUN RESOLUTION RULES:
 When the user uses pronouns like "him", "her", "his", "their", "he", "she":
 1. FIRST check the CONVERSATION HISTORY to find who they're referring to
@@ -2487,6 +2524,156 @@ Any pronouns (his/her/him/their) in the current question refer to {referenced_pe
         db.commit()
     except Exception as e:
         print(f"❌ Failed to save chat history: {e}")
+
+    return {"response": answer}
+
+# ==============================================================================
+# GUEST CHAT ENDPOINT (No Authentication Required)
+# ==============================================================================
+@app.post("/chat/guest")
+async def chat_guest(req: GuestQueryRequest, request: Request):
+    """
+    Guest chat endpoint - NO authentication required.
+    - No personalization (no DegreeWorks)
+    - No history persistence
+    - Rate limited: 10 requests/minute per IP
+    """
+    # Get client IP for rate limiting
+    client_ip = request.client.host if request.client else "unknown"
+
+    # Check rate limit
+    if not check_guest_rate_limit(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded. Please try again in a minute or sign up for unlimited access!"
+        )
+
+    user_q = req.query.strip()
+    if not user_q:
+        return {"response": "Please enter a question."}
+
+    # #11 - Limit query length (500 chars max)
+    if len(user_q) > 500:
+        user_q = user_q[:500]
+
+    # Small talk override - handle greetings, acknowledgments, and non-questions
+    lower_q = user_q.lower().strip()
+    norm = re.sub(r'[\s\W]+', '', lower_q)
+    word_count = len(lower_q.split())
+
+    # #9 FIX: Only match greetings if it's JUST a greeting (1-2 words max)
+    # Greetings (including typos) - only if short message
+    greeting_patterns = ['hi', 'hey', 'heyt', 'hii', 'heyy', 'hello', 'helo', 'howdy', 'sup', 'yo', 'hola', 'greetings']
+    if word_count <= 2 and (norm in greeting_patterns or re.match(r'^(hi+|hey+t?|hello+)$', norm)):
+        return {"response": "Hello! I'm CS Navigator. How can I help you learn about Morgan State's Computer Science program today?"}
+
+    # #8 FIX: "what's up", "how are you" patterns
+    elif norm in ['whatsup', 'wassup', 'wazzup', 'whatsgood', 'howareyou', 'howru', 'howreyou', 'howyoudoing']:
+        return {"response": "I'm doing great, thanks for asking! How can I help you with Morgan State's CS program today?"}
+
+    # Goodbyes - only if short
+    elif word_count <= 3 and re.match(r'^(bye|goodbye|see you|later|cya|peace|gotta go|gtg)', lower_q):
+        return {"response": "Goodbye! Sign up for a free account to save your chat history and get personalized advice!"}
+
+    # Thank you
+    elif re.search(r'\b(thank|thanks|thanx|thx|ty|appreciate)\b', lower_q):
+        return {"response": "You're welcome! Feel free to ask more questions. Sign up to unlock personalized features!"}
+
+    # #8 FIX: Reactions and fillers (lol, haha, test, etc.)
+    elif norm in ['lol', 'lmao', 'rofl', 'haha', 'hahaha', 'hehe', 'lolol', 'xd', 'test', 'testing', 'testtest', 'asdf', 'aaa', 'zzz', 'idk', 'idc', 'nvm', 'nevermind', 'bruh', 'bro', 'dude', 'wow', 'omg', 'wtf', 'wth']:
+        return {"response": "I'm here whenever you're ready! Ask me anything about Morgan State's CS program - courses, professors, requirements, or career paths."}
+
+    # Acknowledgments (ok, sure, cool, etc.)
+    elif norm in ['ok', 'okay', 'okk', 'okok', 'k', 'kk', 'sure', 'alright', 'aight', 'cool', 'nice', 'great', 'good', 'gotit', 'understood', 'isee', 'ah', 'oh', 'ohh', 'hmm', 'hm', 'mhm', 'yep', 'yup', 'yes', 'yeah', 'ya', 'no', 'nope', 'nah', 'fine', 'bet', 'word', 'facts', 'true', 'right', 'correct']:
+        return {"response": "Got it! Feel free to ask me anything about Morgan State's CS program - courses, professors, requirements, or career opportunities!"}
+
+    # Very short inputs (1-2 chars) or just punctuation/emojis
+    elif len(norm) <= 2 or not any(c.isalpha() for c in user_q):
+        return {"response": "I'm here to help! Ask me about CS courses, professors, degree requirements, or anything else about Morgan State's Computer Science program."}
+
+    # Use RAG for real questions
+    if llm and retriever:
+        try:
+            # Get relevant documents from knowledge base
+            docs = retriever.get_relevant_documents(user_q)
+            context_docs = "\n\n".join([doc.page_content for doc in docs[:4]])
+
+            # #10 FIX: Handle empty RAG context
+            if not context_docs.strip():
+                return {"response": "I don't have specific information about that in my knowledge base. For detailed questions about Morgan State's CS program, please contact the department at compsci@morgan.edu or (443) 885-3962."}
+
+            # Guest-specific system prompt (no personalization)
+            guest_system_prompt = """You are CS Navigator, an AI assistant for Morgan State University's Computer Science department.
+
+📝 RESPONSE FORMATTING (use Markdown):
+• Use **bold** for course codes, professor names, important terms
+• Use bullet points for lists (clean and scannable)
+• Keep paragraphs short (2-3 sentences)
+• Format courses as: **COSC 311** - Data Structures (3 credits)
+• Format professors as: **Dr. Name** - Research area
+• Put contact info on separate lines
+
+✅ RESPONSE STYLE:
+• Lead with the direct answer first
+• Be concise (3-6 sentences for simple questions)
+• Friendly, professional tone
+• Don't repeat the question back
+
+📋 EXAMPLE FORMAT:
+**Dr. Jane Doe** is the Department Chair.
+
+**Contact:**
+• Email: jane.doe@morgan.edu
+• Office: McMechen Hall 512
+
+She specializes in **cybersecurity** and **network systems**.
+
+---
+
+⚠️ GROUNDING RULES (CRITICAL):
+1. ONLY use information from the KNOWLEDGE BASE CONTEXT provided
+2. If info is NOT found, say: "I don't have that specific information. Contact the CS department at compsci@morgan.edu or (443) 885-3962"
+3. NEVER make up names, emails, phone numbers, or details
+4. NEVER use placeholders like [INSERT X HERE]
+5. Be honest about limitations
+
+You are helping a GUEST user. For personalized questions, provide general guidance.
+"""
+
+            user_message = f"""KNOWLEDGE BASE CONTEXT:
+{context_docs}
+
+QUESTION: {user_q}
+
+Provide a well-formatted answer using the context. Use **bold** for key terms and bullet points for lists."""
+
+            response = llm([
+                SystemMessage(content=guest_system_prompt),
+                HumanMessage(content=user_message)
+            ])
+            answer = response.content.strip()
+
+        except Exception as e:
+            print(f"❌ Guest Chat Error: {e}")
+            # Fallback to basic QA
+            if qa:
+                try:
+                    result = qa({"query": user_q})
+                    answer = result["result"].strip()
+                except:
+                    answer = "I'm having trouble processing your request. Please try again."
+            else:
+                answer = "I'm having trouble connecting to my knowledge base. Please try again."
+    elif qa:
+        # Fallback to basic QA without LLM
+        try:
+            result = qa({"query": user_q})
+            answer = result["result"].strip()
+        except Exception as e:
+            answer = "I'm having trouble accessing my knowledge base right now."
+            print(f"Guest QA Error: {e}")
+    else:
+        answer = "AI system is initializing. Please try again in a moment."
 
     return {"response": answer}
 

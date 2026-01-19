@@ -72,11 +72,11 @@ export default function NavBar({ role, onToggleSidebar }) {
     <nav className={`navbar ${scrolled ? "scrolled" : ""}`}>
       <div className="nav-container">
         {/* Left side - logo and title - CLICKABLE */}
-        <div 
-          className="navbar-left" 
-          onClick={() => navigate("/")}
+        <div
+          className="navbar-left"
+          onClick={() => navigate(isAuthed ? "/chat" : "/")}
           style={{ cursor: 'pointer' }}
-          title="Return to Home" // 🔥 NEW: Hover Text
+          title={isAuthed ? "Go to Chat" : "Return to Home"}
         >
           {isAuthed && (
             <button 
@@ -145,6 +145,10 @@ export default function NavBar({ role, onToggleSidebar }) {
         {/* Show links only when NOT authenticated */}
         {!isAuthed && (
           <div className="nav-links" aria-label="Primary navigation">
+            <NavLink to="/trychat" className="nav-link try-free-link">
+              Try Free
+            </NavLink>
+
             <NavLink to="/login" className={linkClass}>
               Login
             </NavLink>

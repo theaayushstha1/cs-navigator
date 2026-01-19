@@ -159,6 +159,17 @@
   font-weight: 600;
 }
 
+/* Try Free link - highlighted */
+.try-free-link {
+  color: #FF6B00 !important;
+  font-weight: 600;
+}
+
+.try-free-link:hover {
+  background-color: rgba(255, 107, 0, 0.1) !important;
+  color: #e55c00 !important;
+}
+
 /* CTA button */
 .nav-cta {
   text-decoration: none;
@@ -310,23 +321,69 @@
   box-shadow: 0 4px 12px rgba(255, 183, 3, 0.4);
 }
 
-/* ========== Mobile Responsive ========== */
-@media (max-width: 768px) {
+/* ========== RESPONSIVE BREAKPOINTS ========== */
+
+/* Large Desktop (1440px+) */
+@media (min-width: 1440px) {
+  .nav-container {
+    padding: 0 40px;
+  }
+
+  .navbar {
+    height: 75px;
+  }
+
+  .logo-hamburger-toggle {
+    width: 55px;
+    height: 55px;
+  }
+
+  .nav-logo {
+    height: 55px;
+  }
+
+  .brand-main {
+    font-size: 1.2rem;
+  }
+
+  .brand-sub {
+    font-size: 0.8rem;
+  }
+}
+
+/* iPad Pro Landscape (1024px - 1279px) */
+@media (max-width: 1279px) and (min-width: 1024px) {
+  .nav-container {
+    padding: 0 20px;
+  }
+
+  .brand-main {
+    font-size: 1.05rem;
+  }
+
+  .nav-link {
+    font-size: 0.9rem;
+    padding: 6px 12px;
+  }
+}
+
+/* iPad Pro Portrait & Tablets (768px - 1023px) */
+@media (max-width: 1023px) and (min-width: 768px) {
   .nav-container {
     padding: 0 16px;
   }
 
-  .navbar-left {
-    gap: 8px;
+  .navbar {
+    height: 65px;
   }
 
   .logo-hamburger-toggle {
-    width: 42px;
-    height: 42px;
+    width: 45px;
+    height: 45px;
   }
 
   .nav-logo {
-    height: 42px;
+    height: 45px;
   }
 
   .brand-main {
@@ -334,7 +391,7 @@
   }
 
   .brand-sub {
-    display: none;
+    font-size: 0.7rem;
   }
 
   .nav-links {
@@ -347,12 +404,145 @@
   }
 
   .profile-icon-btn {
+    width: 38px;
+    height: 38px;
+  }
+
+  .admin-nav-btn {
+    padding: 8px 14px;
+    font-size: 0.85rem;
+  }
+}
+
+/* Mobile (below 768px) */
+@media (max-width: 767px) {
+  .nav-container {
+    padding: 0 12px;
+  }
+
+  .navbar {
+    height: 60px;
+  }
+
+  .navbar-left {
+    gap: 8px;
+  }
+
+  .logo-hamburger-toggle {
+    width: 40px;
+    height: 40px;
+  }
+
+  .nav-logo {
+    height: 40px;
+  }
+
+  .brand-main {
+    font-size: 0.95rem;
+  }
+
+  .brand-sub {
+    display: none;
+  }
+
+  .nav-links {
+    gap: 2px;
+  }
+
+  .nav-link {
+    font-size: 0.8rem;
+    padding: 6px 8px;
+  }
+
+  .profile-icon-btn {
     width: 36px;
     height: 36px;
   }
-  
+
   .profile-icon-fallback svg {
     width: 16px;
     height: 16px;
+  }
+
+  .admin-nav-btn {
+    padding: 6px 10px;
+    font-size: 0.8rem;
+    gap: 6px;
+  }
+
+  .admin-nav-btn svg {
+    width: 14px;
+    height: 14px;
+  }
+}
+
+/* Small mobile devices (below 480px) */
+@media (max-width: 480px) {
+  .nav-container {
+    padding: 0 10px;
+  }
+
+  .navbar {
+    height: 56px;
+  }
+
+  .logo-hamburger-toggle {
+    width: 36px;
+    height: 36px;
+  }
+
+  .nav-logo {
+    height: 36px;
+  }
+
+  .brand-main {
+    font-size: 0.9rem;
+  }
+
+  .nav-title {
+    display: none;
+  }
+
+  .nav-links {
+    display: none;
+  }
+
+  .profile-icon-btn {
+    width: 34px;
+    height: 34px;
+  }
+
+  .admin-nav-btn {
+    padding: 6px 8px;
+    font-size: 0.75rem;
+  }
+
+  .admin-nav-btn span {
+    display: none;
+  }
+}
+
+/* Extra small phones (below 375px) */
+@media (max-width: 374px) {
+  .nav-container {
+    padding: 0 8px;
+  }
+
+  .navbar {
+    height: 52px;
+  }
+
+  .logo-hamburger-toggle {
+    width: 32px;
+    height: 32px;
+  }
+
+  .nav-logo {
+    height: 32px;
+  }
+
+  .profile-icon-btn {
+    width: 32px;
+    height: 32px;
   }
 }

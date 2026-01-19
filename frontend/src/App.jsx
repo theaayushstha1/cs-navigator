@@ -8,6 +8,7 @@ import CurriculumPage from "./components/CurriculumPage";
 import ProfilePage    from "./components/ProfilePage";
 import AdminDashboard from "./components/AdminDashboard";
 import Forbidden      from "./components/Forbidden";
+import LandingPage    from "./components/LandingPage";
 
 import SignUp from "./SignUp";
 import Login  from "./Login";
@@ -158,9 +159,11 @@ export default function App() {
   }, [darkMode]);
 
   // Toggle sidebar CSS class on body
+  // IMPORTANT: Also collapse sidebar when not authenticated to prevent overlay on login page
   useEffect(() => {
-    document.body.classList.toggle('sidebar-collapsed', sidebarCollapsed);
-  }, [sidebarCollapsed]);
+    const shouldCollapse = sidebarCollapsed || !token;
+    document.body.classList.toggle('sidebar-collapsed', shouldCollapse);
+  }, [sidebarCollapsed, token]);
 
   // chat‐session state
   const [sessions, setSessions] = useState(() => {
@@ -250,12 +253,12 @@ export default function App() {
     const newChat = { id, title: "New Chat", messages: [], pinned: false, archived: false };
     setSessions((prev) => [...prev, newChat]); // Append to end
     setActiveId(id);
-    navigate("/");
+    navigate("/chat");
   };
-  
+
   const handleSelect = (id) => {
     setActiveId(id);
-    navigate("/");
+    navigate("/chat");
   };
   
   const handleDelete = (id) => {
@@ -362,15 +365,27 @@ export default function App() {
             <Login
               onLoggedIn={(tk) => {
                 setToken(tk);
-                navigate("/", { replace: true });
+                navigate("/chat", { replace: true });
               }}
             />
           }
         />
 
-        {/* protected: chat */}
+        {/* public: guest trial chat */}
+        <Route
+          path="/trychat"
+          element={<LandingPage />}
+        />
+
+        {/* root redirects to /trychat or /chat based on auth */}
         <Route
           path="/"
+          element={<Navigate to={token ? "/chat" : "/trychat"} replace />}
+        />
+
+        {/* protected: chat */}
+        <Route
+          path="/chat"
           element={
             <RequireAuth>
               <ChatLayout
@@ -455,7 +470,7 @@ export default function App() {
         {/* fallback */}
         <Route
           path="*"
-          element={<Navigate to={token ? "/" : "/login"} replace />}
+          element={<Navigate to={token ? "/chat" : "/trychat"} replace />}
         />
       </Routes>
     </>
