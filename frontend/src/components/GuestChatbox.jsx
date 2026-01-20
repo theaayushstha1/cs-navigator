@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useNavigate } from "react-router-dom";
-import { BsArrowUpCircleFill } from "react-icons/bs";
+import { BsArrowUpCircleFill, BsClock, BsCheckCircle, BsX } from "react-icons/bs";
 import "./GuestChatbox.css";
 
 // Default suggestions for guests
@@ -21,9 +21,48 @@ const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
   ? "http://127.0.0.1:8000"
   : "http://18.214.136.155:5000";
 
-// Guest message limit
-const GUEST_MESSAGE_LIMIT = 10;
-const MAX_INPUT_LENGTH = 500; // Limit input to 500 characters
+// Session duration: 15 minutes in milliseconds
+const GUEST_SESSION_DURATION = 15 * 60 * 1000;
+const MAX_INPUT_LENGTH = 500;
+
+// Auto-generated guest profile
+const generateGuestProfile = () => {
+  const saved = localStorage.getItem("guest_profile");
+  if (saved) {
+    return JSON.parse(saved);
+  }
+
+  const classifications = ["Freshman", "Sophomore", "Junior", "Senior"];
+  const majors = ["Computer Science", "Undeclared", "Information Systems", "Engineering"];
+  const gpaOptions = ["2.85", "3.02", "3.24", "3.45", "3.67", "2.95", "3.12", "3.38"];
+
+  const profile = {
+    name: "Guest User",
+    gpa: gpaOptions[Math.floor(Math.random() * gpaOptions.length)],
+    classification: classifications[Math.floor(Math.random() * classifications.length)],
+    major: majors[Math.floor(Math.random() * majors.length)]
+  };
+
+  localStorage.setItem("guest_profile", JSON.stringify(profile));
+  return profile;
+};
+
+// Format time remaining as MM:SS
+const formatTimeRemaining = (ms) => {
+  if (ms <= 0) return "00:00";
+  const totalSeconds = Math.ceil(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+};
+
+// Get timer urgency state
+const getTimerUrgency = (ms) => {
+  if (ms <= 0) return "expired";
+  if (ms <= 2 * 60 * 1000) return "critical"; // 2 minutes
+  if (ms <= 5 * 60 * 1000) return "warning";  // 5 minutes
+  return "normal";
+};
 
 export default function GuestChatbox() {
   const navigate = useNavigate();
@@ -32,14 +71,24 @@ export default function GuestChatbox() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [messageCount, setMessageCount] = useState(() => {
-    const saved = localStorage.getItem("guest_message_count");
-    return saved ? parseInt(saved, 10) : 0;
+  const [guestProfile] = useState(generateGuestProfile);
+
+  // Timer state
+  const [sessionStartTime, setSessionStartTime] = useState(() => {
+    const saved = localStorage.getItem("guest_session_start");
+    return saved ? parseInt(saved, 10) : null;
   });
+  const [timeRemaining, setTimeRemaining] = useState(GUEST_SESSION_DURATION);
+  const [showSignUpModal, setShowSignUpModal] = useState(false);
 
   // Refs
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
+
+  // Computed state
+  const isSessionExpired = timeRemaining <= 0;
+  const timerUrgency = getTimerUrgency(timeRemaining);
+  const hasSessionStarted = sessionStartTime !== null;
 
   // Focus input on load
   useEffect(() => {
@@ -51,10 +100,35 @@ export default function GuestChatbox() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Save message count to localStorage
+  // Timer countdown effect
   useEffect(() => {
-    localStorage.setItem("guest_message_count", messageCount.toString());
-  }, [messageCount]);
+    if (!sessionStartTime) return;
+
+    const updateTimer = () => {
+      const elapsed = Date.now() - sessionStartTime;
+      const remaining = Math.max(0, GUEST_SESSION_DURATION - elapsed);
+      setTimeRemaining(remaining);
+
+      // Auto-show modal when expired
+      if (remaining <= 0 && !showSignUpModal) {
+        setShowSignUpModal(true);
+      }
+    };
+
+    updateTimer(); // Initial update
+    const interval = setInterval(updateTimer, 1000);
+
+    return () => clearInterval(interval);
+  }, [sessionStartTime, showSignUpModal]);
+
+  // Start session (called on first message)
+  const startSession = () => {
+    if (!sessionStartTime) {
+      const now = Date.now();
+      setSessionStartTime(now);
+      localStorage.setItem("guest_session_start", now.toString());
+    }
+  };
 
   // Helper to add message
   const addMessage = (text, sender) => {
@@ -64,7 +138,7 @@ export default function GuestChatbox() {
 
   // Handle suggestion click
   const handleSuggestion = (text) => {
-    if (!isLoading) {
+    if (!isLoading && !isSessionExpired) {
       setInput(text);
       inputRef.current?.focus();
     }
@@ -73,20 +147,25 @@ export default function GuestChatbox() {
   // Main send handler
   const handleSend = async (e) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    if (!input.trim() || isLoading || isSessionExpired) return;
+
+    // Start session on first message
+    startSession();
 
     const userMessage = input.trim();
     setIsLoading(true);
 
     addMessage(userMessage, "user");
     setInput("");
-    setMessageCount((prev) => prev + 1);
 
     try {
       const res = await fetch(`${API_BASE}/chat/guest`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: userMessage }),
+        body: JSON.stringify({
+          query: userMessage,
+          guestProfile: guestProfile
+        }),
       });
 
       if (res.status === 429) {
@@ -109,26 +188,34 @@ export default function GuestChatbox() {
     }
   };
 
-  const remainingMessages = Math.max(0, GUEST_MESSAGE_LIMIT - messageCount);
-  const isLowOnMessages = remainingMessages <= 3 && remainingMessages > 0;
-  const isOutOfMessages = remainingMessages === 0;
-
   return (
     <div className="guest-chat-main">
-      {/* Trial counter - always visible at top */}
-      <div className={`guest-trial-bar ${isLowOnMessages ? 'low' : ''} ${isOutOfMessages ? 'empty' : ''}`}>
+      {/* Trial timer bar - always visible at top */}
+      <div className={`guest-trial-bar ${timerUrgency} ${isSessionExpired ? 'expired' : ''}`}>
         <div className="trial-bar-content">
-          {isOutOfMessages ? (
+          {isSessionExpired ? (
             <>
-              <span className="trial-text">You've used all 10 free messages</span>
-              <button onClick={() => navigate("/signup")} className="trial-cta">
+              <span className="trial-text">Your free trial has ended</span>
+              <button onClick={() => setShowSignUpModal(true)} className="trial-cta">
                 Create Free Account for Unlimited
+              </button>
+            </>
+          ) : hasSessionStarted ? (
+            <>
+              <div className="timer-display">
+                <BsClock className="timer-icon" />
+                <span className="timer-countdown">{formatTimeRemaining(timeRemaining)}</span>
+                <span className="timer-label">remaining</span>
+              </div>
+              <span className="trial-divider">|</span>
+              <button onClick={() => navigate("/signup")} className="trial-link">
+                Create an account for unlimited
               </button>
             </>
           ) : (
             <>
               <span className="trial-text">
-                <strong>{remainingMessages}</strong> free {remainingMessages === 1 ? 'question' : 'questions'} remaining
+                <strong>15:00</strong> free trial • Timer starts on your first message
               </span>
               <span className="trial-divider">|</span>
               <button onClick={() => navigate("/signup")} className="trial-link">
@@ -151,7 +238,7 @@ export default function GuestChatbox() {
                   key={i}
                   className="guest-suggestion-btn"
                   onClick={() => handleSuggestion(s)}
-                  disabled={isLoading}
+                  disabled={isLoading || isSessionExpired}
                 >
                   {s}
                 </button>
@@ -209,7 +296,7 @@ export default function GuestChatbox() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input area - matches main chat style */}
+      {/* Input area */}
       <div className="guest-chat-input-container">
         <form onSubmit={handleSend} className="guest-chat-input-wrapper">
           <input
@@ -218,15 +305,15 @@ export default function GuestChatbox() {
             className="guest-chat-input-field"
             value={input}
             onChange={(e) => setInput(e.target.value.slice(0, MAX_INPUT_LENGTH))}
-            placeholder={isOutOfMessages ? "Sign up for unlimited messages..." : "Type your message..."}
-            disabled={isLoading || isOutOfMessages}
+            placeholder={isSessionExpired ? "Sign up for unlimited messages..." : "Type your message..."}
+            disabled={isLoading || isSessionExpired}
             maxLength={MAX_INPUT_LENGTH}
           />
           <button
             type="submit"
             className="guest-action-btn-icon guest-send-btn"
             title="Send message"
-            disabled={isLoading || !input.trim() || isOutOfMessages}
+            disabled={isLoading || !input.trim() || isSessionExpired}
           >
             <BsArrowUpCircleFill size={24} />
           </button>
@@ -237,6 +324,64 @@ export default function GuestChatbox() {
           </div>
         )}
       </div>
+
+      {/* Sign-up Modal */}
+      {showSignUpModal && (
+        <div className="signup-modal-overlay" onClick={() => setShowSignUpModal(false)}>
+          <div className="signup-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="signup-modal-close" onClick={() => setShowSignUpModal(false)}>
+              <BsX size={24} />
+            </button>
+
+            <div className="signup-modal-header">
+              <div className="signup-modal-icon">
+                <BsClock size={32} />
+              </div>
+              <h2 className="signup-modal-title">Your Free Trial Has Ended</h2>
+              <p className="signup-modal-subtitle">
+                Create a free account to continue using CS Navigator
+              </p>
+            </div>
+
+            <div className="signup-modal-benefits">
+              <h3 className="benefits-title">With a free account, you get:</h3>
+              <ul className="benefits-list">
+                <li>
+                  <BsCheckCircle className="benefit-icon" />
+                  <span>Unlimited chat messages</span>
+                </li>
+                <li>
+                  <BsCheckCircle className="benefit-icon" />
+                  <span>Personalized course recommendations</span>
+                </li>
+                <li>
+                  <BsCheckCircle className="benefit-icon" />
+                  <span>Save your chat history</span>
+                </li>
+                <li>
+                  <BsCheckCircle className="benefit-icon" />
+                  <span>Connect your DegreeWorks for tailored advice</span>
+                </li>
+              </ul>
+            </div>
+
+            <div className="signup-modal-footer">
+              <button
+                className="signup-modal-btn secondary"
+                onClick={() => setShowSignUpModal(false)}
+              >
+                Maybe Later
+              </button>
+              <button
+                className="signup-modal-btn primary"
+                onClick={() => navigate("/signup")}
+              >
+                Create Free Account
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

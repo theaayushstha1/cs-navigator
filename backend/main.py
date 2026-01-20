@@ -303,7 +303,11 @@ def build_qa_chain():
         )
         retriever = store.as_retriever(
             search_type="mmr",
-            search_kwargs={"k": 8, "fetch_k": 20, "lambda_mult": 0.7}
+            search_kwargs={
+                "k": 10,           # Increased from 8 - fetch more relevant docs
+                "fetch_k": 30,     # Increased from 20 - larger pool for MMR selection
+                "lambda_mult": 0.5 # Reduced from 0.7 - better balance of relevance & diversity
+            }
         )
         llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-3.5-turbo", temperature=0)
         qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents=True)
@@ -401,6 +405,7 @@ class QueryRequest(BaseModel):
 
 class GuestQueryRequest(BaseModel):
     query: str
+    guestProfile: Optional[dict] = None
 
 # ==============================================================================
 # GUEST RATE LIMITING (Simple In-Memory)
@@ -409,7 +414,7 @@ from collections import defaultdict
 import time as time_module
 
 guest_rate_limits = defaultdict(list)  # IP -> list of timestamps
-GUEST_RATE_LIMIT = 10  # requests per minute
+GUEST_RATE_LIMIT = 15  # requests per minute (time-based session provides natural limiting)
 GUEST_RATE_WINDOW = 60  # seconds
 
 def check_guest_rate_limit(ip: str) -> bool:
@@ -2395,7 +2400,12 @@ Current question: {user_q}"""
 
                 # Get relevant documents from RAG - use person-specific query
                 docs = retriever.get_relevant_documents(enhanced_query if is_follow_up else user_q)
-                context_docs = "\n\n".join([doc.page_content for doc in docs[:4]])
+                context_docs = "\n\n".join([doc.page_content for doc in docs[:8]])  # Increased from 4 to 8 for better coverage
+
+                # Log retrieval for debugging
+                print(f"📚 Retrieved {len(docs)} documents for query: '{user_q[:50]}...'")
+                if docs:
+                    print(f"   Top doc preview: {docs[0].page_content[:100]}...")
 
                 # 🔥 Build smart prompt with conversation history + student profile
                 personalization_note = ""
@@ -2596,14 +2606,38 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
         try:
             # Get relevant documents from knowledge base
             docs = retriever.get_relevant_documents(user_q)
-            context_docs = "\n\n".join([doc.page_content for doc in docs[:4]])
+            context_docs = "\n\n".join([doc.page_content for doc in docs[:8]])  # Increased from 4 to 8
+
+            # Log retrieval for debugging
+            print(f"📚 [Guest] Retrieved {len(docs)} documents for query: '{user_q[:50]}...'")
+            if docs:
+                print(f"   Top doc preview: {docs[0].page_content[:100]}...")
 
             # #10 FIX: Handle empty RAG context
             if not context_docs.strip():
                 return {"response": "I don't have specific information about that in my knowledge base. For detailed questions about Morgan State's CS program, please contact the department at compsci@morgan.edu or (443) 885-3962."}
 
-            # Guest-specific system prompt (no personalization)
-            guest_system_prompt = """You are CS Navigator, an AI assistant for Morgan State University's Computer Science department.
+            # Extract guest profile for light personalization
+            guest_profile = req.guestProfile or {}
+            guest_classification = guest_profile.get("classification", "")
+            guest_gpa = guest_profile.get("gpa", "")
+            guest_major = guest_profile.get("major", "")
+
+            # Build guest context string for light personalization
+            guest_context = ""
+            if guest_classification or guest_gpa:
+                profile_parts = []
+                if guest_classification:
+                    profile_parts.append(f"a {guest_classification}")
+                if guest_gpa:
+                    profile_parts.append(f"~{guest_gpa} GPA")
+                if guest_major and guest_major != "Computer Science":
+                    profile_parts.append(f"interested in {guest_major}")
+                if profile_parts:
+                    guest_context = f"\n\n👤 GUEST CONTEXT: This guest is {' with '.join(profile_parts)}. Slightly tailor your response tone to their academic level (e.g., simpler explanations for Freshmen, more detailed for Seniors)."
+
+            # Guest-specific system prompt (with light personalization)
+            guest_system_prompt = f"""You are CS Navigator, an AI assistant for Morgan State University's Computer Science department.
 
 📝 RESPONSE FORMATTING (use Markdown):
 • Use **bold** for course codes, professor names, important terms
@@ -2637,7 +2671,7 @@ She specializes in **cybersecurity** and **network systems**.
 4. NEVER use placeholders like [INSERT X HERE]
 5. Be honest about limitations
 
-You are helping a GUEST user. For personalized questions, provide general guidance.
+You are helping a GUEST user. For highly personalized questions (like "what courses should I take next semester?"), encourage them to sign up for a free account for personalized recommendations.{guest_context}
 """
 
             user_message = f"""KNOWLEDGE BASE CONTEXT:

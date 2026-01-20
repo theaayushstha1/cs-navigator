@@ -5,8 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Disable BuildKit to avoid Windows file access issues
-export DOCKER_BUILDKIT=0
+# Enable BuildKit for better cross-platform builds
+export DOCKER_BUILDKIT=1
 
 # Config
 DOCKER_USERNAME="sakina593"
@@ -35,15 +35,17 @@ check_prerequisites() {
 
 build_images() {
   log "Building frontend (locally)..."
-  docker build \
+  docker buildx build \
     --build-arg VITE_API_BASE_URL="${API_URL}" \
     --platform linux/amd64 \
+    --load \
     -t "${FRONTEND_IMAGE}:latest" \
     "$SCRIPT_DIR/frontend" || die "Frontend build failed"
 
   log "Building backend (locally)..."
-  docker build \
+  docker buildx build \
     --platform linux/amd64 \
+    --load \
     -t "${BACKEND_IMAGE}:latest" \
     "$SCRIPT_DIR/backend" || die "Backend build failed"
 }

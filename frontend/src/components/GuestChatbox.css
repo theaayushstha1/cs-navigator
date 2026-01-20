@@ -20,17 +20,34 @@
   transition: all 0.3s ease;
 }
 
-.guest-trial-bar.low {
-  background: linear-gradient(135deg, rgba(255, 107, 0, 0.1) 0%, rgba(255, 107, 0, 0.05) 100%);
-  border-bottom-color: rgba(255, 107, 0, 0.3);
+/* Timer urgency states */
+.guest-trial-bar.normal {
+  background: var(--bg-card);
+  border-bottom-color: var(--border-color);
 }
 
-.guest-trial-bar.empty {
+.guest-trial-bar.warning {
+  background: linear-gradient(135deg, rgba(255, 193, 7, 0.1) 0%, rgba(255, 193, 7, 0.05) 100%);
+  border-bottom-color: rgba(255, 193, 7, 0.4);
+}
+
+.guest-trial-bar.critical {
+  background: linear-gradient(135deg, rgba(220, 53, 69, 0.1) 0%, rgba(220, 53, 69, 0.05) 100%);
+  border-bottom-color: rgba(220, 53, 69, 0.4);
+  animation: pulse-critical 2s infinite;
+}
+
+@keyframes pulse-critical {
+  0%, 100% { background: linear-gradient(135deg, rgba(220, 53, 69, 0.1) 0%, rgba(220, 53, 69, 0.05) 100%); }
+  50% { background: linear-gradient(135deg, rgba(220, 53, 69, 0.15) 0%, rgba(220, 53, 69, 0.08) 100%); }
+}
+
+.guest-trial-bar.expired {
   background: linear-gradient(135deg, #002D72 0%, #0047ab 100%);
   border-bottom: none;
 }
 
-.guest-trial-bar.empty .trial-text {
+.guest-trial-bar.expired .trial-text {
   color: white;
 }
 
@@ -43,13 +60,61 @@
   font-size: 0.9rem;
 }
 
+/* Timer Display */
+.timer-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.timer-icon {
+  color: var(--msu-blue);
+  font-size: 1rem;
+}
+
+.guest-trial-bar.warning .timer-icon {
+  color: #d4a106;
+}
+
+.guest-trial-bar.critical .timer-icon {
+  color: #dc3545;
+  animation: shake 0.5s ease-in-out infinite;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+
+.timer-countdown {
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--msu-blue);
+  min-width: 48px;
+}
+
+.guest-trial-bar.warning .timer-countdown {
+  color: #d4a106;
+}
+
+.guest-trial-bar.critical .timer-countdown {
+  color: #dc3545;
+}
+
+.timer-label {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
 .trial-page-title {
   font-weight: 700;
   color: var(--msu-blue);
   font-size: 0.95rem;
 }
 
-.guest-trial-bar.empty .trial-page-title {
+.guest-trial-bar.expired .trial-page-title {
   color: white;
 }
 
@@ -62,11 +127,15 @@
   font-weight: 700;
 }
 
-.guest-trial-bar.low .trial-text strong {
-  color: #FF6B00;
+.guest-trial-bar.warning .trial-text strong {
+  color: #d4a106;
 }
 
-.guest-trial-bar.empty .trial-text strong {
+.guest-trial-bar.critical .trial-text strong {
+  color: #dc3545;
+}
+
+.guest-trial-bar.expired .trial-text strong {
   color: white;
 }
 
@@ -96,12 +165,20 @@
   text-decoration: underline;
 }
 
-.guest-trial-bar.low .trial-link {
-  color: #FF6B00;
+.guest-trial-bar.warning .trial-link {
+  color: #d4a106;
 }
 
-.guest-trial-bar.low .trial-link:hover {
-  color: #e55c00;
+.guest-trial-bar.warning .trial-link:hover {
+  color: #b8860b;
+}
+
+.guest-trial-bar.critical .trial-link {
+  color: #dc3545;
+}
+
+.guest-trial-bar.critical .trial-link:hover {
+  color: #c82333;
 }
 
 .trial-cta {
@@ -469,6 +546,186 @@
   opacity: 0.7;
 }
 
+/* ========================================== */
+/* Sign-up Modal Styles */
+/* ========================================== */
+
+.signup-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.signup-modal {
+  background: var(--bg-card);
+  border-radius: 20px;
+  max-width: 440px;
+  width: 100%;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.2);
+  position: relative;
+  animation: slideUp 0.3s ease-out;
+  overflow: hidden;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.signup-modal-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: var(--bg-body);
+  border: 1px solid var(--border-color);
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: all 0.2s;
+  z-index: 1;
+}
+
+.signup-modal-close:hover {
+  background: var(--bg-card);
+  color: var(--text-main);
+  border-color: var(--text-secondary);
+}
+
+.signup-modal-header {
+  padding: 40px 32px 24px;
+  text-align: center;
+  background: linear-gradient(135deg, rgba(0, 45, 114, 0.08) 0%, rgba(0, 71, 171, 0.04) 100%);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.signup-modal-icon {
+  width: 64px;
+  height: 64px;
+  background: linear-gradient(135deg, #002D72 0%, #0047ab 100%);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 20px;
+  color: white;
+}
+
+.signup-modal-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0 0 8px;
+}
+
+.signup-modal-subtitle {
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.signup-modal-benefits {
+  padding: 24px 32px;
+}
+
+.benefits-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 16px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.benefits-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.benefits-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.95rem;
+  color: var(--text-main);
+}
+
+.benefit-icon {
+  color: #10b981;
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.signup-modal-footer {
+  padding: 24px 32px 32px;
+  display: flex;
+  gap: 12px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-body);
+}
+
+.signup-modal-btn {
+  flex: 1;
+  padding: 14px 24px;
+  border-radius: 10px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.signup-modal-btn.secondary {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+}
+
+.signup-modal-btn.secondary:hover {
+  background: var(--bg-body);
+  border-color: var(--text-secondary);
+}
+
+.signup-modal-btn.primary {
+  background: linear-gradient(135deg, #002D72 0%, #0047ab 100%);
+  border: none;
+  color: white;
+}
+
+.signup-modal-btn.primary:hover {
+  background: linear-gradient(135deg, #001d4d 0%, #003580 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 45, 114, 0.3);
+}
 
 /* Responsive adjustments */
 @media (max-width: 768px) {
@@ -500,6 +757,41 @@
   .trial-bar-content {
     font-size: 0.85rem;
   }
+
+  /* Modal mobile adjustments */
+  .signup-modal {
+    max-width: 100%;
+    border-radius: 16px;
+  }
+
+  .signup-modal-header {
+    padding: 32px 24px 20px;
+  }
+
+  .signup-modal-benefits {
+    padding: 20px 24px;
+  }
+
+  .signup-modal-footer {
+    padding: 20px 24px 24px;
+    flex-direction: column;
+  }
+
+  .signup-modal-btn {
+    width: 100%;
+  }
+
+  .signup-modal-title {
+    font-size: 1.3rem;
+  }
+
+  .timer-countdown {
+    font-size: 0.9rem;
+  }
+
+  .timer-label {
+    display: none;
+  }
 }
 
 /* Dark mode adjustments */
@@ -517,4 +809,28 @@ body.dark .guest-suggestion-btn:hover:not(:disabled) {
 
 body.dark .guest-chat-input-wrapper {
   background: var(--bg-sidebar);
+}
+
+body.dark .signup-modal {
+  background: var(--bg-sidebar);
+}
+
+body.dark .signup-modal-header {
+  background: linear-gradient(135deg, rgba(0, 45, 114, 0.15) 0%, rgba(0, 71, 171, 0.08) 100%);
+}
+
+body.dark .signup-modal-close {
+  background: var(--bg-card);
+}
+
+body.dark .signup-modal-btn.secondary {
+  background: var(--bg-card);
+}
+
+body.dark .signup-modal-btn.secondary:hover {
+  background: var(--bg-body);
+}
+
+body.dark .signup-modal-footer {
+  background: var(--bg-card);
 }

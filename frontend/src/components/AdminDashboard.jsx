@@ -32,6 +32,7 @@ import { FaMicrophone } from "@react-icons/all-files/fa/FaMicrophone";
 import { FaStop } from "@react-icons/all-files/fa/FaStop";
 import { FaFileAlt } from "@react-icons/all-files/fa/FaFileAlt";
 import { FaRoad } from "@react-icons/all-files/fa/FaRoad";
+import { FaRobot } from "@react-icons/all-files/fa/FaRobot";
 import { FaThumbsUp } from "@react-icons/all-files/fa/FaThumbsUp";
 import { FaThumbsDown } from "@react-icons/all-files/fa/FaThumbsDown";
 import { FaFlag } from "@react-icons/all-files/fa/FaFlag";
@@ -1484,6 +1485,14 @@ export default function AdminDashboard() {
         >
           <FaRoad size={20} />
           <span>Roadmap</span>
+        </button>
+        <button
+          className="footer-icon-btn agents"
+          onClick={() => { setDocViewerMode("agents"); setShowDocViewer(true); }}
+          title="View AI Agents Plan"
+        >
+          <FaRobot size={20} />
+          <span>AI Agents</span>
         </button>
       </div>
 

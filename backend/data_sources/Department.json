@@ -1,6 +1,30 @@
 {
   "university": "Morgan State University",
   "department": "Computer Science Department",
+  "university_leadership": {
+    "summary": "The president of Morgan State University is Dr. David K. Wilson. The provost of Morgan State University is Dr. Hongtao Yu. Dr. David Wilson is the 12th president of Morgan State and has served since 2010. Dr. Hongtao Yu is the Provost and Senior Vice President for Academic Affairs.",
+    "president": {
+      "name": "David K. Wilson",
+      "title": "President of Morgan State University",
+      "full_description": "The president of Morgan State University is Dr. David K. Wilson. Dr. David K. Wilson has served as the 12th president of Morgan State University since 2010. Under his leadership, Morgan State has seen significant growth in enrollment, research funding, and campus development. He is committed to expanding the university's impact as Maryland's Preeminent Public Urban Research University. The president's office is located in Truth Hall. You can contact the president's office at president@morgan.edu.",
+      "office": "Truth Hall",
+      "email": "president@morgan.edu"
+    },
+    "provost": {
+      "name": "Hongtao Yu",
+      "title": "Provost and Senior Vice President for Academic Affairs",
+      "full_description": "The provost of Morgan State University is Dr. Hongtao Yu. Dr. Hongtao Yu serves as Provost and Senior Vice President for Academic Affairs at Morgan State University. The provost oversees all academic programs, faculty affairs, and educational initiatives across the university. The provost's office is located in Truth Hall. You can contact the provost's office at provost@morgan.edu.",
+      "office": "Truth Hall",
+      "email": "provost@morgan.edu"
+    },
+    "scmns_dean": {
+      "name": "Hongtao Yu",
+      "title": "Dean, School of Computer, Mathematical, and Natural Sciences (SCMNS)",
+      "full_description": "The Dean of the School of Computer, Mathematical, and Natural Sciences (SCMNS) oversees the Computer Science Department along with Mathematics, Biology, Chemistry, and Physics departments. The SCMNS office is located in Spencer Hall.",
+      "office": "Spencer Hall",
+      "email": "scmns@morgan.edu"
+    }
+  },
   "about_department": {
     "description": "The Morgan State University Computer Science Program is part of the School of Computer, Mathematics, and Natural Sciences. The program provides students with fundamental computer science knowledge and training, preparing them to apply their skills to solve real-world problems. Students learn problem definition, feasibility analysis, solution strategy development, design, implementation, testing, modification, documentation, and communication. The curriculum balances practical knowledge and theoretical foundations to support career readiness and adaptability in the evolving discipline.",
     "degrees_offered": [
