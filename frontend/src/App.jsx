@@ -23,7 +23,7 @@ import "./index.css";
 const hostname = window.location.hostname;
 const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
   ? "http://127.0.0.1:8000"           // If on Laptop -> Use Local Backend (8000)
-  : "http://18.214.136.155:5000";     // If on AWS -> Use AWS Backend (5000)
+  : "http://100.48.56.24:5000";     // If on AWS -> Use AWS Backend (5000)
 function parseJwt(token) {
   try {
     const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");

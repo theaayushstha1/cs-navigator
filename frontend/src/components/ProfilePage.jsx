@@ -24,7 +24,7 @@ import "./ProfilePage.css";
 const hostname = window.location.hostname;
 const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
   ? "http://127.0.0.1:8000"           // Local development
-  : "http://18.214.136.155:5000";     // AWS production
+  : "http://100.48.56.24:5000";     // AWS production
 
 export default function ProfilePage({ userEmail, onLogout }) {
   const navigate = useNavigate();
