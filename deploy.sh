@@ -13,7 +13,7 @@ DOCKER_USERNAME="sakina593"
 FRONTEND_IMAGE="${DOCKER_USERNAME}/chatbot-frontend"
 BACKEND_IMAGE="${DOCKER_USERNAME}/chatbot-backend"
 
-EC2_HOST="18.214.136.155"
+EC2_HOST="100.48.56.24"
 EC2_USER="ec2-user"
 EC2_KEY="cs-chatbot-key.pem"
 
