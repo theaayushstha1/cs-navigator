@@ -13,11 +13,8 @@ import { FaChartLine } from "@react-icons/all-files/fa/FaChartLine";
 import { FaStar } from "@react-icons/all-files/fa/FaStar";
 import "./CurriculumPage.css";
 
-// API Base URL
-const hostname = window.location.hostname;
-const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-  ? "http://127.0.0.1:8000"
-  : "http://100.48.56.24:5000";
+import { getApiBase } from "../lib/apiBase";
+const API_BASE = getApiBase();
 
 // Helper to get grade color
 const getGradeColor = (grade) => {

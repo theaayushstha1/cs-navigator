@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import AuthLayout from "./components/auth/AuthLayout";
+import { getApiBase } from "./lib/apiBase";
 
 // Modern line icons - with explicit dimensions for proper rendering
 const EnvelopeIcon = (props) => (
@@ -44,11 +45,7 @@ export default function Login({ onLoggedIn }) {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Smart API switching
-  const hostname = window.location.hostname;
-  const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-    ? "http://127.0.0.1:8000"
-    : "http://100.48.56.24:5000";
+  const API_BASE = getApiBase();
 
   useEffect(() => {
     if (localStorage.getItem("token")) navigate("/", { replace: true });

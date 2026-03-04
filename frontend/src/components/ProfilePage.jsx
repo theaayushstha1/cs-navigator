@@ -20,11 +20,8 @@ import { FaCog } from "@react-icons/all-files/fa/FaCog";
 import { FaShieldAlt } from "@react-icons/all-files/fa/FaShieldAlt";
 import "./ProfilePage.css";
 
-// 🔥 Smart API switching - same logic as Chatbox.jsx
-const hostname = window.location.hostname;
-const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-  ? "http://127.0.0.1:8000"           // Local development
-  : "http://100.48.56.24:5000";     // AWS production
+import { getApiBase } from "../lib/apiBase";
+const API_BASE = getApiBase();
 
 export default function ProfilePage({ userEmail, onLogout }) {
   const navigate = useNavigate();
@@ -375,8 +372,10 @@ export default function ProfilePage({ userEmail, onLogout }) {
       return;
     }
 
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      setMessage({ type: "error", text: "Please upload a PDF file" });
+    const allowedExts = ['.pdf', '.docx', '.png', '.jpg', '.jpeg', '.gif'];
+    const fileName = file.name.toLowerCase();
+    if (!allowedExts.some(ext => fileName.endsWith(ext))) {
+      setMessage({ type: "error", text: "Please upload a PDF, DOCX, or image file (PNG, JPG, GIF)" });
       return;
     }
 
@@ -780,8 +779,8 @@ export default function ProfilePage({ userEmail, onLogout }) {
                         <FaBook />
                       </div>
                       <div className="option-content">
-                        <h4>Upload DegreeWorks PDF</h4>
-                        <p>Save your DegreeWorks as PDF and upload it here.</p>
+                        <h4>Upload DegreeWorks Document</h4>
+                        <p>Upload a PDF, screenshot, or DOCX of your DegreeWorks page.</p>
                       </div>
                       <FaExternalLinkAlt className="option-arrow" />
                     </div>
@@ -856,7 +855,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
                     <FaArrowLeft /> Back to options
                   </button>
 
-                  <h3>Upload DegreeWorks PDF</h3>
+                  <h3>Upload DegreeWorks Document</h3>
 
                   <div className="pdf-instructions">
                     <div className="instruction-step">
@@ -889,7 +888,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
                     {/* Hidden file input with ref */}
                     <input
                       type="file"
-                      accept=".pdf,application/pdf"
+                      accept=".pdf,.docx,.png,.jpg,.jpeg,.gif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*"
                       ref={pdfInputRef}
                       onChange={handlePdfUpload}
                       disabled={pdfUploading}
@@ -904,15 +903,15 @@ export default function ProfilePage({ userEmail, onLogout }) {
                     >
                       {pdfUploading ? (
                         <>
-                          <FaSync className="spinning" /> Uploading PDF...
+                          <FaSync className="spinning" /> Uploading document...
                         </>
                       ) : (
                         <>
-                          <FaBook /> Click to Upload DegreeWorks PDF
+                          <FaBook /> Click to Upload DegreeWorks Document
                         </>
                       )}
                     </button>
-                    <p className="upload-hint">Supports PDF files exported from DegreeWorks</p>
+                    <p className="upload-hint">Supports PDF, DOCX, and images (PNG, JPG, GIF) from DegreeWorks</p>
                   </div>
                 </div>
               ) : (

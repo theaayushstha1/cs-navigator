@@ -5,12 +5,8 @@ import { FaUser } from "@react-icons/all-files/fa/FaUser";
 import "../index.css";
 import "./NavBar.css";
 
-// --- SMART API SWITCHING ---
-// 🔥 SMART CONFIG: Check the browser URL to pick the right backend
-const hostname = window.location.hostname;
-const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-  ? "http://127.0.0.1:8000"           // If on Laptop -> Use Local Backend (8000)
-  : "http://100.48.56.24:5000";     // If on AWS -> Use AWS Backend (5000)
+import { getApiBase } from "../lib/apiBase";
+const API_BASE = getApiBase();
 export default function NavBar({ role, onToggleSidebar }) {
   const [scrolled, setScrolled] = useState(false);
   const [profilePicture, setProfilePicture] = useState("/user_icon.jpg");

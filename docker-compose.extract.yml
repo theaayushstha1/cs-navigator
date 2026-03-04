@@ -1,0 +1,55 @@
+services:
+  text-extract-api:
+    build:
+      context: ./text-extract-api
+      dockerfile: dev.Dockerfile
+    container_name: text-extract-api
+    ports:
+      - "8001:8000"
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        cd /app
+        PYPROJECT_HASH_FILE=".pyproject.hash"
+        CURRENT_HASH=$$(sha256sum pyproject.toml | awk '{ print $$1 }')
+        if [ ! -d ".dvenv" ] || [ ! -f "$$PYPROJECT_HASH_FILE" ] || [ "$$(cat $$PYPROJECT_HASH_FILE)" != "$$CURRENT_HASH" ]; then
+          echo "Installing dependencies..."
+          python -m venv .dvenv
+          source .dvenv/bin/activate
+          pip install --upgrade pip setuptools
+          pip install .
+          echo "$$CURRENT_HASH" > "$$PYPROJECT_HASH_FILE"
+        else
+          echo "Dependencies up to date."
+        fi
+        source .dvenv/bin/activate
+        echo "Starting FastAPI app (no Ollama needed, using easyocr strategy)..."
+        exec uvicorn text_extract_api.main:app --host 0.0.0.0 --port 8000
+    environment:
+      - APP_ENV=production
+    depends_on:
+      - redis
+    volumes:
+      - ./text-extract-api:/app
+    restart: unless-stopped
+
+  celery:
+    build:
+      context: ./text-extract-api
+      dockerfile: dev.Dockerfile
+    container_name: celery-extract
+    entrypoint: /app/scripts/entrypoint.sh
+    environment:
+      - APP_TYPE=celery
+    depends_on:
+      - redis
+      - text-extract-api
+    volumes:
+      - ./text-extract-api:/app
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.2.4-alpine
+    container_name: redis-extract
+    restart: unless-stopped

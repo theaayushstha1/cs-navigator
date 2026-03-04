@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import AuthLayout from "./components/auth/AuthLayout";
+import { getApiBase } from "./lib/apiBase";
 
 // Icons with explicit dimensions for proper rendering
 const EnvelopeIcon = (props) => (
@@ -66,11 +67,7 @@ export default function Signup({ onRegistered }) {
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
 
-  // Smart API switching
-  const hostname = window.location.hostname;
-  const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-    ? "http://127.0.0.1:8000"
-    : "http://100.48.56.24:5000";
+  const API_BASE = getApiBase();
 
   const passwordStrength = useMemo(() => getPasswordStrength(password), [password]);
   const passwordsMatch = password && confirmPassword && password === confirmPassword;

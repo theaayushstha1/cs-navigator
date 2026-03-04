@@ -40,11 +40,8 @@ import { FaSmile } from "@react-icons/all-files/fa/FaSmile";
 import DocumentationViewer from "./DocumentationViewer";
 import "./AdminDashboard.css";
 
-// API Base URL - Smart switching
-const hostname = window.location.hostname;
-const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-  ? "http://127.0.0.1:8000"
-  : "http://100.48.56.24:5000";
+import { getApiBase } from "../lib/apiBase";
+const API_BASE = getApiBase();
 
 export default function AdminDashboard() {
   const navigate = useNavigate();

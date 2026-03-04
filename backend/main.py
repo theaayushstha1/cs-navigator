@@ -55,13 +55,24 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, text
 
-# LangChain & AI Imports
-from langchain.text_splitter import TokenTextSplitter
-from langchain_openai import OpenAIEmbeddings
-from langchain_pinecone import PineconeVectorStore
-from langchain_community.chat_models import ChatOpenAI
-from langchain.chains import RetrievalQA
-from pinecone import Pinecone
+# Vertex AI Agent Engine (replaces Pinecone + OpenAI RAG pipeline)
+from vertex_agent import query_agent, check_agent_health, reset_session
+
+# Text extraction service (PDF, DOCX, images via OCR)
+from text_extractor import extract_text as extract_text_api, is_healthy as is_extract_healthy
+
+# Legacy imports kept for /ingest endpoint and file analysis fallback
+try:
+    from langchain.text_splitter import TokenTextSplitter
+    from langchain_openai import OpenAIEmbeddings
+    from langchain_pinecone import PineconeVectorStore
+    from langchain_community.chat_models import ChatOpenAI
+    from langchain.chains import RetrievalQA
+    from pinecone import Pinecone
+    LEGACY_RAG_AVAILABLE = True
+except ImportError:
+    LEGACY_RAG_AVAILABLE = False
+    print("   Legacy RAG imports not available (Pinecone/LangChain not installed)")
 
 # Local Imports (Auth & DB) - These must run AFTER load_dotenv
 from db import SessionLocal, engine, Base
@@ -72,11 +83,16 @@ from jose import JWTError, jwt
 # ==============================================================================
 # 2. CONFIGURATION & CONSTANTS
 # ==============================================================================
+# Vertex AI Agent Engine config
+USE_VERTEX_AGENT   = os.getenv("USE_VERTEX_AGENT", "true").lower() == "true"
+ADK_BASE_URL       = os.getenv("ADK_BASE_URL", "http://127.0.0.1:8080")
+
+# Legacy Pinecone + OpenAI config (kept for /ingest and TTS)
 PINECONE_API_KEY   = os.getenv("PINECONE_API_KEY")
 PINECONE_ENV       = os.getenv("PINECONE_ENV")
 PINECONE_INDEX     = os.getenv("PINECONE_INDEX_NAME")
 PINECONE_NAMESPACE = os.getenv("PINECONE_NAMESPACE", "docs")
-OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY")  # Still needed for TTS
 JWT_SECRET         = os.getenv("JWT_SECRET")
 ALGORITHM          = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 240
@@ -94,7 +110,9 @@ for folder in [UPLOAD_FOLDER, CHAT_FILES_FOLDER]:
         print(f"✅ Created folder: {folder}")
 
 # Safety check for keys
-if not all([PINECONE_API_KEY, PINECONE_ENV, PINECONE_INDEX, OPENAI_API_KEY]):
+if USE_VERTEX_AGENT:
+    print(f"🚀 Using Vertex AI Agent Engine at {ADK_BASE_URL}")
+elif not all([PINECONE_API_KEY, PINECONE_ENV, PINECONE_INDEX, OPENAI_API_KEY]):
     print("⚠️ WARNING: Some API keys are missing. Chatbot features will be limited.")
 
 # ==============================================================================
@@ -288,8 +306,20 @@ qa = None
 llm = None
 
 def build_qa_chain():
-    """Initialize AI components on startup"""
+    """Initialize legacy AI components on startup (only when not using Vertex AI)"""
     global retriever, qa, llm, pc
+    if USE_VERTEX_AGENT:
+        # Check Vertex AI Agent health
+        health = check_agent_health()
+        print(f"🤖 Vertex AI Agent: {health['status']} - {health['message']}")
+        if health["status"] != "connected":
+            print("⚠️ ADK server not running. Start it with:")
+            print("   cd google-ai-engine-research/adk_deploy && python -m google.adk.cli web . --port 8080")
+        return
+
+    if not LEGACY_RAG_AVAILABLE:
+        print("⚠️ Legacy RAG libraries not installed. Chatbot will be offline.")
+        return
     if not all([PINECONE_API_KEY, OPENAI_API_KEY, PINECONE_INDEX]):
         print("⚠️ API Keys missing. Chatbot will be offline.")
         return
@@ -304,14 +334,14 @@ def build_qa_chain():
         retriever = store.as_retriever(
             search_type="mmr",
             search_kwargs={
-                "k": 10,           # Increased from 8 - fetch more relevant docs
-                "fetch_k": 30,     # Increased from 20 - larger pool for MMR selection
-                "lambda_mult": 0.5 # Reduced from 0.7 - better balance of relevance & diversity
+                "k": 10,
+                "fetch_k": 30,
+                "lambda_mult": 0.5
             }
         )
         llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-3.5-turbo", temperature=0)
         qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents=True)
-        print("✅ AI System Initialized")
+        print("✅ Legacy AI System Initialized (Pinecone + OpenAI)")
     except Exception as e:
         print(f"❌ AI Init Failed: {e}")
 
@@ -911,139 +941,81 @@ async def upload_degreeworks_pdf(
     db: Session = Depends(get_db)
 ):
     """
-    Uploads DegreeWorks PDF and stores the raw text for chat context injection.
-    Uses a "Chat with PDF" approach - the LLM reads the raw text directly.
+    Uploads DegreeWorks document (PDF, DOCX, or image) and stores the extracted
+    text for chat context injection. Uses text-extract-api for high-quality
+    extraction with OCR support. Falls back to local pypdf for PDFs.
     """
+    ALLOWED_DW_EXTENSIONS = {'pdf', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'gif'}
+
     print("=" * 60)
-    print("🚀 PDF UPLOAD ENDPOINT HIT!")
-    print(f"📄 File received: {file.filename if file else 'NO FILE'}")
-    print(f"📄 User: {user}")
+    print("DEGREEWORKS UPLOAD ENDPOINT HIT!")
+    print(f"File received: {file.filename if file else 'NO FILE'}")
+    print(f"User: {user}")
     print("=" * 60)
 
     if not file or not file.filename:
-        print("❌ No file provided")
         raise HTTPException(400, "No file provided")
 
-    if not file.filename.lower().endswith('.pdf'):
-        print(f"❌ Invalid file type: {file.filename}")
-        raise HTTPException(400, "Please upload a PDF file")
+    ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
+    if ext not in ALLOWED_DW_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported file type. Please upload: {', '.join(ALLOWED_DW_EXTENSIONS)}")
 
     try:
         # Save the uploaded file temporarily
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        temp_filename = f"degreeworks_{user['user_id']}_{timestamp}.pdf"
+        temp_filename = f"degreeworks_{user['user_id']}_{timestamp}.{ext}"
         temp_filepath = os.path.join(CHAT_FILES_FOLDER, temp_filename)
 
         content = await file.read()
-        print(f"📄 Received PDF file: {file.filename}, size: {len(content)} bytes")
+        print(f"Received file: {file.filename}, size: {len(content)} bytes")
 
         with open(temp_filepath, "wb") as buffer:
             buffer.write(content)
 
-        print(f"📄 Saved PDF to: {temp_filepath}")
-
-        # Extract text from PDF - try multiple methods
+        # Extract text - try fast local methods first, OCR API only when needed
         pdf_text = ""
 
-        # Method 1: pypdf
-        try:
-            print("📄 Trying pypdf extraction...")
-            reader = pypdf.PdfReader(temp_filepath)
-            print(f"📄 PDF has {len(reader.pages)} pages")
-            for i, page in enumerate(reader.pages):
-                page_text = page.extract_text()
-                print(f"📄 Page {i+1}: extracted {len(page_text) if page_text else 0} chars")
-                if page_text:
-                    pdf_text += page_text + "\n"
-        except Exception as e:
-            print(f"❌ pypdf extraction failed: {e}")
-
-        # Method 2: Try pdfplumber if pypdf failed or got little text
-        if len(pdf_text.strip()) < 100:
+        # Method 1: Local pypdf for PDFs (instant for text-based PDFs)
+        if ext == 'pdf':
             try:
-                import pdfplumber
-                print("📄 Trying pdfplumber extraction...")
-                with pdfplumber.open(temp_filepath) as pdf:
-                    print(f"📄 pdfplumber found {len(pdf.pages)} pages")
-                    for i, page in enumerate(pdf.pages):
-                        # Try multiple extraction methods
-                        page_text = page.extract_text() or ""
-
-                        # Also try extracting tables
-                        tables = page.extract_tables()
-                        if tables:
-                            for table in tables:
-                                for row in table:
-                                    if row:
-                                        page_text += " ".join([str(cell) if cell else "" for cell in row]) + "\n"
-
-                        print(f"📄 pdfplumber Page {i+1}: extracted {len(page_text)} chars")
-                        if page_text:
-                            pdf_text += page_text + "\n"
-            except ImportError:
-                print("⚠️ pdfplumber not installed - run: pip install pdfplumber")
-            except Exception as e:
-                print(f"❌ pdfplumber extraction failed: {e}")
-                import traceback
-                traceback.print_exc()
-
-        # Method 3: Try PyMuPDF (fitz) if still no text
-        if len(pdf_text.strip()) < 100:
-            try:
-                import fitz  # PyMuPDF
-                print("📄 Trying PyMuPDF extraction...")
-                doc = fitz.open(temp_filepath)
-                print(f"📄 PyMuPDF found {len(doc)} pages")
-                for i, page in enumerate(doc):
-                    # Try different text extraction methods
-                    page_text = page.get_text("text")  # Plain text
-                    if len(page_text.strip()) < 50:
-                        page_text = page.get_text("blocks")  # Try blocks
-                        if isinstance(page_text, list):
-                            page_text = "\n".join([str(b[4]) if len(b) > 4 else "" for b in page_text])
-                    print(f"📄 PyMuPDF Page {i+1}: extracted {len(page_text) if page_text else 0} chars")
+                print("Trying local pypdf extraction (fast)...")
+                reader = pypdf.PdfReader(temp_filepath)
+                for page in reader.pages:
+                    page_text = page.extract_text()
                     if page_text:
-                        pdf_text += str(page_text) + "\n"
-                doc.close()
-            except ImportError:
-                print("⚠️ PyMuPDF not installed - run: pip install pymupdf")
+                        pdf_text += page_text + "\n"
+                print(f"pypdf extracted {len(pdf_text)} chars")
             except Exception as e:
-                print(f"❌ PyMuPDF extraction failed: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"pypdf extraction failed: {e}")
 
-        # Method 4: Try reading raw PDF content for any text
-        if len(pdf_text.strip()) < 100:
-            print("📄 Trying raw PDF text extraction...")
+        # Method 2: Local python-docx for DOCX (instant)
+        if ext in ('docx', 'doc'):
             try:
-                with open(temp_filepath, 'rb') as f:
-                    raw_content = f.read()
-                # Try to find text streams in PDF
-                import re as regex
-                # Look for text between BT (begin text) and ET (end text) markers
-                text_matches = regex.findall(rb'\(([^)]+)\)', raw_content)
-                raw_text = ""
-                for match in text_matches[:500]:  # Limit to first 500 matches
-                    try:
-                        decoded = match.decode('utf-8', errors='ignore')
-                        if len(decoded) > 2 and decoded.isprintable():
-                            raw_text += decoded + " "
-                    except:
-                        pass
-                if len(raw_text.strip()) > 50:
-                    pdf_text = raw_text
-                    print(f"📄 Raw extraction found {len(raw_text)} chars")
+                print("Trying local docx extraction (fast)...")
+                doc_file = docx.Document(temp_filepath)
+                for para in doc_file.paragraphs:
+                    pdf_text += para.text + "\n"
+                print(f"docx extracted {len(pdf_text)} chars")
             except Exception as e:
-                print(f"❌ Raw extraction failed: {e}")
+                print(f"docx extraction failed: {e}")
 
-        print(f"📄 Total extracted text: {len(pdf_text)} characters")
-        print(f"📄 Text preview: {pdf_text[:500]}...")
+        # Method 3: text-extract-api with OCR (for images, or if local extraction got < 50 chars)
+        if len(pdf_text.strip()) < 50:
+            try:
+                print("Local extraction insufficient, trying text-extract-api (OCR)...")
+                pdf_text = extract_text_api(temp_filepath, timeout=120)
+                print(f"text-extract-api extracted {len(pdf_text)} chars")
+            except RuntimeError as e:
+                print(f"text-extract-api unavailable: {e}")
 
-        # Be more lenient - even 20 chars might work for the LLM
+        print(f"Total extracted text: {len(pdf_text)} characters")
+
         if len(pdf_text.strip()) < 20:
-            raise HTTPException(400, f"Could not extract text from this PDF. Extracted only {len(pdf_text)} chars. The file may be image-based.")
-
-        print(f"✅ Successfully extracted {len(pdf_text)} characters from DegreeWorks PDF")
+            raise HTTPException(
+                400,
+                f"Could not extract text from this file ({len(pdf_text)} chars). "
+                "The file may be image-based. Make sure the text-extract-api Docker service is running for OCR support."
+            )
 
         # Try to parse specific fields (best effort)
         data = parse_degreeworks_pdf(pdf_text)
@@ -1453,9 +1425,73 @@ def parse_degreeworks_pdf(text: str) -> dict:
     print(text[:1000])
     print("=" * 60)
 
+    # ============ MORGAN STATE DEGREEWORKS HEADER PARSER ============
+    # Parse the structured header lines first - these are the most reliable source.
+    # Line 1: "Level ... Classification N-Word ... Major ... Program ... Transfer Hours N ... Advisor Name"
+    # Line 2: "Credits required: NNN Credits applied: NNN Catalog year: XXXX GPA: N.NNN"
+    # Line 3: "Student name Last, First"
+
+    # Header line: Classification (e.g., "Classification 4-Senior")
+    header_class = re.search(r'classification\s+\d-(senior|junior|sophomore|freshman|graduate)', text_lower_clean)
+    if header_class:
+        data['classification'] = header_class.group(1).title()
+        print(f"Found classification (header): {data['classification']}")
+
+    # Header line: Major / Program (e.g., "Major Computer Science   Program")
+    header_major = re.search(r'major\s+([\w\s]+?)\s{2,}', text_clean, re.IGNORECASE)
+    if header_major:
+        major = header_major.group(1).strip().title()
+        if len(major) > 3:
+            data['degree_program'] = major
+            print(f"Found program (header): {data['degree_program']}")
+
+    # Header line: Transfer Hours (e.g., "Transfer Hours 56")
+    header_transfer = re.search(r'transfer\s*hours\s+(\d+)', text_lower_clean)
+    if header_transfer:
+        data['transfer_hours'] = float(header_transfer.group(1))
+        print(f"Found transfer hours (header): {data['transfer_hours']}")
+
+    # Header line: Advisor (e.g., "Advisor Amjad Ali")
+    header_advisor = re.search(r'advisor\s+([\w]+\s+[\w]+)', text_clean, re.IGNORECASE)
+    if header_advisor:
+        advisor = header_advisor.group(1).strip()
+        if advisor.lower() not in ['information', 'prerequisite', 'required', 'course']:
+            data['advisor'] = advisor
+            print(f"Found advisor (header): {data['advisor']}")
+
+    # Degree summary: "Credits applied: NNN" (e.g., "Credits applied:  139")
+    applied_match = re.search(r'credits\s*applied[:\s]+(\d{2,3})', text_lower_clean)
+    if applied_match:
+        credits_val = float(applied_match.group(1))
+        if 10 <= credits_val <= 300:
+            data['total_credits_earned'] = credits_val
+            print(f"Found credits applied (header): {data['total_credits_earned']}")
+
+    # Degree summary: Inline "GPA: N.NNN" (from the degree summary line, NOT progress bar)
+    # The progress bar shows "Overall GPA\n0.000" on separate lines.
+    # The degree summary has "GPA: 3.943" inline after "Catalog year" or "Credits applied".
+    summary_gpa = re.search(r'(?:catalog\s*year|credits\s*applied).*?gpa[:\s]+(\d\.\d{1,3})', text_lower_clean)
+    if summary_gpa:
+        gpa = float(summary_gpa.group(1))
+        if 0.0 < gpa <= 4.0:
+            data['overall_gpa'] = gpa
+            print(f"Found GPA (header): {data['overall_gpa']}")
+
+    # Student name: "Student name Last, First" -> "First Last"
+    name_match = re.search(r'student\s+name\s+([\w\'\-]+),\s*([\w\'\-]+)', text_clean, re.IGNORECASE)
+    if name_match:
+        data['student_name'] = f"{name_match.group(2)} {name_match.group(1)}"
+        print(f"Found name (header): {data['student_name']}")
+
+    # Catalog year from summary line (e.g., "Catalog year:  FALL 2023")
+    cat_match = re.search(r'catalog\s*year[:\s]+((?:fall|spring|summer)\s+\d{4})', text_lower_clean)
+    if cat_match:
+        data['catalog_year'] = cat_match.group(1).upper()
+        print(f"Found catalog year (header): {data['catalog_year']}")
+
     # ============ GPA EXTRACTION (Most Important) ============
-    # Try many different patterns to find GPA
-    gpa_found = False
+    # Try many different patterns to find GPA (skip if header parser already found it)
+    gpa_found = bool(data.get('overall_gpa'))
 
     # Pattern group 1: Explicit GPA labels (most reliable)
     gpa_patterns_explicit = [
@@ -1543,8 +1579,8 @@ def parse_degreeworks_pdf(text: str) -> dict:
             except:
                 pass
 
-    # Now determine classification from credits (MOST RELIABLE METHOD)
-    if data.get('total_credits_earned'):
+    # Now determine classification from credits (skip if header parser already found it)
+    if not data.get('classification') and data.get('total_credits_earned'):
         credits = data['total_credits_earned']
         if credits >= 90:
             data['classification'] = 'Senior'
@@ -1594,21 +1630,23 @@ def parse_degreeworks_pdf(text: str) -> dict:
                     break
 
     # ============ CREDITS ============
-    credits_found = False
+    # Skip if header parser already found credits
+    credits_found = bool(data.get('total_credits_earned'))
 
     # IMPORTANT: Look for LABELED credits first (e.g., "Credits applied: 124")
     # Avoid picking up "100%" or "100 %" which is percentage, not credits
     credits_patterns = [
-        # DegreeWorks specific patterns
+        # DegreeWorks specific patterns - applied/earned FIRST, required LAST
         r'credits\s*applied[:\s]*(\d{2,3}(?:\.\d{1,2})?)',  # "Credits applied: 124.0"
         r'credits\s*earned[:\s]*(\d{2,3}(?:\.\d{1,2})?)',   # "Credits earned: 124"
-        r'credits\s*required[:\s]*(\d{2,3}(?:\.\d{1,2})?)',  # "Credits required: 120"
         r'total\s*credits[:\s]*(\d{2,3}(?:\.\d{1,2})?)',     # "Total credits: 124"
         r'hours\s*earned[:\s]*(\d{2,3}(?:\.\d{1,2})?)',      # "Hours earned: 124"
         r'transfer\s*hours[:\s]*(\d{2,3}(?:\.\d{1,2})?)',    # "Transfer Hours: 41"
         # More general patterns
         r'(\d{2,3}(?:\.\d{1,2})?)\s*credits?\s*(?:applied|earned|completed)',
         r'(\d{2,3}(?:\.\d{1,2})?)\s*(?:credit\s*)?hours?\s*(?:earned|completed)',
+        # Required is LAST (fallback - prefer applied/earned over required)
+        r'credits\s*required[:\s]*(\d{2,3}(?:\.\d{1,2})?)',  # "Credits required: 120"
     ]
 
     for pattern in credits_patterns:
@@ -1660,42 +1698,44 @@ def parse_degreeworks_pdf(text: str) -> dict:
                 break
 
     # ============ DEGREE PROGRAM ============
-    degree_patterns = [
-        r'(bachelor\s+of\s+science\s+in\s+[a-z\s]+)',
-        r'(master\s+of\s+science\s+in\s+[a-z\s]+)',
-        r'(b\.?s\.?\s+(?:in\s+)?computer\s+science)',
-        r'(computer\s+science)',
-        r'(information\s+(?:systems?|science))',
-        r'(cybersecurity)',
-        r'(software\s+engineering)',
-        r'(electrical\s+engineering)',
-        r'major[:\s]*([a-z\s]+?)(?:\n|$)',
-        r'program[:\s]*([a-z\s]+?)(?:\n|$)',
-        r'degree[:\s]*([a-z\s]+?)(?:\n|$)',
-    ]
-    for pattern in degree_patterns:
-        match = re.search(pattern, text_lower_clean)
-        if match:
-            program = match.group(1).strip().title()
-            if len(program) > 3 and len(program) < 60:
-                data['degree_program'] = program
-                print(f"✅ Found Program: {program}")
-                break
+    if not data.get('degree_program'):
+        degree_patterns = [
+            r'(bachelor\s+of\s+science\s+in\s+[a-z\s]+)',
+            r'(master\s+of\s+science\s+in\s+[a-z\s]+)',
+            r'(b\.?s\.?\s+(?:in\s+)?computer\s+science)',
+            r'(computer\s+science)',
+            r'(information\s+(?:systems?|science))',
+            r'(cybersecurity)',
+            r'(software\s+engineering)',
+            r'(electrical\s+engineering)',
+            r'major[:\s]*([a-z\s]+?)(?:\n|$)',
+            r'program[:\s]*([a-z\s]+?)(?:\n|$)',
+            r'degree[:\s]*([a-z\s]+?)(?:\n|$)',
+        ]
+        for pattern in degree_patterns:
+            match = re.search(pattern, text_lower_clean)
+            if match:
+                program = match.group(1).strip().title()
+                if len(program) > 3 and len(program) < 60:
+                    data['degree_program'] = program
+                    print(f"✅ Found Program: {program}")
+                    break
 
     # ============ STUDENT NAME ============
-    # Look for patterns like "Name: John Smith" or just capitalized names at start
-    name_patterns = [
-        r'(?:student|name)[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
-        r'^([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',  # At start of text
-    ]
-    for pattern in name_patterns:
-        match = re.search(pattern, text_clean, re.MULTILINE)
-        if match:
-            name = match.group(1).strip()
-            if 3 < len(name) < 50:
-                data['student_name'] = name
-                print(f"✅ Found Name: {name}")
-                break
+    if not data.get('student_name'):
+        # Look for patterns like "Name: John Smith" or just capitalized names at start
+        name_patterns = [
+            r'(?:student|name)[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
+            r'^([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',  # At start of text
+        ]
+        for pattern in name_patterns:
+            match = re.search(pattern, text_clean, re.MULTILINE)
+            if match:
+                name = match.group(1).strip()
+                if 3 < len(name) < 50:
+                    data['student_name'] = name
+                    print(f"✅ Found Name: {name}")
+                    break
 
     # ============ STUDENT ID ============
     id_match = re.search(r'(?:id|student)[:\s#]*(\d{7,9})', text_lower_clean)
@@ -1709,55 +1749,57 @@ def parse_degreeworks_pdf(text: str) -> dict:
             data['student_id'] = id_match.group(1)
 
     # ============ ADVISOR ============
-    # Look for advisor name in DegreeWorks format
-    # Example formats: "Advisor Md/dr Blakeley", "Advisor: Dr. Smith", "Advisor Walden Blakeley"
+    if not data.get('advisor'):
+        # Look for advisor name in DegreeWorks format
+        # Example formats: "Advisor Md/dr Blakeley", "Advisor: Dr. Smith", "Advisor Walden Blakeley"
 
-    # Words that are NOT advisor names
-    not_advisor_words = [
-        'prerequisite', 'prerequsite', 'required', 'complete', 'incomplete',
-        'pending', 'satisfied', 'unsatisfied', 'needed', 'met', 'unmet',
-        'information', 'course', 'credit', 'hours', 'gpa', 'grade'
-    ]
+        # Words that are NOT advisor names
+        not_advisor_words = [
+            'prerequisite', 'prerequsite', 'required', 'complete', 'incomplete',
+            'pending', 'satisfied', 'unsatisfied', 'needed', 'met', 'unmet',
+            'information', 'course', 'credit', 'hours', 'gpa', 'grade'
+        ]
 
-    # Try multiple patterns
-    advisor_found = False
+        # Try multiple patterns
+        advisor_found = False
 
-    # Pattern 1: "Advisor" followed by title and name (e.g., "Advisor Md/dr Blakeley")
-    advisor_match = re.search(r'advisor[:\s]+(?:md/?dr\.?|dr\.?|mr\.?|ms\.?|mrs\.?|prof\.?)?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', text_clean, re.IGNORECASE)
-    if advisor_match:
-        advisor = advisor_match.group(1).strip()
-        if advisor.lower() not in not_advisor_words and len(advisor) > 2:
-            data['advisor'] = advisor
-            advisor_found = True
-            print(f"✅ Found Advisor: {advisor}")
+        # Pattern 1: "Advisor" followed by title and name (e.g., "Advisor Md/dr Blakeley")
+        advisor_match = re.search(r'advisor[:\s]+(?:md/?dr\.?|dr\.?|mr\.?|ms\.?|mrs\.?|prof\.?)?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', text_clean, re.IGNORECASE)
+        if advisor_match:
+            advisor = advisor_match.group(1).strip()
+            if advisor.lower() not in not_advisor_words and len(advisor) > 2:
+                data['advisor'] = advisor
+                advisor_found = True
+                print(f"✅ Found Advisor: {advisor}")
 
-    # Pattern 2: Look for name after "Advisor" with more flexible matching
-    if not advisor_found:
-        # Find the word "Advisor" and grab the next 2-3 words
-        advisor_pos = text_clean.lower().find('advisor')
-        if advisor_pos != -1:
-            # Get text after "Advisor"
-            after_advisor = text_clean[advisor_pos + 7:advisor_pos + 50].strip()
-            # Split into words and take first 1-2 capitalized words
-            words = after_advisor.split()
-            name_parts = []
-            for word in words[:3]:
-                # Skip titles and non-names
-                clean_word = re.sub(r'[^a-zA-Z]', '', word)
-                if clean_word and clean_word.lower() not in not_advisor_words:
-                    if clean_word[0].isupper() and len(clean_word) > 2:
-                        name_parts.append(clean_word)
-                        if len(name_parts) >= 2:
-                            break
-            if name_parts:
-                data['advisor'] = ' '.join(name_parts)
-                print(f"✅ Found Advisor (parsed): {data['advisor']}")
+        # Pattern 2: Look for name after "Advisor" with more flexible matching
+        if not advisor_found:
+            # Find the word "Advisor" and grab the next 2-3 words
+            advisor_pos = text_clean.lower().find('advisor')
+            if advisor_pos != -1:
+                # Get text after "Advisor"
+                after_advisor = text_clean[advisor_pos + 7:advisor_pos + 50].strip()
+                # Split into words and take first 1-2 capitalized words
+                words = after_advisor.split()
+                name_parts = []
+                for word in words[:3]:
+                    # Skip titles and non-names
+                    clean_word = re.sub(r'[^a-zA-Z]', '', word)
+                    if clean_word and clean_word.lower() not in not_advisor_words:
+                        if clean_word[0].isupper() and len(clean_word) > 2:
+                            name_parts.append(clean_word)
+                            if len(name_parts) >= 2:
+                                break
+                if name_parts:
+                    data['advisor'] = ' '.join(name_parts)
+                    print(f"✅ Found Advisor (parsed): {data['advisor']}")
 
     # ============ CATALOG YEAR ============
-    catalog_match = re.search(r'(?:catalog|requirement|year)[:\s]*(\d{4}[-–]\d{4}|\d{4})', text_lower_clean)
-    if catalog_match:
-        data['catalog_year'] = catalog_match.group(1)
-        print(f"✅ Found Catalog Year: {data['catalog_year']}")
+    if not data.get('catalog_year'):
+        catalog_match = re.search(r'(?:catalog|requirement|year)[:\s]*(\d{4}[-–]\d{4}|\d{4})', text_lower_clean)
+        if catalog_match:
+            data['catalog_year'] = catalog_match.group(1)
+            print(f"✅ Found Catalog Year: {data['catalog_year']}")
 
     # ============ IN-PROGRESS COURSES (Parse FIRST) ============
     # Parse IP courses BEFORE completed courses so they don't get incorrectly categorized
@@ -2201,7 +2243,7 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     user_q = req.query.strip()
     session_id = req.session_id or "default"
 
-    # 🔥 Fetch user's DegreeWorks data for personalization
+    # Fetch user's DegreeWorks data for personalization
     student_context = ""
     has_student_data = False
     has_raw_pdf_data = False
@@ -2209,48 +2251,44 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     if dw_data:
         has_student_data = True
         student_context = "\n" + "="*60 + "\n"
-        student_context += "🎓 THIS STUDENT'S DEGREEWORKS ACADEMIC RECORD:\n"
+        student_context += "THIS STUDENT'S DEGREEWORKS ACADEMIC RECORD:\n"
         student_context += "="*60 + "\n\n"
 
-        # 🔥 CRITICAL: If we have raw PDF text, inject it directly!
-        # This is the "Chat with PDF" approach - let the LLM read the actual document
         if dw_data.raw_data and len(dw_data.raw_data) > 100:
             has_raw_pdf_data = True
-            student_context += "📄 FULL DEGREEWORKS DOCUMENT CONTENT:\n"
+            student_context += "FULL DEGREEWORKS DOCUMENT CONTENT:\n"
             student_context += "-"*40 + "\n"
-            # Include up to 15000 chars of raw PDF text for context
             student_context += dw_data.raw_data[:15000] + "\n"
             student_context += "-"*40 + "\n\n"
 
-        # Also include any parsed fields we found (as a summary)
-        student_context += "📊 PARSED SUMMARY (if available):\n"
+        student_context += "PARSED SUMMARY (if available):\n"
         if dw_data.student_name:
-            student_context += f"• Student Name: {dw_data.student_name}\n"
+            student_context += f"- Student Name: {dw_data.student_name}\n"
         if dw_data.student_id:
-            student_context += f"• Student ID: {dw_data.student_id}\n"
+            student_context += f"- Student ID: {dw_data.student_id}\n"
         if dw_data.classification:
-            student_context += f"• Classification: {dw_data.classification}\n"
+            student_context += f"- Classification: {dw_data.classification}\n"
         if dw_data.degree_program:
-            student_context += f"• Degree Program: {dw_data.degree_program}\n"
+            student_context += f"- Degree Program: {dw_data.degree_program}\n"
         if dw_data.overall_gpa:
-            student_context += f"• Overall GPA: {dw_data.overall_gpa}\n"
+            student_context += f"- Overall GPA: {dw_data.overall_gpa}\n"
         if dw_data.major_gpa:
-            student_context += f"• Major GPA: {dw_data.major_gpa}\n"
+            student_context += f"- Major GPA: {dw_data.major_gpa}\n"
         if dw_data.total_credits_earned:
-            student_context += f"• Credits Earned: {dw_data.total_credits_earned}\n"
+            student_context += f"- Credits Earned: {dw_data.total_credits_earned}\n"
         if dw_data.credits_required:
-            student_context += f"• Credits Required: {dw_data.credits_required}\n"
+            student_context += f"- Credits Required: {dw_data.credits_required}\n"
         if dw_data.credits_remaining:
-            student_context += f"• Credits Remaining: {dw_data.credits_remaining}\n"
+            student_context += f"- Credits Remaining: {dw_data.credits_remaining}\n"
         if dw_data.advisor:
-            student_context += f"• Academic Advisor: {dw_data.advisor}\n"
+            student_context += f"- Academic Advisor: {dw_data.advisor}\n"
         if dw_data.catalog_year:
-            student_context += f"• Catalog Year: {dw_data.catalog_year}\n"
+            student_context += f"- Catalog Year: {dw_data.catalog_year}\n"
         if dw_data.courses_completed:
             try:
                 completed = json.loads(dw_data.courses_completed)
                 if completed:
-                    student_context += f"• Courses Completed ({len(completed)} total):\n"
+                    student_context += f"- Courses Completed ({len(completed)} total):\n"
                     for c in completed[:20]:
                         grade = c.get('grade', '')
                         name = c.get('name', '')
@@ -2260,7 +2298,7 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
             try:
                 in_progress = json.loads(dw_data.courses_in_progress)
                 if in_progress:
-                    student_context += f"• Currently Enrolled In:\n"
+                    student_context += f"- Currently Enrolled In:\n"
                     for c in in_progress:
                         student_context += f"  - {c.get('code', '')} {c.get('name', '')}\n"
             except: pass
@@ -2268,14 +2306,14 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
             try:
                 remaining = json.loads(dw_data.courses_remaining)
                 if remaining:
-                    student_context += f"• Still Needs to Complete:\n"
+                    student_context += f"- Still Needs to Complete:\n"
                     for c in remaining[:10]:
                         req = c.get('requirement', c.get('code', ''))
                         student_context += f"  - {req}\n"
             except: pass
         student_context += "="*60 + "\n\n"
 
-    # 🔥 Fetch recent conversation history for context (last 6 exchanges)
+    # Fetch recent conversation history for context (last 6 exchanges)
     recent_history = db.query(ChatHistory)\
         .filter(ChatHistory.user_id == user["user_id"])\
         .filter(ChatHistory.session_id == session_id)\
@@ -2283,10 +2321,8 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
         .limit(6)\
         .all()
 
-    # Reverse to get chronological order
     recent_history = list(reversed(recent_history))
 
-    # Build conversation context string
     conversation_context = ""
     if recent_history:
         conversation_context = "Previous conversation:\n"
@@ -2298,20 +2334,35 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     # 1. Check for File Upload in Message (Markdown link)
     file_match = re.search(r'uploads/chat_files/([^\)]+)', user_q)
 
-    if file_match and llm:
-        # User uploaded a file -> Read it and answer based on it
+    if file_match and USE_VERTEX_AGENT:
+        # File uploaded -> include file content as context for the agent
         filename = file_match.group(1)
         filepath = os.path.join(CHAT_FILES_FOLDER, filename)
 
         if os.path.exists(filepath):
             file_content = extract_file_content(filepath)
+            clean_query = re.sub(r'\[.*?\]\(.*?\)', '', user_q).strip()
+            if not clean_query: clean_query = "Summarize this file."
 
-            # Construct Prompt with File Content + Conversation Context + Student Profile
+            file_context = f"{student_context}{conversation_context}File Content:\n{file_content}\n"
+            answer = query_agent(
+                query=clean_query,
+                user_id=str(user["user_id"]),
+                context=file_context,
+            )
+        else:
+            answer = "I received the file link, but I cannot find the file on the server to read it."
+
+    elif file_match and llm:
+        # Legacy: File uploaded with old LLM pipeline
+        filename = file_match.group(1)
+        filepath = os.path.join(CHAT_FILES_FOLDER, filename)
+
+        if os.path.exists(filepath):
+            file_content = extract_file_content(filepath)
             system_msg = f"""You are a helpful academic assistant for Morgan State University's Computer Science department.
 Use the provided file content and conversation history to answer the user's question.
-Remember the context of the conversation and provide relevant follow-up information.
-{student_context}
-If you have the student's profile data above, use it to give personalized recommendations."""
+{student_context}"""
 
             clean_query = re.sub(r'\[.*?\]\(.*?\)', '', user_q).strip()
             if not clean_query: clean_query = "Summarize this file."
@@ -2329,9 +2380,8 @@ If you have the student's profile data above, use it to give personalized recomm
         else:
             answer = "I received the file link, but I cannot find the file on the server to read it."
 
-    elif llm and retriever:
-        # 2. No file -> Use RAG with conversation context
-        # Small talk override
+    elif USE_VERTEX_AGENT:
+        # Vertex AI Agent Engine path
         norm = re.sub(r'[\s\W]+', '', user_q.lower())
         if re.match(r'^(hi|hello|hey)\b', user_q.lower()):
             answer = "Hello! How can I help you today?"
@@ -2341,186 +2391,49 @@ If you have the student's profile data above, use it to give personalized recomm
             answer = "You're welcome! Let me know if you have any other questions."
         else:
             try:
-                # 🔥 NEW: Detect if this is a follow-up question
-                # IMPORTANT: Include pronouns (him/her/his/their) for person references
-                follow_up_indicators = ['it', 'they', 'them', 'this', 'that', 'more', 'else', 'also',
-                                        'another', 'what about', 'how about', 'tell me more', 'explain',
-                                        'who is', 'what is', 'details', 'specifically',
-                                        'him', 'her', 'his', 'hers', 'their', 'theirs', 'he', 'she']
-                is_follow_up = any(indicator in user_q.lower().split() for indicator in follow_up_indicators) and len(recent_history) > 0
-
-                # 🔥 SMART PRONOUN RESOLUTION: Extract person name from last response
-                referenced_person = None
-                enhanced_query = user_q
-
-                if is_follow_up and recent_history:
-                    last_exchange = recent_history[-1]
-                    prev_query = last_exchange.user_query
-                    prev_response = last_exchange.bot_response
-
-                    # Extract person names from the bot's last response using multiple patterns
-                    name_patterns = [
-                        # "advisor is First Last" - MOST IMPORTANT for advisor questions
-                        r'(?:advisor|Advisor)\s+is\s+([A-Z][a-z]+\s+[A-Z][a-z]+)',
-                        # "Dr. First Last" or "Dr. First Middle Last"
-                        r'(?:Dr\.|Professor|Prof\.)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})',
-                        # Full names with quotes like Shuangbao "Paul" Wang
-                        r'([A-Z][a-z]+\s+["\'][A-Z][a-z]+["\']\s+[A-Z][a-z]+)',
-                        # "First Last is the" or "First Last, the" patterns
-                        r'([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+is\s+the|\s*,\s*the|\s+can\s+be)',
-                        # Chair/Department head patterns
-                        r'(?:Chair|chair|Department\s+Chair|department\s+head)(?:[^.]*?)(?:is\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})',
-                        # General "is First Last" pattern (catches "advisor is X", "chair is X", etc.)
-                        r'\bis\s+([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\.|\,|\s+If|\s+You)',
-                    ]
-
-                    for pattern in name_patterns:
-                        match = re.search(pattern, prev_response)
-                        if match:
-                            referenced_person = match.group(1).strip()
-                            break
-
-                    # If we found a person, replace pronouns in the query for better RAG retrieval
-                    if referenced_person:
-                        print(f"🔍 Pronoun Resolution: Detected reference to '{referenced_person}'")
-                        # Create a query that explicitly mentions the person for RAG
-                        pronoun_query = user_q.lower()
-                        if any(p in pronoun_query for p in ['his ', 'her ', 'him ', 'their ', 'he ', 'she ']):
-                            # Replace pronouns with the person's name for RAG query
-                            rag_query = re.sub(r'\b(his|her|him|their|he|she)\b', referenced_person, user_q, flags=re.IGNORECASE)
-                            enhanced_query = f"{referenced_person} {rag_query}"
-                            print(f"🔍 Enhanced RAG query: '{enhanced_query}'")
-                        else:
-                            enhanced_query = f"{referenced_person} {user_q}"
-                    else:
-                        print(f"⚠️ Pronoun Resolution: Could not extract person name from previous response")
-                        # Fallback: use previous context
-                        enhanced_query = f"""Previous context: {prev_response[:200]}
-Current question: {user_q}"""
-
-                # Get relevant documents from RAG - use person-specific query
-                docs = retriever.get_relevant_documents(enhanced_query if is_follow_up else user_q)
-                context_docs = "\n\n".join([doc.page_content for doc in docs[:8]])  # Increased from 4 to 8 for better coverage
-
-                # Log retrieval for debugging
-                print(f"📚 Retrieved {len(docs)} documents for query: '{user_q[:50]}...'")
-                if docs:
-                    print(f"   Top doc preview: {docs[0].page_content[:100]}...")
-
-                # 🔥 Build smart prompt with conversation history + student profile
-                personalization_note = ""
-                if has_student_data:
-                    if has_raw_pdf_data:
-                        personalization_note = """
-⚠️ CRITICAL - THIS STUDENT HAS UPLOADED THEIR DEGREEWORKS DOCUMENT:
-Below you will see the FULL TEXT of this student's DegreeWorks academic audit.
-READ IT CAREFULLY and use it to answer ANY questions about:
-- Their GPA (look for "GPA", "Overall", "Cumulative" in the document)
-- Their courses completed (look for course codes like COSC 111, MATH 201, etc.)
-- Their credits earned (look for "hours", "credits", "earned")
-- Their classification (Freshman/Sophomore/Junior/Senior)
-- Their degree requirements and what they still need
-
-IMPORTANT: The answer to their question IS IN THE DOCUMENT. Search through it!
-DO NOT say "I don't have access to your data" - the DegreeWorks document is provided below!
-"""
-                    else:
-                        personalization_note = """
-⚠️ CRITICAL - PERSONALIZED RESPONSES REQUIRED:
-This student has synced their DegreeWorks data. Use their personal academic data when answering questions about:
-- Their GPA, courses, classification, advisor, credits, and remaining requirements
-
-DO NOT say "I don't have access to your data" - their profile data is provided below!
-"""
-
-                system_prompt = f"""You are CS Navigator, an intelligent academic assistant for Morgan State University's Computer Science department.
-{personalization_note}
-Your role:
-- Help students with questions about courses, professors, requirements, and academic resources
-- When the student asks about THEIR personal academic info (GPA, courses, credits, advisor), ALWAYS check the DEGREEWORKS DOCUMENT or STUDENT DATA section below first
-- READ the full document content to find the answer - the info IS there
-- Remember the conversation context and provide coherent follow-up responses
-- Be specific and helpful - provide names, details, and actionable information
-
-⚠️ CRITICAL GROUNDING RULES - YOU MUST FOLLOW THESE:
-1. ONLY answer based on the KNOWLEDGE BASE CONTEXT provided below
-2. If the context does NOT contain specific information (like a name, email, or detail):
-   - Say: "I don't have that specific information in my knowledge base. Please contact the CS department at compsci@morgan.edu or (443) 885-3962"
-   - DO NOT generate placeholder text like [INSERT X HERE] or [INSERT PROFESSOR NAME HERE]
-   - DO NOT make up names, emails, phone numbers, or contact information
-3. If you're unsure about an answer, be honest about your limitations
-4. For professor queries: If you can't find the professor in the context, don't guess - admit the limitation
-
-⚠️ CRITICAL - PRONOUN RESOLUTION RULES:
-When the user uses pronouns like "him", "her", "his", "their", "he", "she":
-1. FIRST check the CONVERSATION HISTORY to find who they're referring to
-2. Pronouns refer to the PERSON MENTIONED IN THE PREVIOUS MESSAGES, NOT the student's advisor
-3. Example: If previous message discussed "Dr. Paul Wang", then "his research" means Dr. Paul Wang's research
-4. NEVER assume pronouns refer to the student's advisor unless the advisor was explicitly mentioned
-5. The conversation context section tells you WHO was discussed - use that for pronoun resolution
-
-Important rules:
-1. If a DegreeWorks document is provided, READ it to find GPA, courses, credits, etc.
-2. The answer to personal academic questions is IN the document - search for it
-3. For follow-up questions with pronouns (him/her/his), resolve them to the person in the PREVIOUS conversation, NOT the student's advisor
-4. If you truly can't find something in the document, say so honestly"""
-
-                # Build the full message with context
-                full_message = ""
-
-                # 🔥 CRITICAL: If we detected a referenced person from pronouns, tell the LLM explicitly
-                if referenced_person and is_follow_up:
-                    full_message += f"""
-⚠️ IMPORTANT PRONOUN CONTEXT:
-The user is asking about: **{referenced_person}**
-Any pronouns (his/her/him/their) in the current question refer to {referenced_person}, NOT the student's advisor.
-{"="*60}
-
-"""
-
-                # Add student profile if available
+                # Build context for the agent (DegreeWorks + conversation history)
+                agent_context = ""
                 if student_context:
-                    full_message += student_context
-
+                    agent_context += student_context
                 if conversation_context:
-                    full_message += conversation_context
+                    agent_context += conversation_context
 
-                full_message += f"Relevant knowledge base information:\n{context_docs}\n\n"
-                full_message += f"Current question: {user_q}\n\n"
-
-                if referenced_person and is_follow_up:
-                    full_message += f"REMINDER: This question is about {referenced_person}. Answer about {referenced_person}, not the student's advisor.\n\n"
-
-                full_message += "Please provide a helpful, specific answer. If this is a follow-up question, make sure to connect it to the previous conversation context. If you have student profile data, use it to personalize your response."
-
-                # Use LLM directly with full context
+                print(f"🤖 Vertex AI query: '{user_q[:50]}...' (user={user['user_id']}, context={len(agent_context)} chars)")
+                answer = query_agent(
+                    query=user_q,
+                    user_id=str(user["user_id"]),
+                    context=agent_context,
+                )
+            except Exception as e:
+                print(f"   Vertex AI Chat Error: {e}")
+                answer = "I'm having trouble processing your request. Please try again."
+    elif llm and retriever:
+        # Legacy Pinecone + OpenAI RAG path (fallback)
+        norm = re.sub(r'[\s\W]+', '', user_q.lower())
+        if re.match(r'^(hi|hello|hey)\b', user_q.lower()):
+            answer = "Hello! How can I help you today?"
+        elif re.match(r'^(bye|goodbye|see you)\b', user_q.lower()):
+            answer = "Goodbye! Have a great day."
+        elif re.search(r'\b(thankyou|thanks|thanx|thx|ty)\b', norm):
+            answer = "You're welcome! Let me know if you have any other questions."
+        else:
+            try:
+                docs = retriever.get_relevant_documents(user_q)
+                context_docs = "\n\n".join([doc.page_content for doc in docs[:8]])
+                system_prompt = f"""You are CS Navigator, an academic assistant for Morgan State University's CS department.
+{student_context}
+ONLY answer based on the KNOWLEDGE BASE CONTEXT provided. If info is not found, say so honestly."""
+                full_message = f"{conversation_context}Knowledge base:\n{context_docs}\n\nQuestion: {user_q}"
                 response = llm([
                     SystemMessage(content=system_prompt),
                     HumanMessage(content=full_message)
                 ])
                 answer = response.content.strip()
-
             except Exception as e:
-                print(f"❌ Chat Error: {e}")
-                # Fallback to simple QA if enhanced approach fails
-                if qa:
-                    try:
-                        result = qa({"query": user_q})
-                        answer = result["result"].strip()
-                    except:
-                        answer = "I'm having trouble accessing my knowledge base right now."
-                else:
-                    answer = "I'm having trouble processing your request."
-    elif qa:
-        # Fallback to basic QA without LLM
-        try:
-            result = qa({"query": user_q})
-            answer = result["result"].strip()
-        except Exception as e:
-            answer = "I'm having trouble accessing my knowledge base right now."
-            print(f"QA Error: {e}")
+                print(f"   Legacy Chat Error: {e}")
+                answer = "I'm having trouble processing your request."
     else:
-        answer = "AI system is initializing or missing keys."
+        answer = "AI system is initializing. Please try again in a moment."
 
     # 3. SAVE to RDS (User-Specific)
     try:
@@ -2601,111 +2514,47 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
     elif len(norm) <= 2 or not any(c.isalpha() for c in user_q):
         return {"response": "I'm here to help! Ask me about CS courses, professors, degree requirements, or anything else about Morgan State's Computer Science program."}
 
-    # Use RAG for real questions
-    if llm and retriever:
+    # Use Vertex AI Agent for real questions
+    if USE_VERTEX_AGENT:
         try:
-            # Get relevant documents from knowledge base
-            docs = retriever.get_relevant_documents(user_q)
-            context_docs = "\n\n".join([doc.page_content for doc in docs[:8]])  # Increased from 4 to 8
-
-            # Log retrieval for debugging
-            print(f"📚 [Guest] Retrieved {len(docs)} documents for query: '{user_q[:50]}...'")
-            if docs:
-                print(f"   Top doc preview: {docs[0].page_content[:100]}...")
-
-            # #10 FIX: Handle empty RAG context
-            if not context_docs.strip():
-                return {"response": "I don't have specific information about that in my knowledge base. For detailed questions about Morgan State's CS program, please contact the department at compsci@morgan.edu or (443) 885-3962."}
-
-            # Extract guest profile for light personalization
+            # Build light guest context
             guest_profile = req.guestProfile or {}
+            guest_context = ""
             guest_classification = guest_profile.get("classification", "")
             guest_gpa = guest_profile.get("gpa", "")
-            guest_major = guest_profile.get("major", "")
-
-            # Build guest context string for light personalization
-            guest_context = ""
             if guest_classification or guest_gpa:
-                profile_parts = []
-                if guest_classification:
-                    profile_parts.append(f"a {guest_classification}")
-                if guest_gpa:
-                    profile_parts.append(f"~{guest_gpa} GPA")
-                if guest_major and guest_major != "Computer Science":
-                    profile_parts.append(f"interested in {guest_major}")
-                if profile_parts:
-                    guest_context = f"\n\n👤 GUEST CONTEXT: This guest is {' with '.join(profile_parts)}. Slightly tailor your response tone to their academic level (e.g., simpler explanations for Freshmen, more detailed for Seniors)."
+                parts = []
+                if guest_classification: parts.append(f"a {guest_classification} student")
+                if guest_gpa: parts.append(f"with ~{guest_gpa} GPA")
+                guest_context = f"[Guest user info: {' '.join(parts)}]\n"
 
-            # Guest-specific system prompt (with light personalization)
-            guest_system_prompt = f"""You are CS Navigator, an AI assistant for Morgan State University's Computer Science department.
-
-📝 RESPONSE FORMATTING (use Markdown):
-• Use **bold** for course codes, professor names, important terms
-• Use bullet points for lists (clean and scannable)
-• Keep paragraphs short (2-3 sentences)
-• Format courses as: **COSC 311** - Data Structures (3 credits)
-• Format professors as: **Dr. Name** - Research area
-• Put contact info on separate lines
-
-✅ RESPONSE STYLE:
-• Lead with the direct answer first
-• Be concise (3-6 sentences for simple questions)
-• Friendly, professional tone
-• Don't repeat the question back
-
-📋 EXAMPLE FORMAT:
-**Dr. Jane Doe** is the Department Chair.
-
-**Contact:**
-• Email: jane.doe@morgan.edu
-• Office: McMechen Hall 512
-
-She specializes in **cybersecurity** and **network systems**.
-
----
-
-⚠️ GROUNDING RULES (CRITICAL):
-1. ONLY use information from the KNOWLEDGE BASE CONTEXT provided
-2. If info is NOT found, say: "I don't have that specific information. Contact the CS department at compsci@morgan.edu or (443) 885-3962"
-3. NEVER make up names, emails, phone numbers, or details
-4. NEVER use placeholders like [INSERT X HERE]
-5. Be honest about limitations
-
-You are helping a GUEST user. For highly personalized questions (like "what courses should I take next semester?"), encourage them to sign up for a free account for personalized recommendations.{guest_context}
-"""
-
-            user_message = f"""KNOWLEDGE BASE CONTEXT:
-{context_docs}
-
-QUESTION: {user_q}
-
-Provide a well-formatted answer using the context. Use **bold** for key terms and bullet points for lists."""
-
-            response = llm([
-                SystemMessage(content=guest_system_prompt),
-                HumanMessage(content=user_message)
-            ])
-            answer = response.content.strip()
-
+            # Use a guest-specific user_id based on IP for session management
+            guest_user_id = f"guest_{client_ip.replace('.', '_')}"
+            print(f"🤖 [Guest] Vertex AI query: '{user_q[:50]}...'")
+            answer = query_agent(
+                query=user_q,
+                user_id=guest_user_id,
+                context=guest_context,
+            )
         except Exception as e:
-            print(f"❌ Guest Chat Error: {e}")
-            # Fallback to basic QA
-            if qa:
-                try:
-                    result = qa({"query": user_q})
-                    answer = result["result"].strip()
-                except:
-                    answer = "I'm having trouble processing your request. Please try again."
-            else:
-                answer = "I'm having trouble connecting to my knowledge base. Please try again."
-    elif qa:
-        # Fallback to basic QA without LLM
+            print(f"   Guest Vertex AI Error: {e}")
+            answer = "I'm having trouble processing your request. Please try again."
+    elif llm and retriever:
+        # Legacy Pinecone + OpenAI RAG path (fallback)
         try:
-            result = qa({"query": user_q})
-            answer = result["result"].strip()
+            docs = retriever.get_relevant_documents(user_q)
+            context_docs = "\n\n".join([doc.page_content for doc in docs[:8]])
+            if not context_docs.strip():
+                answer = "I don't have specific information about that. Contact the CS department at compsci@morgan.edu or (443) 885-3962."
+            else:
+                response = llm([
+                    SystemMessage(content="You are CS Navigator for Morgan State University's CS department. ONLY answer from the provided context."),
+                    HumanMessage(content=f"Context:\n{context_docs}\n\nQuestion: {user_q}")
+                ])
+                answer = response.content.strip()
         except Exception as e:
-            answer = "I'm having trouble accessing my knowledge base right now."
-            print(f"Guest QA Error: {e}")
+            print(f"   Guest Legacy Error: {e}")
+            answer = "I'm having trouble processing your request. Please try again."
     else:
         answer = "AI system is initializing. Please try again in a moment."
 
@@ -3131,9 +2980,9 @@ async def get_system_health(user: dict = Depends(get_current_user), db: Session 
 
     health_status = {
         "database": {"status": "unknown", "message": ""},
-        "pinecone": {"status": "unknown", "message": ""},
-        "openai": {"status": "unknown", "message": ""},
-        "vector_count": 0,
+        "vertex_agent": {"status": "unknown", "message": ""},
+        "openai_tts": {"status": "unknown", "message": ""},
+        "mode": "vertex_ai" if USE_VERTEX_AGENT else "legacy_rag",
         "last_check": datetime.now(timezone.utc).isoformat()
     }
 
@@ -3144,28 +2993,31 @@ async def get_system_health(user: dict = Depends(get_current_user), db: Session 
     except Exception as e:
         health_status["database"] = {"status": "error", "message": str(e)[:100]}
 
-    # Check Pinecone
-    try:
-        if PINECONE_API_KEY and PINECONE_INDEX:
-            pc = Pinecone(api_key=PINECONE_API_KEY)
-            idx = pc.Index(PINECONE_INDEX)
-            stats = idx.describe_index_stats()
-            vector_count = stats.get("total_vector_count", 0)
-            health_status["pinecone"] = {"status": "connected", "message": f"Index ready with {vector_count} vectors"}
-            health_status["vector_count"] = vector_count
-        else:
-            health_status["pinecone"] = {"status": "not_configured", "message": "API key or index not set"}
-    except Exception as e:
-        health_status["pinecone"] = {"status": "error", "message": str(e)[:100]}
+    # Check Vertex AI Agent
+    if USE_VERTEX_AGENT:
+        health_status["vertex_agent"] = check_agent_health()
+    else:
+        # Legacy: check Pinecone
+        try:
+            if PINECONE_API_KEY and PINECONE_INDEX and LEGACY_RAG_AVAILABLE:
+                pc_check = Pinecone(api_key=PINECONE_API_KEY)
+                idx = pc_check.Index(PINECONE_INDEX)
+                stats = idx.describe_index_stats()
+                vector_count = stats.get("total_vector_count", 0)
+                health_status["vertex_agent"] = {"status": "n/a (legacy mode)", "message": f"Pinecone: {vector_count} vectors"}
+            else:
+                health_status["vertex_agent"] = {"status": "not_configured", "message": "Legacy mode, keys missing"}
+        except Exception as e:
+            health_status["vertex_agent"] = {"status": "error", "message": str(e)[:100]}
 
-    # Check OpenAI
+    # Check OpenAI TTS
     try:
         if OPENAI_API_KEY:
-            health_status["openai"] = {"status": "configured", "message": "API key present"}
+            health_status["openai_tts"] = {"status": "configured", "message": "TTS API key present"}
         else:
-            health_status["openai"] = {"status": "not_configured", "message": "API key not set"}
+            health_status["openai_tts"] = {"status": "not_configured", "message": "TTS unavailable (no OpenAI key)"}
     except Exception as e:
-        health_status["openai"] = {"status": "error", "message": str(e)[:100]}
+        health_status["openai_tts"] = {"status": "error", "message": str(e)[:100]}
 
     return health_status
 

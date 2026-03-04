@@ -8,7 +8,7 @@ CS Navigator is a full-stack RAG (Retrieval-Augmented Generation) chatbot that h
 
 ## Demo
 
-**Live Application:** [http://100.48.56.24:3000](http://100.48.56.24:3000)
+**Live Application:** [https://inavigator.ai](https://inavigator.ai)
 
 ---
 

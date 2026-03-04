@@ -15,11 +15,8 @@ const GUEST_SUGGESTIONS = [
   "What research areas exist in CS?"
 ];
 
-// --- SMART API SWITCHING ---
-const hostname = window.location.hostname;
-const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-  ? "http://127.0.0.1:8000"
-  : "http://100.48.56.24:5000";
+import { getApiBase } from "../lib/apiBase";
+const API_BASE = getApiBase();
 
 // Session duration: 15 minutes in milliseconds
 const GUEST_SESSION_DURATION = 15 * 60 * 1000;

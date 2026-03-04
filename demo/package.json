@@ -1,0 +1,12 @@
+{
+  "name": "csnavigator-demo",
+  "version": "1.0.0",
+  "description": "Automated demo recording for CSNavigator",
+  "scripts": {
+    "record": "node record-demo.js",
+    "install-browsers": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.40.0"
+  }
+}

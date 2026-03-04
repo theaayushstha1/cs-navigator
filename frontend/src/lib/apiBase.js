@@ -1,7 +1,7 @@
 export function getApiBase() {
-  const env = (import.meta?.env?.VITE_API_BASE_URL || "").trim();
-  if (env) return env.replace(/\/$/, "");
-
-  // dev: vite (5173) or docker front (3000) -> backend on 5000
-  return `${window.location.protocol}//${window.location.hostname}:5000`;
+  const hostname = window.location.hostname;
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    return "http://127.0.0.1:5000";
+  }
+  return ""; // Production: relative URLs, Nginx handles routing
 }
