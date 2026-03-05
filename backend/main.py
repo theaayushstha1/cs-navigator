@@ -24,7 +24,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from collections import Counter
 import io
 from dotenv import load_dotenv
@@ -245,34 +245,38 @@ def init_db():
     # 7. Create/Update admin account
     try:
         db = SessionLocal()
-        admin_email = "admin@test.com"
-        admin_password = "admin"
-
-        existing_admin = db.query(User).filter(User.email == admin_email).first()
-
-        if existing_admin:
-            # Update existing user to admin
-            if existing_admin.role != "admin":
-                existing_admin.role = "admin"
-                db.commit()
-                print(f"✅ Updated {admin_email} to admin role!")
-            else:
-                print(f"✅ Admin account {admin_email} already exists with admin role.")
+        admin_email = os.getenv("ADMIN_EMAIL", "").strip()
+        admin_password = os.getenv("ADMIN_PASSWORD", "").strip()
+        if not admin_email or not admin_password:
+            print("⚠️ ADMIN_EMAIL/ADMIN_PASSWORD not set in .env — skipping admin account creation")
+            db.close()
         else:
-            # Create new admin account
-            from security import hash_password
-            hashed = hash_password(admin_password)
-            admin_user = User(
-                email=admin_email,
-                password_hash=hashed,
-                role="admin",
-                name="Admin"
-            )
-            db.add(admin_user)
-            db.commit()
-            print(f"✅ Created admin account: {admin_email}")
+            if len(admin_password) < 12:
+                print("⚠️ ADMIN_PASSWORD is weak (< 12 chars). Use a strong password in production.")
 
-        db.close()
+            existing_admin = db.query(User).filter(User.email == admin_email).first()
+
+            if existing_admin:
+                if existing_admin.role != "admin":
+                    existing_admin.role = "admin"
+                    db.commit()
+                    print(f"✅ Updated {admin_email} to admin role!")
+                else:
+                    print(f"✅ Admin account already exists with admin role.")
+            else:
+                from security import hash_password
+                hashed = hash_password(admin_password)
+                admin_user = User(
+                    email=admin_email,
+                    password_hash=hashed,
+                    role="admin",
+                    name="Admin"
+                )
+                db.add(admin_user)
+                db.commit()
+                print(f"✅ Created admin account.")
+
+            db.close()
     except Exception as e:
         print(f"❌ Failed to create/update admin account: {e}")
 
@@ -304,13 +308,31 @@ def build_qa_chain():
         retriever = store.as_retriever(
             search_type="mmr",
             search_kwargs={
-                "k": 10,           # Increased from 8 - fetch more relevant docs
-                "fetch_k": 30,     # Increased from 20 - larger pool for MMR selection
-                "lambda_mult": 0.5 # Reduced from 0.7 - better balance of relevance & diversity
+                "k": 6,            # Focused retrieval - fewer but more relevant docs
+                "fetch_k": 20,     # Pool for MMR selection
+                "lambda_mult": 0.75 # Higher relevance weight (less diversity noise)
             }
         )
-        llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-3.5-turbo", temperature=0)
-        qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents=True)
+        llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-5-mini", temperature=0)
+        # Build a grounded QA chain with custom prompt for fallback use
+        from langchain.prompts import PromptTemplate
+        grounded_prompt = PromptTemplate(
+            template="""Use the following context to answer the question. If the context does not contain the answer, say "I don't have that specific information in my knowledge base. Please contact the CS department at compsci@morgan.edu or (443) 885-3962." Do NOT make up any information.
+
+Context: {context}
+
+Question: {question}
+
+Answer:""",
+            input_variables=["context", "question"],
+        )
+        qa = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=retriever,
+            return_source_documents=True,
+            chain_type_kwargs={"prompt": grounded_prompt},
+        )
         print("✅ AI System Initialized")
     except Exception as e:
         print(f"❌ AI Init Failed: {e}")
@@ -325,17 +347,14 @@ async def lifespan(app):
 
 app = FastAPI(title="CS Chatbot API", version="2.1.0", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173,http://localhost:5174,http://127.0.0.1:3000,http://127.0.0.1:5173").split(",")
 
 app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=["*"]
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # Mount Static Files (Profile Pictures AND Chat Files)
@@ -385,6 +404,9 @@ def get_current_user(
     except JWTError:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
 
+MAX_PROFILE_PIC_SIZE = 5 * 1024 * 1024   # 5 MB
+MAX_CHAT_FILE_SIZE = 10 * 1024 * 1024     # 10 MB
+
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -392,19 +414,19 @@ def allowed_file(filename: str) -> bool:
 # 6. PYDANTIC SCHEMAS
 # ==============================================================================
 class RegisterRequest(BaseModel):
-    email: str
-    password: str
+    email: str = Field(..., max_length=254)
+    password: str = Field(..., min_length=8, max_length=128)
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: str = Field(..., max_length=254)
+    password: str = Field(..., max_length=128)
 
 class QueryRequest(BaseModel):
-    query: str
-    session_id: str = "default" # 🔥 NEW: Accept session ID
+    query: str = Field(..., max_length=2000)
+    session_id: str = "default"
 
 class GuestQueryRequest(BaseModel):
-    query: str
+    query: str = Field(..., max_length=2000)
     guestProfile: Optional[dict] = None
 
 # ==============================================================================
@@ -427,6 +449,19 @@ def check_guest_rate_limit(ip: str) -> bool:
         return False
     # Add new request
     guest_rate_limits[ip].append(current_time)
+    return True
+
+# Auth rate limiting (brute force protection)
+auth_rate_limits = defaultdict(list)
+AUTH_RATE_LIMIT = 5   # max 5 login/register attempts per window
+AUTH_RATE_WINDOW = 60  # per 60 seconds
+
+def check_auth_rate_limit(ip: str) -> bool:
+    current_time = time_module.time()
+    auth_rate_limits[ip] = [t for t in auth_rate_limits[ip] if current_time - t < AUTH_RATE_WINDOW]
+    if len(auth_rate_limits[ip]) >= AUTH_RATE_LIMIT:
+        return False
+    auth_rate_limits[ip].append(current_time)
     return True
 
 class Course(BaseModel):
@@ -510,7 +545,20 @@ def load_json_documents(paths: List[str]) -> List[Dict[str,Any]]:
 
 # --- Auth ---
 @app.post("/api/register", status_code=status.HTTP_201_CREATED)
-def register(req: RegisterRequest, db: Session = Depends(get_db)):
+def register(req: RegisterRequest, request: Request, db: Session = Depends(get_db)):
+    # Rate limit
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_auth_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+
+    # Basic email validation
+    if not req.email or "@" not in req.email or "." not in req.email.split("@")[-1]:
+        raise HTTPException(status_code=400, detail="Invalid email address")
+
+    # Password strength check
+    if len(req.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
     if db.query(User).filter(User.email == req.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
     hashed = hash_password(req.password)
@@ -521,7 +569,12 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
     return {"message": "Account created", "user_id": student.id}
 
 @app.post("/api/login")
-def login(req: LoginRequest, db: Session = Depends(get_db)):
+def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    # Rate limit
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_auth_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+
     user = db.query(User).filter(User.email == req.email).first()
     if not user or not verify_password(req.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -583,8 +636,10 @@ async def upload_profile_picture(profilePicture: UploadFile = File(...), user: d
     if not allowed_file(profilePicture.filename):
         raise HTTPException(400, "Invalid file type")
 
-    # Read file content
+    # Read file content with size limit
     file_content = await profilePicture.read()
+    if len(file_content) > MAX_PROFILE_PIC_SIZE:
+        raise HTTPException(400, f"File too large. Maximum size is {MAX_PROFILE_PIC_SIZE // (1024*1024)} MB")
 
     # Get file extension and mime type
     ext = profilePicture.filename.rsplit('.', 1)[1].lower()
@@ -629,17 +684,21 @@ async def upload_chat_file(file: UploadFile = File(...), user: dict = Depends(ge
     if not allowed_file(file.filename): 
         raise HTTPException(400, "File type not allowed")
     
-    # 2. Create Unique Filename
+    # 2. Read and validate size
+    file_content = await file.read()
+    if len(file_content) > MAX_CHAT_FILE_SIZE:
+        raise HTTPException(400, f"File too large. Maximum size is {MAX_CHAT_FILE_SIZE // (1024*1024)} MB")
+
+    # 3. Create Unique Filename
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    # Sanitize filename
     clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
     filename = f"chat_{user['user_id']}_{timestamp}_{clean_name}"
     filepath = os.path.join(CHAT_FILES_FOLDER, filename)
 
-    # 3. Save the File
+    # 4. Save the File
     try:
         with open(filepath, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            buffer.write(file_content)
     except Exception as e:
         print(f"❌ File Save Error: {e}")
         raise HTTPException(500, "Could not save file")
@@ -746,7 +805,8 @@ async def sync_degreeworks(
 
     except Exception as e:
         print(f"❌ DegreeWorks Sync Error: {e}")
-        raise HTTPException(500, f"Failed to sync DegreeWorks data: {str(e)}")
+        print(f"❌ DegreeWorks sync error: {e}")
+        raise HTTPException(500, "Failed to sync DegreeWorks data")
 
 
 @app.get("/api/degreeworks")
@@ -878,7 +938,8 @@ async def test_pdf_parse(
         }
 
     except Exception as e:
-        return {"error": f"Failed to process PDF: {str(e)}"}
+        print(f"❌ PDF processing error: {e}")
+        return {"error": "Failed to process PDF"}
 
 
 @app.delete("/api/degreeworks/disconnect")
@@ -901,7 +962,8 @@ async def disconnect_degreeworks(user: dict = Depends(get_current_user), db: Ses
         return {"success": True, "message": "DegreeWorks data disconnected"}
     except Exception as e:
         print(f"❌ DegreeWorks Disconnect Error: {e}")
-        raise HTTPException(500, f"Failed to disconnect: {str(e)}")
+        print(f"❌ Disconnect error: {e}")
+        raise HTTPException(500, "Failed to disconnect")
 
 
 @app.post("/api/degreeworks/upload-pdf")
@@ -1101,7 +1163,7 @@ async def upload_degreeworks_pdf(
         raise
     except Exception as e:
         print(f"❌ DegreeWorks PDF Upload Error: {e}")
-        raise HTTPException(500, f"Failed to process PDF: {str(e)}")
+        raise HTTPException(500, "Failed to process PDF")
 
 
 @app.post("/api/degreeworks/scrape-html")
@@ -1171,7 +1233,8 @@ async def scrape_degreeworks_html(
         raise
     except Exception as e:
         print(f"❌ DegreeWorks HTML Scrape Error: {e}")
-        raise HTTPException(500, f"Failed to process DegreeWorks data: {str(e)}")
+        print(f"❌ DegreeWorks processing error: {e}")
+        raise HTTPException(500, "Failed to process DegreeWorks data")
 
 
 def parse_degreeworks_html(html: str) -> dict:
@@ -1438,448 +1501,231 @@ def parse_degreeworks_html(html: str) -> dict:
 
 def parse_degreeworks_pdf(text: str) -> dict:
     """
-    Parses DegreeWorks PDF text and extracts academic data.
-    Super enhanced to handle Morgan State DegreeWorks PDF formats.
+    Parses DegreeWorks PDF text using pure text processing.
+    No LLM needed - cleans the text first, then extracts structured data with regex.
+    Fast, deterministic, and free (no API call).
     """
     data = {}
-    # Clean up text - remove extra whitespace but preserve structure
-    text_clean = re.sub(r'[ \t]+', ' ', text)
-    text_lower_clean = text_clean.lower()
 
-    # Debug: print first 1000 chars to see format
+    # Store raw text for the "chat with PDF" feature
+    data['raw_data'] = text[:30000]
+
+    # =====================================================
+    # STEP 1: Clean the raw PDF text
+    # Remove noise, collapse multi-line entries, keep only useful lines
+    # =====================================================
+    lines = text.split('\n')
+    clean_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Skip noise lines
+        if stripped.startswith('Satisfied by:'):
+            continue
+        if stripped.startswith('Exception by:'):
+            continue
+        if stripped.startswith('Morgan State University') and '- *****' in stripped:
+            continue
+        if stripped.startswith('Disclaimer'):
+            break
+        if stripped.startswith('Legend'):
+            break
+        if stripped.startswith('Ellucian Degree'):
+            break
+        clean_lines.append(stripped)
+
+    clean_text = '\n'.join(clean_lines)
+    # Also make a single-line version for multi-line course matching
+    collapsed = ' '.join(clean_lines)
+
     print("=" * 60)
-    print("📄 PDF TEXT PREVIEW (first 1000 chars):")
-    print("=" * 60)
-    print(text[:1000])
+    print(f"PDF: {len(text)} chars raw -> {len(clean_text)} chars cleaned")
     print("=" * 60)
 
-    # ============ GPA EXTRACTION (Most Important) ============
-    # Try many different patterns to find GPA
-    gpa_found = False
+    # =====================================================
+    # STEP 2: Extract header fields (GPA, name, classification, etc.)
+    # =====================================================
 
-    # Pattern group 1: Explicit GPA labels (most reliable)
-    gpa_patterns_explicit = [
-        r'overall\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'cumulative\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'gpa[:\s]+(\d\.\d{1,2})',
-        r'overall[:\s]+(\d\.\d{1,2})',
-        r'cumulative[:\s]+(\d\.\d{1,2})',
-        r'grade\s*point\s*average[:\s]*(\d\.\d{1,2})',
-        r'cum\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'inst\s*gpa[:\s]*(\d\.\d{1,2})',  # Institutional GPA
-        r'ovr\s*gpa[:\s]*(\d\.\d{1,2})',   # Abbreviated
-        r'total\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'current\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'career\s*gpa[:\s]*(\d\.\d{1,2})',  # Banner/DegreeWorks terminology
-        r'gpa\s*:\s*(\d\.\d{1,2})',  # GPA : 3.50
-        r'gpa\s+(\d\.\d{1,2})',  # GPA 3.50 (no colon)
-    ]
+    # Student name: "Student name Last, First"
+    name_match = re.search(r'Student\s+name\s+(\w[\w\'-]+),\s+(\w[\w\'-]+)', text)
+    if name_match:
+        data['student_name'] = f"{name_match.group(2)} {name_match.group(1)}"
 
-    for pattern in gpa_patterns_explicit:
-        match = re.search(pattern, text_lower_clean)
-        if match:
-            try:
-                gpa = float(match.group(1))
-                if 0.0 <= gpa <= 4.0:
-                    data['overall_gpa'] = gpa
-                    print(f"✅ Found GPA (explicit): {gpa}")
-                    gpa_found = True
-                    break
-            except: pass
+    # Overall GPA: "Overall GPA\n3.953" or "GPA: 3.953"
+    gpa_match = re.search(r'Overall\s+GPA\s*[:\n]?\s*(\d\.\d{1,3})', text)
+    if gpa_match:
+        gpa = float(gpa_match.group(1))
+        if 0.0 <= gpa <= 4.0:
+            data['overall_gpa'] = gpa
 
-    # Pattern group 2: GPA near keyword (within 30 chars)
-    if not gpa_found:
-        gpa_keywords = ['gpa', 'overall', 'cumulative', 'average', 'grade point']
-        for keyword in gpa_keywords:
-            if keyword in text_lower_clean:
-                # Find position of keyword
-                pos = text_lower_clean.find(keyword)
-                # Look for decimal in nearby text (30 chars before and after)
-                nearby = text_lower_clean[max(0, pos-30):pos+40]
-                decimal_match = re.search(r'(\d\.\d{2})', nearby)
-                if decimal_match:
-                    gpa = float(decimal_match.group(1))
-                    if 0.0 <= gpa <= 4.0:
-                        data['overall_gpa'] = gpa
-                        print(f"✅ Found GPA (near '{keyword}'): {gpa}")
-                        gpa_found = True
-                        break
+    # Major GPA: "Your GPA in these classes is 4.000"
+    major_gpa_match = re.search(r'Your\s+GPA\s+in\s+these\s+classes\s+is\s+(\d\.\d{1,3})', text)
+    if major_gpa_match:
+        mgpa = float(major_gpa_match.group(1))
+        if 0.0 <= mgpa <= 4.0:
+            data['major_gpa'] = mgpa
 
-    # Pattern group 3: Look for X.XX X.XX pattern (often GPA and credits together)
-    if not gpa_found:
-        double_decimal = re.search(r'(\d\.\d{2})\s+(\d{1,3}\.\d{2})', text)
-        if double_decimal:
-            first = float(double_decimal.group(1))
-            if 0.0 <= first <= 4.0:
-                data['overall_gpa'] = first
-                print(f"✅ Found GPA (double pattern): {first}")
-                gpa_found = True
+    # Classification: "Classification 4-Senior" or "Classification Senior"
+    class_match = re.search(r'Classification\s+(?:\d-)?(Freshman|Sophomore|Junior|Senior|Graduate)', text, re.IGNORECASE)
+    if class_match:
+        data['classification'] = class_match.group(1).title()
 
-    # Pattern group 4: Find ANY decimal between 1.0 and 4.0 (last resort)
-    if not gpa_found:
-        all_decimals = re.findall(r'(?<!\d)(\d\.\d{2})(?!\d)', text)
-        for dec in all_decimals:
-            val = float(dec)
-            # GPA is typically between 1.0 and 4.0
-            if 1.5 <= val <= 4.0:
-                data['overall_gpa'] = val
-                print(f"✅ Found likely GPA (fallback): {val}")
-                gpa_found = True
-                break
+    # Credits applied: "Credits applied:  128.5"
+    credits_match = re.search(r'Credits\s+applied:\s*(\d+\.?\d*)', text)
+    if credits_match:
+        creds = float(credits_match.group(1))
+        if 0 <= creds <= 300:
+            data['total_credits_earned'] = creds
 
-    # ============ CLASSIFICATION ============
-    # BEST APPROACH: Use credits to determine classification (most reliable)
-    # Credits thresholds: Freshman (0-29), Sophomore (30-59), Junior (60-89), Senior (90+)
+    # Credits required: "Credits required: 120"
+    creq_match = re.search(r'Credits\s+required:\s*(\d+\.?\d*)', text)
+    if creq_match:
+        creq = float(creq_match.group(1))
+        if 30 <= creq <= 300:
+            data['credits_required'] = creq
+            if data.get('total_credits_earned'):
+                remaining = max(0, creq - data['total_credits_earned'])
+                data['credits_remaining'] = remaining
 
-    # First, try to get credits if we don't have them yet
-    if not data.get('total_credits_earned'):
-        # Quick credits search - allow 2-3 digit numbers (e.g., 45, 124)
-        credits_match = re.search(r'(\d{2,3}(?:\.\d)?)\s*(?:credits|hours)', text_lower_clean)
-        if credits_match:
-            try:
-                cred_val = float(credits_match.group(1))
-                if 20 <= cred_val <= 200:  # Valid credit range
-                    data['total_credits_earned'] = cred_val
-            except:
-                pass
+    # Degree program: "Degree Bachelor of Science" + "Major Computer Science"
+    degree_match = re.search(r'Degree\s+(Bachelor\s+of\s+\w+|Master\s+of\s+\w+)', text)
+    major_match = re.search(r'Major\s+([A-Za-z ]+?)(?:\s{2,}|Program)', text)
+    if degree_match and major_match:
+        data['degree_program'] = f"{degree_match.group(1)} in {major_match.group(1).strip()}"
+    elif degree_match:
+        data['degree_program'] = degree_match.group(1)
 
-    # Now determine classification from credits (MOST RELIABLE METHOD)
-    if data.get('total_credits_earned'):
-        credits = data['total_credits_earned']
-        if credits >= 90:
-            data['classification'] = 'Senior'
-        elif credits >= 60:
-            data['classification'] = 'Junior'
-        elif credits >= 30:
-            data['classification'] = 'Sophomore'
-        else:
-            data['classification'] = 'Freshman'
-        print(f"✅ Classification from credits ({credits}): {data['classification']}")
-
-    # If classification not set yet, try multiple fallback patterns
-    if not data.get('classification'):
-        # Pattern 1: Look for explicit "Classification: Senior" format
-        class_patterns = [
-            r'classification[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'class[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'standing[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'level[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'student\s+level[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'academic\s+level[:\s]*(senior|junior|sophomore|freshman|graduate)',
-        ]
-        for pattern in class_patterns:
-            class_match = re.search(pattern, text_lower_clean)
-            if class_match:
-                data['classification'] = class_match.group(1).title()
-                print(f"✅ Classification from label: {data['classification']}")
-                break
-
-        # Pattern 2: Look for standalone classification words with context clues
-        if not data.get('classification'):
-            # Check if "Senior" appears more than once (likely classification not course)
-            for cls in ['Senior', 'Junior', 'Sophomore', 'Freshman', 'Graduate']:
-                cls_lower = cls.lower()
-                # Count occurrences
-                count = len(re.findall(rf'\b{cls_lower}\b', text_lower_clean))
-                # If it appears multiple times or near key words, it's likely classification
-                if count >= 2:
-                    data['classification'] = cls
-                    print(f"✅ Classification from frequency ({cls} appeared {count} times): {cls}")
-                    break
-                # Check if near classification-related keywords
-                context_match = re.search(rf'(level|status|standing|class|year).*?\b{cls_lower}\b|\b{cls_lower}\b.*?(level|status|standing|class|year)', text_lower_clean)
-                if context_match:
-                    data['classification'] = cls
-                    print(f"✅ Classification from context: {cls}")
-                    break
-
-    # ============ CREDITS ============
-    credits_found = False
-
-    # IMPORTANT: Look for LABELED credits first (e.g., "Credits applied: 124")
-    # Avoid picking up "100%" or "100 %" which is percentage, not credits
-    credits_patterns = [
-        # DegreeWorks specific patterns
-        r'credits\s*applied[:\s]*(\d{2,3}(?:\.\d{1,2})?)',  # "Credits applied: 124.0"
-        r'credits\s*earned[:\s]*(\d{2,3}(?:\.\d{1,2})?)',   # "Credits earned: 124"
-        r'credits\s*required[:\s]*(\d{2,3}(?:\.\d{1,2})?)',  # "Credits required: 120"
-        r'total\s*credits[:\s]*(\d{2,3}(?:\.\d{1,2})?)',     # "Total credits: 124"
-        r'hours\s*earned[:\s]*(\d{2,3}(?:\.\d{1,2})?)',      # "Hours earned: 124"
-        r'transfer\s*hours[:\s]*(\d{2,3}(?:\.\d{1,2})?)',    # "Transfer Hours: 41"
-        # More general patterns
-        r'(\d{2,3}(?:\.\d{1,2})?)\s*credits?\s*(?:applied|earned|completed)',
-        r'(\d{2,3}(?:\.\d{1,2})?)\s*(?:credit\s*)?hours?\s*(?:earned|completed)',
-    ]
-
-    for pattern in credits_patterns:
-        match = re.search(pattern, text_lower_clean)
-        if match:
-            try:
-                credits = float(match.group(1))
-                # Must be between 30-200 and NOT be 100 (which is often percentage)
-                if 30 <= credits <= 200 and credits != 100:
-                    data['total_credits_earned'] = credits
-                    print(f"✅ Found Credits (explicit): {credits}")
-                    credits_found = True
-                    break
-            except: pass
-
-    # If we found 100, double-check it's not from "100%" - look for a different number
-    if not credits_found:
-        # Look specifically for numbers > 100 or numbers like 124, 120, etc.
-        credit_match = re.search(r'(?:credits?|hours?)\s*(?:applied|earned|required)[:\s]*(\d{3}(?:\.\d)?)', text_lower_clean)
-        if credit_match:
-            credits = float(credit_match.group(1))
-            if 100 < credits <= 200:
-                data['total_credits_earned'] = credits
-                print(f"✅ Found Credits (3-digit): {credits}")
-                credits_found = True
-
-    # Fallback: Look for "124.0" or "120.0" pattern (common credit amounts)
-    if not credits_found:
-        common_credits = re.findall(r'(\d{3}\.\d)\b', text)
-        for c in common_credits:
-            val = float(c)
-            if 100 < val <= 150:  # Typical total credits range
-                data['total_credits_earned'] = val
-                print(f"✅ Found Credits (common pattern): {val}")
-                credits_found = True
-                break
-
-    # Pattern group 3: Look for standalone numbers that could be credits (last resort)
-    if not credits_found:
-        # Find 2-3 digit numbers
-        all_numbers = re.findall(r'(?<!\d)(\d{2,3})(?:\.\d{1,2})?(?!\d)', text)
-        for num in all_numbers:
-            val = int(num)
-            # Credits typically between 30 and 150 for enrolled students
-            if 30 <= val <= 150:
-                data['total_credits_earned'] = float(val)
-                print(f"✅ Found likely Credits (fallback): {val}")
-                credits_found = True
-                break
-
-    # ============ DEGREE PROGRAM ============
-    degree_patterns = [
-        r'(bachelor\s+of\s+science\s+in\s+[a-z\s]+)',
-        r'(master\s+of\s+science\s+in\s+[a-z\s]+)',
-        r'(b\.?s\.?\s+(?:in\s+)?computer\s+science)',
-        r'(computer\s+science)',
-        r'(information\s+(?:systems?|science))',
-        r'(cybersecurity)',
-        r'(software\s+engineering)',
-        r'(electrical\s+engineering)',
-        r'major[:\s]*([a-z\s]+?)(?:\n|$)',
-        r'program[:\s]*([a-z\s]+?)(?:\n|$)',
-        r'degree[:\s]*([a-z\s]+?)(?:\n|$)',
-    ]
-    for pattern in degree_patterns:
-        match = re.search(pattern, text_lower_clean)
-        if match:
-            program = match.group(1).strip().title()
-            if len(program) > 3 and len(program) < 60:
-                data['degree_program'] = program
-                print(f"✅ Found Program: {program}")
-                break
-
-    # ============ STUDENT NAME ============
-    # Look for patterns like "Name: John Smith" or just capitalized names at start
-    name_patterns = [
-        r'(?:student|name)[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
-        r'^([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',  # At start of text
-    ]
-    for pattern in name_patterns:
-        match = re.search(pattern, text_clean, re.MULTILINE)
-        if match:
-            name = match.group(1).strip()
-            if 3 < len(name) < 50:
-                data['student_name'] = name
-                print(f"✅ Found Name: {name}")
-                break
-
-    # ============ STUDENT ID ============
-    id_match = re.search(r'(?:id|student)[:\s#]*(\d{7,9})', text_lower_clean)
-    if id_match:
-        data['student_id'] = id_match.group(1)
-        print(f"✅ Found Student ID: {data['student_id']}")
-    else:
-        # Just look for any 7-9 digit number
-        id_match = re.search(r'(?<!\d)(\d{7,9})(?!\d)', text)
-        if id_match:
-            data['student_id'] = id_match.group(1)
-
-    # ============ ADVISOR ============
-    # Look for advisor name in DegreeWorks format
-    # Example formats: "Advisor Md/dr Blakeley", "Advisor: Dr. Smith", "Advisor Walden Blakeley"
-
-    # Words that are NOT advisor names
-    not_advisor_words = [
-        'prerequisite', 'prerequsite', 'required', 'complete', 'incomplete',
-        'pending', 'satisfied', 'unsatisfied', 'needed', 'met', 'unmet',
-        'information', 'course', 'credit', 'hours', 'gpa', 'grade'
-    ]
-
-    # Try multiple patterns
-    advisor_found = False
-
-    # Pattern 1: "Advisor" followed by title and name (e.g., "Advisor Md/dr Blakeley")
-    advisor_match = re.search(r'advisor[:\s]+(?:md/?dr\.?|dr\.?|mr\.?|ms\.?|mrs\.?|prof\.?)?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', text_clean, re.IGNORECASE)
+    # Advisor: "Advisor Vojislav Stojkovic" (stop at double-space or end of line)
+    advisor_match = re.search(r'Advisor\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)', text)
     if advisor_match:
-        advisor = advisor_match.group(1).strip()
-        if advisor.lower() not in not_advisor_words and len(advisor) > 2:
-            data['advisor'] = advisor
-            advisor_found = True
-            print(f"✅ Found Advisor: {advisor}")
+        data['advisor'] = advisor_match.group(1).strip()
 
-    # Pattern 2: Look for name after "Advisor" with more flexible matching
-    if not advisor_found:
-        # Find the word "Advisor" and grab the next 2-3 words
-        advisor_pos = text_clean.lower().find('advisor')
-        if advisor_pos != -1:
-            # Get text after "Advisor"
-            after_advisor = text_clean[advisor_pos + 7:advisor_pos + 50].strip()
-            # Split into words and take first 1-2 capitalized words
-            words = after_advisor.split()
-            name_parts = []
-            for word in words[:3]:
-                # Skip titles and non-names
-                clean_word = re.sub(r'[^a-zA-Z]', '', word)
-                if clean_word and clean_word.lower() not in not_advisor_words:
-                    if clean_word[0].isupper() and len(clean_word) > 2:
-                        name_parts.append(clean_word)
-                        if len(name_parts) >= 2:
-                            break
-            if name_parts:
-                data['advisor'] = ' '.join(name_parts)
-                print(f"✅ Found Advisor (parsed): {data['advisor']}")
-
-    # ============ CATALOG YEAR ============
-    catalog_match = re.search(r'(?:catalog|requirement|year)[:\s]*(\d{4}[-–]\d{4}|\d{4})', text_lower_clean)
+    # Catalog year: "Catalog year:  SPRING 2024"
+    catalog_match = re.search(r'Catalog\s+year:\s*(\w+\s+\d{4})', text)
     if catalog_match:
         data['catalog_year'] = catalog_match.group(1)
-        print(f"✅ Found Catalog Year: {data['catalog_year']}")
 
-    # ============ IN-PROGRESS COURSES (Parse FIRST) ============
-    # Parse IP courses BEFORE completed courses so they don't get incorrectly categorized
-    # DegreeWorks format: "COSC 458 SOFTWARE ENGINEERING IP (3) SPRING 2026"
-    courses_in_progress = []
-    seen_in_progress = set()
+    # Transfer hours
+    transfer_match = re.search(r'Transfer\s*Hours\s+(\d+\.?\d*)', text)
+    if transfer_match:
+        data['transfer_hours'] = float(transfer_match.group(1))
 
-    print("=" * 40)
-    print("PARSING IN-PROGRESS COURSES...")
+    # =====================================================
+    # STEP 3: Extract ALL courses from cleaned collapsed text
+    # Pattern: DEPT CODE  COURSE NAME  GRADE  CREDITS  TERM
+    # Handles multi-line names because text is collapsed
+    # =====================================================
 
-    # Pattern 1: DegreeWorks format - Course with IP grade and credits in parentheses
-    # Format: COSC 458 SOFTWARE ENGINEERING IP (3) SPRING 2026
-    ip_patterns = [
-        # Full format with course name: COSC 458 SOFTWARE ENGINEERING IP (3)
-        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+([A-Z][A-Za-z\s&\-,\./]+?)\s+IP\s+\((\d)\)',
-        # Short format: COSC 458 IP (3)
-        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+IP\s+\((\d)\)',
-    ]
+    # Course code prefixes we care about (add more as needed)
+    DEPT_PREFIXES = r'(?:COSC|MATH|CLCO|EEGR|INSS|PHYS|BIOL|CHEM|ENGL|HIST|PSYC|PHIL|HLTH|WGST|FIN|ORTR|THEA|PHEC)'
 
-    for pattern in ip_patterns:
-        for match in re.finditer(pattern, text_clean):
-            groups = match.groups()
-            dept = groups[0]
-            num = groups[1]
-            code = f"{dept} {num}"
+    # Letter grades, transfer grades, pass/fail, and in-progress
+    VALID_GRADES = r'(?:A\+?|A-|B\+?|B-|C\+?|C-|D\+?|D-|F|TRA|TRB|TRC|TRD|PT|IP|W)'
 
-            if code in seen_in_progress:
-                continue
-            seen_in_progress.add(code)
+    # Main course extraction pattern on collapsed text
+    # Course name: up to ~60 chars of letters/digits/spaces/punctuation, but NOT containing
+    # another course code or grade-like pattern (prevents runaway matching)
+    course_pattern = re.compile(
+        r'(' + DEPT_PREFIXES + r'\s+\d{3}(?:TR)?)\s+'  # course code (e.g., COSC 470, PHYS 116TR)
+        r'([A-Z][A-Za-z0-9 &/\',\.\-\(\)]{2,55}?)\s+'  # course name (2-55 chars, starts with uppercase)
+        r'\b(' + VALID_GRADES + r')\b\s+'                 # grade with word boundary
+        r'(\d+\.?\d*)\s+'                                  # credits
+        r'((?:FALL|SPRING|SUMMER)\s+\d{4})',              # term
+        re.IGNORECASE
+    )
 
-            course = {'code': code, 'status': 'in_progress'}
-            if len(groups) >= 4:
-                course['name'] = groups[2].strip()[:50]
-                course['credits'] = int(groups[3])
-            elif len(groups) >= 3:
-                try:
-                    course['credits'] = int(groups[2])
-                except:
-                    pass
+    # In-progress pattern: "COSC 458 SOFTWARE ENGINEERING IP (3) SPRING 2026"
+    # Course name limited to 55 chars max to prevent runaway across multiple entries
+    ip_pattern = re.compile(
+        r'(' + DEPT_PREFIXES + r'\s+\d{3})\s+'
+        r'([A-Z][A-Za-z0-9 &/\',\.\-\(\)]{2,55}?)\s+'
+        r'IP\s+\((\d+)\)\s+'
+        r'((?:FALL|SPRING|SUMMER)\s+\d{4})',
+        re.IGNORECASE
+    )
 
-            courses_in_progress.append(course)
-            print(f"   Found IP course: {code}")
+    completed_courses = []
+    ip_courses = []
+    seen_codes = set()
 
-    # Pattern 2: Look for "Preregistered" section (DegreeWorks specific)
-    preregistered_match = re.search(r'Preregistered[:\s]*Credits[:\s]*\d+', text_clean, re.IGNORECASE)
-    if preregistered_match:
-        start_pos = preregistered_match.end()
-        preregistered_text = text_clean[start_pos:start_pos+2000]
+    # First pass: extract in-progress courses (IP pattern is more specific)
+    for match in ip_pattern.finditer(collapsed):
+        code = match.group(1).upper().strip()
+        name = match.group(2).strip()
+        credits = int(match.group(3))
+        term = match.group(4).strip()
+        if code not in seen_codes:
+            seen_codes.add(code)
+            ip_courses.append({
+                "code": code,
+                "name": name,
+                "credits": credits,
+                "status": "in_progress",
+                "term": term
+            })
 
-        # Find courses in preregistered section
-        ip_courses = re.findall(r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+([A-Z][A-Za-z\s&\-,\./]+?)\s+IP\s+\((\d)\)', preregistered_text)
-        for dept, num, name, credits in ip_courses:
-            code = f"{dept} {num}"
-            if code not in seen_in_progress:
-                seen_in_progress.add(code)
-                courses_in_progress.append({
-                    'code': code,
-                    'name': name.strip()[:50],
-                    'credits': int(credits),
-                    'status': 'in_progress'
-                })
-                print(f"   Found IP course (preregistered): {code}")
+    # Second pass: extract completed courses
+    for match in course_pattern.finditer(collapsed):
+        code = match.group(1).upper().strip()
+        name = match.group(2).strip()
+        grade = match.group(3).upper().strip()
+        credits = float(match.group(4))
+        term = match.group(5).strip()
 
-    if courses_in_progress:
-        data['courses_in_progress'] = json.dumps(courses_in_progress[:20])
-        print(f"Found {len(courses_in_progress)} in-progress courses")
-    else:
-        print("No in-progress courses found")
+        if code in seen_codes:
+            continue
+        seen_codes.add(code)
 
-    # ============ COMPLETED COURSES ============
-    print("=" * 40)
-    print("PARSING COMPLETED COURSES...")
-    courses_completed = []
-    seen_courses = set()
+        if grade == 'IP':
+            ip_courses.append({
+                "code": code,
+                "name": name,
+                "credits": int(credits),
+                "status": "in_progress",
+                "term": term
+            })
+        else:
+            completed_courses.append({
+                "code": code,
+                "name": name,
+                "grade": grade,
+                "credits": credits,
+                "term": term
+            })
 
-    # Only match courses with actual letter grades (A, B, C, D, F) or transfer grades (TRA, TRB)
-    # DO NOT use broad patterns that match all course codes
-    course_patterns = [
-        # Format: COSC 111 INTRO TO COMPUTER SCI I A 4 SPRING 2024
-        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+([A-Za-z][A-Za-z\s&\-,\.]+?)\s+(A[+-]?|B[+-]?|C[+-]?|D[+-]?|F|TRA|TRB|TR[A-Z]?|PT)\s+(\d(?:\.\d{1,2})?)',
-        # Format: COSC 111 A 4
-        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+(A[+-]?|B[+-]?|C[+-]?|D[+-]?|F|TRA|TRB|TR[A-Z]?|PT)\s+(\d(?:\.\d{1,2})?)',
-    ]
+    if completed_courses:
+        data['courses_completed'] = json.dumps(completed_courses)
+    if ip_courses:
+        data['courses_in_progress'] = json.dumps(ip_courses)
 
-    for pattern in course_patterns:
-        for match in re.finditer(pattern, text_clean):
-            groups = match.groups()
-            dept = groups[0]
-            num = groups[1]
-            code = f"{dept} {num}"
-
-            # Skip if already seen as completed OR if it's an in-progress course
-            if code in seen_courses or code in seen_in_progress:
-                continue
-            seen_courses.add(code)
-
-            course = {'code': code}
-            if len(groups) >= 5:
-                course['name'] = groups[2].strip()[:50]
-                course['grade'] = groups[3]
-                course['credits'] = float(groups[4])
-            elif len(groups) >= 4:
-                course['grade'] = groups[2]
-                course['credits'] = float(groups[3])
-
-            courses_completed.append(course)
-
-    if courses_completed:
-        data['courses_completed'] = json.dumps(courses_completed[:50])
-        print(f"Found {len(courses_completed)} completed courses")
-
-    # Store raw text for debugging
-    data['raw_data'] = text[:30000]
+    # Derive classification from credits if not found in header
+    if not data.get("classification") and data.get("total_credits_earned"):
+        credits = data["total_credits_earned"]
+        if credits >= 90:
+            data["classification"] = "Senior"
+        elif credits >= 60:
+            data["classification"] = "Junior"
+        elif credits >= 30:
+            data["classification"] = "Sophomore"
+        else:
+            data["classification"] = "Freshman"
 
     print("=" * 60)
     print("EXTRACTION SUMMARY:")
+    print(f"   Name: {data.get('student_name', 'NOT FOUND')}")
     print(f"   GPA: {data.get('overall_gpa', 'NOT FOUND')}")
+    print(f"   Major GPA: {data.get('major_gpa', 'NOT FOUND')}")
     print(f"   Credits: {data.get('total_credits_earned', 'NOT FOUND')}")
     print(f"   Classification: {data.get('classification', 'NOT FOUND')}")
     print(f"   Program: {data.get('degree_program', 'NOT FOUND')}")
-    print(f"   Completed Courses: {len(courses_completed)}")
-    print(f"   In-Progress Courses: {len(courses_in_progress)}")
+    print(f"   Advisor: {data.get('advisor', 'NOT FOUND')}")
+    print(f"   Courses Completed: {len(completed_courses)}")
+    print(f"   Courses In Progress: {len(ip_courses)}")
+    if completed_courses:
+        print(f"   Completed codes: {[c['code'] for c in completed_courses]}")
+    if ip_courses:
+        print(f"   In-progress codes: {[c['code'] for c in ip_courses]}")
     print("=" * 60)
 
     return data
@@ -1934,7 +1780,8 @@ async def create_ticket(
         }
     except Exception as e:
         print(f"❌ Ticket creation error: {e}")
-        raise HTTPException(500, f"Failed to create ticket: {str(e)}")
+        print(f"❌ Ticket creation error: {e}")
+        raise HTTPException(500, "Failed to create ticket")
 
 
 @app.get("/api/tickets/my")
@@ -2126,7 +1973,8 @@ async def submit_feedback(
 
     except Exception as e:
         print(f"❌ Feedback error: {e}")
-        raise HTTPException(500, f"Failed to save feedback: {str(e)}")
+        print(f"❌ Feedback save error: {e}")
+        raise HTTPException(500, "Failed to save feedback")
 
 
 @app.get("/api/feedback/stats")
@@ -2206,73 +2054,90 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     has_student_data = False
     has_raw_pdf_data = False
     dw_data = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
+
+    # Detect if the question is about the student's personal academic data
+    personal_keywords = r'\b(my|gpa|grade|credit|classification|advisor|degree.?work|transcript|course.?i|what.?i.?take|what.?i.?need|remaining|still need|how many credit|am i|senior|junior|sophomore|freshman|in.?progress|completed course|what.?have.?i)\b'
+    is_personal_question = bool(re.search(personal_keywords, user_q.lower()))
+
     if dw_data:
         has_student_data = True
         student_context = "\n" + "="*60 + "\n"
-        student_context += "🎓 THIS STUDENT'S DEGREEWORKS ACADEMIC RECORD:\n"
+        student_context += "THIS STUDENT'S DEGREEWORKS ACADEMIC RECORD:\n"
         student_context += "="*60 + "\n\n"
 
-        # 🔥 CRITICAL: If we have raw PDF text, inject it directly!
-        # This is the "Chat with PDF" approach - let the LLM read the actual document
-        if dw_data.raw_data and len(dw_data.raw_data) > 100:
+        # Only inject raw PDF text for personal academic questions
+        # For general department questions (faculty, courses, research), skip the raw dump
+        # to avoid flooding the context and drowning out RAG results
+        if dw_data.raw_data and len(dw_data.raw_data) > 100 and is_personal_question:
             has_raw_pdf_data = True
-            student_context += "📄 FULL DEGREEWORKS DOCUMENT CONTENT:\n"
+            student_context += "FULL DEGREEWORKS DOCUMENT CONTENT:\n"
             student_context += "-"*40 + "\n"
             # Include up to 15000 chars of raw PDF text for context
             student_context += dw_data.raw_data[:15000] + "\n"
             student_context += "-"*40 + "\n\n"
 
-        # Also include any parsed fields we found (as a summary)
-        student_context += "📊 PARSED SUMMARY (if available):\n"
-        if dw_data.student_name:
-            student_context += f"• Student Name: {dw_data.student_name}\n"
-        if dw_data.student_id:
-            student_context += f"• Student ID: {dw_data.student_id}\n"
-        if dw_data.classification:
-            student_context += f"• Classification: {dw_data.classification}\n"
-        if dw_data.degree_program:
-            student_context += f"• Degree Program: {dw_data.degree_program}\n"
-        if dw_data.overall_gpa:
-            student_context += f"• Overall GPA: {dw_data.overall_gpa}\n"
-        if dw_data.major_gpa:
-            student_context += f"• Major GPA: {dw_data.major_gpa}\n"
-        if dw_data.total_credits_earned:
-            student_context += f"• Credits Earned: {dw_data.total_credits_earned}\n"
-        if dw_data.credits_required:
-            student_context += f"• Credits Required: {dw_data.credits_required}\n"
-        if dw_data.credits_remaining:
-            student_context += f"• Credits Remaining: {dw_data.credits_remaining}\n"
-        if dw_data.advisor:
-            student_context += f"• Academic Advisor: {dw_data.advisor}\n"
-        if dw_data.catalog_year:
-            student_context += f"• Catalog Year: {dw_data.catalog_year}\n"
-        if dw_data.courses_completed:
-            try:
-                completed = json.loads(dw_data.courses_completed)
-                if completed:
-                    student_context += f"• Courses Completed ({len(completed)} total):\n"
-                    for c in completed[:20]:
-                        grade = c.get('grade', '')
-                        name = c.get('name', '')
-                        student_context += f"  - {c.get('code', '')} {name} (Grade: {grade})\n"
-            except: pass
-        if dw_data.courses_in_progress:
-            try:
-                in_progress = json.loads(dw_data.courses_in_progress)
-                if in_progress:
-                    student_context += f"• Currently Enrolled In:\n"
-                    for c in in_progress:
-                        student_context += f"  - {c.get('code', '')} {c.get('name', '')}\n"
-            except: pass
-        if dw_data.courses_remaining:
-            try:
-                remaining = json.loads(dw_data.courses_remaining)
-                if remaining:
-                    student_context += f"• Still Needs to Complete:\n"
-                    for c in remaining[:10]:
-                        req = c.get('requirement', c.get('code', ''))
-                        student_context += f"  - {req}\n"
-            except: pass
+        # Include parsed summary - full details for personal questions, brief for general
+        if is_personal_question:
+            student_context += "PARSED SUMMARY:\n"
+            if dw_data.student_name:
+                student_context += f"- Student Name: {dw_data.student_name}\n"
+            if dw_data.student_id:
+                student_context += f"- Student ID: {dw_data.student_id}\n"
+            if dw_data.classification:
+                student_context += f"- Classification: {dw_data.classification}\n"
+            if dw_data.degree_program:
+                student_context += f"- Degree Program: {dw_data.degree_program}\n"
+            if dw_data.overall_gpa:
+                student_context += f"- Overall GPA: {dw_data.overall_gpa}\n"
+            if dw_data.major_gpa:
+                student_context += f"- Major GPA: {dw_data.major_gpa}\n"
+            if dw_data.total_credits_earned:
+                student_context += f"- Credits Earned: {dw_data.total_credits_earned}\n"
+            if dw_data.credits_required:
+                student_context += f"- Credits Required: {dw_data.credits_required}\n"
+            if dw_data.credits_remaining:
+                student_context += f"- Credits Remaining: {dw_data.credits_remaining}\n"
+            if dw_data.advisor:
+                student_context += f"- Academic Advisor: {dw_data.advisor}\n"
+            if dw_data.catalog_year:
+                student_context += f"- Catalog Year: {dw_data.catalog_year}\n"
+            if dw_data.courses_completed:
+                try:
+                    completed = json.loads(dw_data.courses_completed)
+                    if completed:
+                        student_context += f"- Courses Completed ({len(completed)} total):\n"
+                        for c in completed[:30]:
+                            grade = c.get('grade', '')
+                            name = c.get('name', '')
+                            student_context += f"  - {c.get('code', '')} {name} (Grade: {grade})\n"
+                except: pass
+            if dw_data.courses_in_progress:
+                try:
+                    in_progress = json.loads(dw_data.courses_in_progress)
+                    if in_progress:
+                        student_context += f"- Currently Enrolled In:\n"
+                        for c in in_progress:
+                            student_context += f"  - {c.get('code', '')} {c.get('name', '')}\n"
+                except: pass
+            if dw_data.courses_remaining:
+                try:
+                    remaining = json.loads(dw_data.courses_remaining)
+                    if remaining:
+                        student_context += f"- Still Needs to Complete:\n"
+                        for c in remaining[:10]:
+                            req = c.get('requirement', c.get('code', ''))
+                            student_context += f"  - {req}\n"
+                except: pass
+        else:
+            # Non-personal question: just include brief student info (name, classification)
+            # Don't flood context with courses/DegreeWorks text for general department questions
+            student_context += "STUDENT PROFILE (brief):\n"
+            if dw_data.student_name:
+                student_context += f"- Name: {dw_data.student_name}\n"
+            if dw_data.classification:
+                student_context += f"- Classification: {dw_data.classification}\n"
+            if dw_data.degree_program:
+                student_context += f"- Program: {dw_data.degree_program}\n"
         student_context += "="*60 + "\n\n"
 
     # 🔥 Fetch recent conversation history for context (last 6 exchanges)
@@ -2331,76 +2196,60 @@ If you have the student's profile data above, use it to give personalized recomm
 
     elif llm and retriever:
         # 2. No file -> Use RAG with conversation context
-        # Small talk override
-        norm = re.sub(r'[\s\W]+', '', user_q.lower())
-        if re.match(r'^(hi|hello|hey)\b', user_q.lower()):
-            answer = "Hello! How can I help you today?"
-        elif re.match(r'^(bye|goodbye|see you)\b', user_q.lower()):
-            answer = "Goodbye! Have a great day."
-        elif re.search(r'\b(thankyou|thanks|thanx|thx|ty)\b', norm):
-            answer = "You're welcome! Let me know if you have any other questions."
+        # Detect small talk / conversational messages and let LLM handle directly (no RAG needed)
+        small_talk_patterns = [
+            r'^(hi|hello|hey|howdy|sup|yo|greetings)\b',
+            r'^(bye|goodbye|see you|take care|later)\b',
+            r'\b(thank\s*you|thanks|thanx|thx|ty|appreciate\s*it)\b',
+            r'^(how are you|how\'s it going|what\'s up|whats up)\b',
+            r'^(good morning|good afternoon|good evening|good night)\b',
+            r'^(ok|okay|got it|understood|cool|nice|great|awesome|perfect|alright)\s*[.!]?\s*$',
+            r'^(yes|no|yeah|yep|nope|nah)\s*[.!]?\s*$',
+            r'^(lol|haha|lmao|hehe)\s*[.!]?\s*$',
+        ]
+        q_lower = user_q.lower().strip()
+        is_small_talk = any(re.search(p, q_lower) for p in small_talk_patterns)
+
+        if is_small_talk:
+            try:
+                small_talk_resp = llm([
+                    SystemMessage(content=(
+                        "You are CS Navigator, a friendly academic assistant for Morgan State University's "
+                        "Computer Science department. The user sent a conversational message (greeting, thanks, "
+                        "farewell, etc.). Respond naturally and briefly. If appropriate, offer to help with "
+                        "academic questions. Keep it to 1-2 sentences max."
+                    )),
+                    HumanMessage(content=user_q)
+                ])
+                answer = small_talk_resp.content.strip()
+            except Exception:
+                answer = "You're welcome! Let me know if you have any other questions."
         else:
             try:
-                # 🔥 NEW: Detect if this is a follow-up question
-                # IMPORTANT: Include pronouns (him/her/his/their) for person references
-                follow_up_indicators = ['it', 'they', 'them', 'this', 'that', 'more', 'else', 'also',
-                                        'another', 'what about', 'how about', 'tell me more', 'explain',
-                                        'who is', 'what is', 'details', 'specifically',
-                                        'him', 'her', 'his', 'hers', 'their', 'theirs', 'he', 'she']
-                is_follow_up = any(indicator in user_q.lower().split() for indicator in follow_up_indicators) and len(recent_history) > 0
-
-                # 🔥 SMART PRONOUN RESOLUTION: Extract person name from last response
-                referenced_person = None
-                enhanced_query = user_q
-
-                if is_follow_up and recent_history:
-                    last_exchange = recent_history[-1]
-                    prev_query = last_exchange.user_query
-                    prev_response = last_exchange.bot_response
-
-                    # Extract person names from the bot's last response using multiple patterns
-                    name_patterns = [
-                        # "advisor is First Last" - MOST IMPORTANT for advisor questions
-                        r'(?:advisor|Advisor)\s+is\s+([A-Z][a-z]+\s+[A-Z][a-z]+)',
-                        # "Dr. First Last" or "Dr. First Middle Last"
-                        r'(?:Dr\.|Professor|Prof\.)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})',
-                        # Full names with quotes like Shuangbao "Paul" Wang
-                        r'([A-Z][a-z]+\s+["\'][A-Z][a-z]+["\']\s+[A-Z][a-z]+)',
-                        # "First Last is the" or "First Last, the" patterns
-                        r'([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+is\s+the|\s*,\s*the|\s+can\s+be)',
-                        # Chair/Department head patterns
-                        r'(?:Chair|chair|Department\s+Chair|department\s+head)(?:[^.]*?)(?:is\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})',
-                        # General "is First Last" pattern (catches "advisor is X", "chair is X", etc.)
-                        r'\bis\s+([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\.|\,|\s+If|\s+You)',
-                    ]
-
-                    for pattern in name_patterns:
-                        match = re.search(pattern, prev_response)
-                        if match:
-                            referenced_person = match.group(1).strip()
-                            break
-
-                    # If we found a person, replace pronouns in the query for better RAG retrieval
-                    if referenced_person:
-                        print(f"🔍 Pronoun Resolution: Detected reference to '{referenced_person}'")
-                        # Create a query that explicitly mentions the person for RAG
-                        pronoun_query = user_q.lower()
-                        if any(p in pronoun_query for p in ['his ', 'her ', 'him ', 'their ', 'he ', 'she ']):
-                            # Replace pronouns with the person's name for RAG query
-                            rag_query = re.sub(r'\b(his|her|him|their|he|she)\b', referenced_person, user_q, flags=re.IGNORECASE)
-                            enhanced_query = f"{referenced_person} {rag_query}"
-                            print(f"🔍 Enhanced RAG query: '{enhanced_query}'")
+                # Always interpret query through LLM when conversation history exists
+                search_query = user_q
+                if conversation_context and llm:
+                    try:
+                        rewrite_resp = llm([
+                            SystemMessage(content=(
+                                "You are a query interpreter. Given the conversation history and the user's latest message, "
+                                "rewrite it as a clear, standalone question that captures the user's actual intent. "
+                                "If the question is already standalone and clear, return it unchanged. "
+                                "Return ONLY the rewritten question, nothing else."
+                            )),
+                            HumanMessage(content=f"{conversation_context}Current question: {user_q}")
+                        ])
+                        search_query = rewrite_resp.content.strip().strip('"')
+                        if search_query and len(search_query) > 3:
+                            print(f"🔄 Query interpreted: '{user_q}' -> '{search_query}'")
                         else:
-                            enhanced_query = f"{referenced_person} {user_q}"
-                    else:
-                        print(f"⚠️ Pronoun Resolution: Could not extract person name from previous response")
-                        # Fallback: use previous context
-                        enhanced_query = f"""Previous context: {prev_response[:200]}
-Current question: {user_q}"""
+                            search_query = user_q  # Fallback if LLM returns junk
+                    except Exception:
+                        search_query = user_q  # Fallback on error
 
-                # Get relevant documents from RAG - use person-specific query
-                docs = retriever.get_relevant_documents(enhanced_query if is_follow_up else user_q)
-                context_docs = "\n\n".join([doc.page_content for doc in docs[:8]])  # Increased from 4 to 8 for better coverage
+                # Get relevant documents from RAG
+                docs = retriever.get_relevant_documents(search_query)
+                context_docs = "\n\n".join([doc.page_content for doc in docs[:6]])
 
                 # Log retrieval for debugging
                 print(f"📚 Retrieved {len(docs)} documents for query: '{user_q[:50]}...'")
@@ -2409,74 +2258,37 @@ Current question: {user_q}"""
 
                 # 🔥 Build smart prompt with conversation history + student profile
                 personalization_note = ""
-                if has_student_data:
+                if has_student_data and is_personal_question:
                     if has_raw_pdf_data:
                         personalization_note = """
-⚠️ CRITICAL - THIS STUDENT HAS UPLOADED THEIR DEGREEWORKS DOCUMENT:
-Below you will see the FULL TEXT of this student's DegreeWorks academic audit.
-READ IT CAREFULLY and use it to answer ANY questions about:
-- Their GPA (look for "GPA", "Overall", "Cumulative" in the document)
-- Their courses completed (look for course codes like COSC 111, MATH 201, etc.)
-- Their credits earned (look for "hours", "credits", "earned")
-- Their classification (Freshman/Sophomore/Junior/Senior)
-- Their degree requirements and what they still need
-
-IMPORTANT: The answer to their question IS IN THE DOCUMENT. Search through it!
+IMPORTANT - THIS STUDENT HAS UPLOADED THEIR DEGREEWORKS DOCUMENT:
+Below is the FULL TEXT of this student's DegreeWorks academic audit.
+Use it to answer questions about their GPA, courses, credits, classification, and degree requirements.
 DO NOT say "I don't have access to your data" - the DegreeWorks document is provided below!
 """
                     else:
                         personalization_note = """
-⚠️ CRITICAL - PERSONALIZED RESPONSES REQUIRED:
-This student has synced their DegreeWorks data. Use their personal academic data when answering questions about:
-- Their GPA, courses, classification, advisor, credits, and remaining requirements
-
-DO NOT say "I don't have access to your data" - their profile data is provided below!
+PERSONALIZED RESPONSES: This student has synced their DegreeWorks data. Use their academic data when answering about their GPA, courses, classification, advisor, credits, and remaining requirements.
 """
 
-                system_prompt = f"""You are CS Navigator, an intelligent academic assistant for Morgan State University's Computer Science department.
+                system_prompt = f"""You are CS Navigator, an academic assistant for Morgan State University's Computer Science department.
 {personalization_note}
-Your role:
-- Help students with questions about courses, professors, requirements, and academic resources
-- When the student asks about THEIR personal academic info (GPA, courses, credits, advisor), ALWAYS check the DEGREEWORKS DOCUMENT or STUDENT DATA section below first
-- READ the full document content to find the answer - the info IS there
-- Remember the conversation context and provide coherent follow-up responses
-- Be specific and helpful - provide names, details, and actionable information
+GROUNDING RULES (MANDATORY):
+1. ONLY answer using the KNOWLEDGE BASE CONTEXT and STUDENT DATA provided below.
+2. If the information is NOT in the context, say: "I don't have that specific information. Contact the CS department at compsci@morgan.edu or (443) 885-3962."
+3. NEVER make up names, emails, phone numbers, office locations, or course details.
+4. NEVER generate placeholder text like [INSERT X HERE].
+5. Use the CONVERSATION HISTORY to resolve pronouns (him/her/their/etc.) to the person discussed in previous messages.
+6. If a DegreeWorks document is provided below, use it to answer questions about GPA, courses, credits, and classification.
 
-⚠️ CRITICAL GROUNDING RULES - YOU MUST FOLLOW THESE:
-1. ONLY answer based on the KNOWLEDGE BASE CONTEXT provided below
-2. If the context does NOT contain specific information (like a name, email, or detail):
-   - Say: "I don't have that specific information in my knowledge base. Please contact the CS department at compsci@morgan.edu or (443) 885-3962"
-   - DO NOT generate placeholder text like [INSERT X HERE] or [INSERT PROFESSOR NAME HERE]
-   - DO NOT make up names, emails, phone numbers, or contact information
-3. If you're unsure about an answer, be honest about your limitations
-4. For professor queries: If you can't find the professor in the context, don't guess - admit the limitation
-
-⚠️ CRITICAL - PRONOUN RESOLUTION RULES:
-When the user uses pronouns like "him", "her", "his", "their", "he", "she":
-1. FIRST check the CONVERSATION HISTORY to find who they're referring to
-2. Pronouns refer to the PERSON MENTIONED IN THE PREVIOUS MESSAGES, NOT the student's advisor
-3. Example: If previous message discussed "Dr. Paul Wang", then "his research" means Dr. Paul Wang's research
-4. NEVER assume pronouns refer to the student's advisor unless the advisor was explicitly mentioned
-5. The conversation context section tells you WHO was discussed - use that for pronoun resolution
-
-Important rules:
-1. If a DegreeWorks document is provided, READ it to find GPA, courses, credits, etc.
-2. The answer to personal academic questions is IN the document - search for it
-3. For follow-up questions with pronouns (him/her/his), resolve them to the person in the PREVIOUS conversation, NOT the student's advisor
-4. If you truly can't find something in the document, say so honestly"""
+TONE RULES (MANDATORY):
+- NEVER end responses with filler like "Feel free to ask", "Let me know if you need anything", "Don't hesitate to reach out", "Happy to help", "If you have further questions", or similar.
+- Just answer the question and stop. Be direct and informative.
+- Sound like a knowledgeable student advisor, not a chatbot. Keep it natural.
+- Use short paragraphs. Lead with the answer."""
 
                 # Build the full message with context
                 full_message = ""
-
-                # 🔥 CRITICAL: If we detected a referenced person from pronouns, tell the LLM explicitly
-                if referenced_person and is_follow_up:
-                    full_message += f"""
-⚠️ IMPORTANT PRONOUN CONTEXT:
-The user is asking about: **{referenced_person}**
-Any pronouns (his/her/him/their) in the current question refer to {referenced_person}, NOT the student's advisor.
-{"="*60}
-
-"""
 
                 # Add student profile if available
                 if student_context:
@@ -2487,11 +2299,7 @@ Any pronouns (his/her/him/their) in the current question refer to {referenced_pe
 
                 full_message += f"Relevant knowledge base information:\n{context_docs}\n\n"
                 full_message += f"Current question: {user_q}\n\n"
-
-                if referenced_person and is_follow_up:
-                    full_message += f"REMINDER: This question is about {referenced_person}. Answer about {referenced_person}, not the student's advisor.\n\n"
-
-                full_message += "Please provide a helpful, specific answer. If this is a follow-up question, make sure to connect it to the previous conversation context. If you have student profile data, use it to personalize your response."
+                full_message += "Answer directly using the context above. Resolve any pronouns from conversation history. Do not add sign-off phrases."
 
                 # Use LLM directly with full context
                 response = llm([
@@ -2587,7 +2395,7 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
 
     # Thank you
     elif re.search(r'\b(thank|thanks|thanx|thx|ty|appreciate)\b', lower_q):
-        return {"response": "You're welcome! Feel free to ask more questions. Sign up to unlock personalized features!"}
+        return {"response": "You're welcome! Sign up for a free account to get personalized course recommendations."}
 
     # #8 FIX: Reactions and fillers (lol, haha, test, etc.)
     elif norm in ['lol', 'lmao', 'rofl', 'haha', 'hahaha', 'hehe', 'lolol', 'xd', 'test', 'testing', 'testtest', 'asdf', 'aaa', 'zzz', 'idk', 'idc', 'nvm', 'nevermind', 'bruh', 'bro', 'dude', 'wow', 'omg', 'wtf', 'wth']:
@@ -2595,7 +2403,7 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
 
     # Acknowledgments (ok, sure, cool, etc.)
     elif norm in ['ok', 'okay', 'okk', 'okok', 'k', 'kk', 'sure', 'alright', 'aight', 'cool', 'nice', 'great', 'good', 'gotit', 'understood', 'isee', 'ah', 'oh', 'ohh', 'hmm', 'hm', 'mhm', 'yep', 'yup', 'yes', 'yeah', 'ya', 'no', 'nope', 'nah', 'fine', 'bet', 'word', 'facts', 'true', 'right', 'correct']:
-        return {"response": "Got it! Feel free to ask me anything about Morgan State's CS program - courses, professors, requirements, or career opportunities!"}
+        return {"response": "Got it! Ask me anything about Morgan State's CS program."}
 
     # Very short inputs (1-2 chars) or just punctuation/emojis
     elif len(norm) <= 2 or not any(c.isalpha() for c in user_q):
@@ -2652,6 +2460,8 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
 • Be concise (3-6 sentences for simple questions)
 • Friendly, professional tone
 • Don't repeat the question back
+• NEVER end with filler like "Feel free to ask", "Let me know if you need anything", "Don't hesitate to reach out", "Happy to help", or similar sign-offs. Just answer and stop.
+• Sound like a knowledgeable student advisor, not a chatbot
 
 📋 EXAMPLE FORMAT:
 **Dr. Jane Doe** is the Department Chair.
@@ -2679,7 +2489,7 @@ You are helping a GUEST user. For highly personalized questions (like "what cour
 
 QUESTION: {user_q}
 
-Provide a well-formatted answer using the context. Use **bold** for key terms and bullet points for lists."""
+Answer directly using the context. Use **bold** for key terms and bullet points for lists. Do not add sign-off phrases."""
 
             response = llm([
                 SystemMessage(content=guest_system_prompt),
@@ -2766,7 +2576,8 @@ async def text_to_speech(req: TTSRequest, _user=Depends(get_current_user)):
         )
     except Exception as e:
         print(f"TTS Error: {e}")
-        raise HTTPException(500, f"TTS generation failed: {str(e)}")
+        print(f"❌ TTS generation error: {e}")
+        raise HTTPException(500, "TTS generation failed")
 
 @app.get("/api/popular-questions")
 async def get_popular_questions(db: Session = Depends(get_db)):
@@ -3297,7 +3108,14 @@ async def get_kb_file(filename: str, user: dict = Depends(get_current_user)):
     if not filename.endswith(".json"):
         raise HTTPException(status_code=400, detail="Only JSON files allowed")
 
+    # Prevent path traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
     filepath = os.path.join(DATA_SOURCES_DIR, filename)
+    resolved = os.path.realpath(filepath)
+    if not resolved.startswith(os.path.realpath(DATA_SOURCES_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid file path")
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -3317,7 +3135,14 @@ async def update_kb_file(filename: str, content: dict, user: dict = Depends(get_
     if not filename.endswith(".json"):
         raise HTTPException(status_code=400, detail="Only JSON files allowed")
 
+    # Prevent path traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
     filepath = os.path.join(DATA_SOURCES_DIR, filename)
+    resolved = os.path.realpath(filepath)
+    if not resolved.startswith(os.path.realpath(DATA_SOURCES_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid file path")
 
     # Create backup
     if os.path.exists(filepath):
