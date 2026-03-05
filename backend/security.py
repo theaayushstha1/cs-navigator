@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, timezone
 from jose import jwt
 from dotenv import load_dotenv
 
-# load the .env just like in main.py
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+# Load .env from project root (one level up from backend/)
+_backend_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_backend_dir)
+load_dotenv(os.path.join(_project_root, ".env"))
 
 # Pull JWT_SECRET from environment
 JWT_SECRET = os.getenv("JWT_SECRET")

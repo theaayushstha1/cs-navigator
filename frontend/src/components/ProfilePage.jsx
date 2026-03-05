@@ -372,10 +372,10 @@ export default function ProfilePage({ userEmail, onLogout }) {
       return;
     }
 
-    const allowedExts = ['.pdf', '.docx', '.png', '.jpg', '.jpeg', '.gif'];
+    const allowedExts = ['.pdf', '.docx'];
     const fileName = file.name.toLowerCase();
     if (!allowedExts.some(ext => fileName.endsWith(ext))) {
-      setMessage({ type: "error", text: "Please upload a PDF, DOCX, or image file (PNG, JPG, GIF)" });
+      setMessage({ type: "error", text: "Please upload a PDF or DOCX file." });
       return;
     }
 

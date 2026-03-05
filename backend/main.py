@@ -39,6 +39,21 @@ PROJECT_ROOT = os.path.dirname(BACKEND_DIR)
 # Path to .env file in the root
 ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 
+# Load course catalog for context injection
+COURSE_CATALOG_TEXT = ""
+_catalog_path = os.path.join(BACKEND_DIR, "data_sources", "classes.json")
+if os.path.exists(_catalog_path):
+    try:
+        with open(_catalog_path) as _f:
+            _catalog = json.load(_f)
+        _lines = []
+        for c in _catalog.get("courses", []):
+            prereqs = ", ".join(c.get("prerequisites", [])) or "None"
+            _lines.append(f"  {c['course_code']} - {c['course_name']} ({c.get('credits',3)} cr, {c.get('category','')}) Prereqs: {prereqs}")
+        COURSE_CATALOG_TEXT = "AVAILABLE CS COURSES AT MORGAN STATE (from official catalog):\n" + "\n".join(_lines) + "\n"
+    except Exception as _e:
+        print(f"⚠️ Failed to load course catalog: {_e}")
+
 print(f"🔍 Looking for .env at: {ENV_PATH}")
 
 if os.path.exists(ENV_PATH):
@@ -58,8 +73,6 @@ from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, text
 # Vertex AI Agent Engine (replaces Pinecone + OpenAI RAG pipeline)
 from vertex_agent import query_agent, check_agent_health, reset_session
 
-# Text extraction service (PDF, DOCX, images via OCR)
-from text_extractor import extract_text as extract_text_api, is_healthy as is_extract_healthy
 
 # Legacy imports kept for /ingest endpoint and file analysis fallback
 try:
@@ -263,8 +276,8 @@ def init_db():
     # 7. Create/Update admin account
     try:
         db = SessionLocal()
-        admin_email = "admin@test.com"
-        admin_password = "admin"
+        admin_email = os.getenv("ADMIN_EMAIL", "admin@test.com")
+        admin_password = os.getenv("ADMIN_PASSWORD", "changeme")
 
         existing_admin = db.query(User).filter(User.email == admin_email).first()
 
@@ -402,17 +415,18 @@ def get_current_user(
         user_email = payload.get("email")
         if not user_email:
             raise HTTPException(status_code=403, detail="Invalid token")
-        
+
         user = db.query(User).filter(User.email == user_email).first()
         if not user:
             raise HTTPException(status_code=403, detail="User not found")
-        
+
         return {
             "user_id": user.id,
             "email": user.email,
             "role": user.role
         }
-    except JWTError:
+    except JWTError as e:
+        print(f"JWT decode error: {e}")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
 
 def allowed_file(filename: str) -> bool:
@@ -941,11 +955,10 @@ async def upload_degreeworks_pdf(
     db: Session = Depends(get_db)
 ):
     """
-    Uploads DegreeWorks document (PDF, DOCX, or image) and stores the extracted
-    text for chat context injection. Uses text-extract-api for high-quality
-    extraction with OCR support. Falls back to local pypdf for PDFs.
+    Uploads DegreeWorks document (PDF or DOCX) and stores the extracted
+    text for chat context injection.
     """
-    ALLOWED_DW_EXTENSIONS = {'pdf', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'gif'}
+    ALLOWED_DW_EXTENSIONS = {'pdf', 'docx', 'doc'}
 
     print("=" * 60)
     print("DEGREEWORKS UPLOAD ENDPOINT HIT!")
@@ -999,22 +1012,13 @@ async def upload_degreeworks_pdf(
             except Exception as e:
                 print(f"docx extraction failed: {e}")
 
-        # Method 3: text-extract-api with OCR (for images, or if local extraction got < 50 chars)
-        if len(pdf_text.strip()) < 50:
-            try:
-                print("Local extraction insufficient, trying text-extract-api (OCR)...")
-                pdf_text = extract_text_api(temp_filepath, timeout=120)
-                print(f"text-extract-api extracted {len(pdf_text)} chars")
-            except RuntimeError as e:
-                print(f"text-extract-api unavailable: {e}")
-
         print(f"Total extracted text: {len(pdf_text)} characters")
 
         if len(pdf_text.strip()) < 20:
             raise HTTPException(
                 400,
                 f"Could not extract text from this file ({len(pdf_text)} chars). "
-                "The file may be image-based. Make sure the text-extract-api Docker service is running for OCR support."
+                "Please upload a text-based PDF or DOCX file."
             )
 
         # Try to parse specific fields (best effort)
@@ -1410,805 +1414,236 @@ def parse_degreeworks_html(html: str) -> dict:
 
 def parse_degreeworks_pdf(text: str) -> dict:
     """
-    Parses DegreeWorks PDF text and extracts academic data.
-    Super enhanced to handle Morgan State DegreeWorks PDF formats.
+    Parses DegreeWorks PDF text using pure text processing.
+    No LLM needed - cleans the text first, then extracts structured data with regex.
+    Fast, deterministic, and free (no API call).
     """
     data = {}
-    # Clean up text - remove extra whitespace but preserve structure
-    text_clean = re.sub(r'[ \t]+', ' ', text)
-    text_lower_clean = text_clean.lower()
 
-    # Debug: print first 1000 chars to see format
+    # Store raw text for the "chat with PDF" feature
+    data['raw_data'] = text[:30000]
+
+    # =====================================================
+    # STEP 1: Clean the raw PDF text
+    # Remove noise, collapse multi-line entries, keep only useful lines
+    # =====================================================
+    lines = text.split('\n')
+    clean_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Skip noise lines
+        if stripped.startswith('Satisfied by:'):
+            continue
+        if stripped.startswith('Exception by:'):
+            continue
+        if stripped.startswith('Morgan State University') and '- *****' in stripped:
+            continue
+        if stripped.startswith('Disclaimer'):
+            break
+        if stripped.startswith('Legend'):
+            break
+        if stripped.startswith('Ellucian Degree'):
+            break
+        clean_lines.append(stripped)
+
+    clean_text = '\n'.join(clean_lines)
+    # Also make a single-line version for multi-line course matching
+    collapsed = ' '.join(clean_lines)
+
     print("=" * 60)
-    print("📄 PDF TEXT PREVIEW (first 1000 chars):")
-    print("=" * 60)
-    print(text[:1000])
+    print(f"PDF: {len(text)} chars raw -> {len(clean_text)} chars cleaned")
     print("=" * 60)
 
-    # ============ MORGAN STATE DEGREEWORKS HEADER PARSER ============
-    # Parse the structured header lines first - these are the most reliable source.
-    # Line 1: "Level ... Classification N-Word ... Major ... Program ... Transfer Hours N ... Advisor Name"
-    # Line 2: "Credits required: NNN Credits applied: NNN Catalog year: XXXX GPA: N.NNN"
-    # Line 3: "Student name Last, First"
+    # =====================================================
+    # STEP 2: Extract header fields (GPA, name, classification, etc.)
+    # =====================================================
 
-    # Header line: Classification (e.g., "Classification 4-Senior")
-    header_class = re.search(r'classification\s+\d-(senior|junior|sophomore|freshman|graduate)', text_lower_clean)
-    if header_class:
-        data['classification'] = header_class.group(1).title()
-        print(f"Found classification (header): {data['classification']}")
-
-    # Header line: Major / Program (e.g., "Major Computer Science   Program")
-    header_major = re.search(r'major\s+([\w\s]+?)\s{2,}', text_clean, re.IGNORECASE)
-    if header_major:
-        major = header_major.group(1).strip().title()
-        if len(major) > 3:
-            data['degree_program'] = major
-            print(f"Found program (header): {data['degree_program']}")
-
-    # Header line: Transfer Hours (e.g., "Transfer Hours 56")
-    header_transfer = re.search(r'transfer\s*hours\s+(\d+)', text_lower_clean)
-    if header_transfer:
-        data['transfer_hours'] = float(header_transfer.group(1))
-        print(f"Found transfer hours (header): {data['transfer_hours']}")
-
-    # Header line: Advisor (e.g., "Advisor Amjad Ali")
-    header_advisor = re.search(r'advisor\s+([\w]+\s+[\w]+)', text_clean, re.IGNORECASE)
-    if header_advisor:
-        advisor = header_advisor.group(1).strip()
-        if advisor.lower() not in ['information', 'prerequisite', 'required', 'course']:
-            data['advisor'] = advisor
-            print(f"Found advisor (header): {data['advisor']}")
-
-    # Degree summary: "Credits applied: NNN" (e.g., "Credits applied:  139")
-    applied_match = re.search(r'credits\s*applied[:\s]+(\d{2,3})', text_lower_clean)
-    if applied_match:
-        credits_val = float(applied_match.group(1))
-        if 10 <= credits_val <= 300:
-            data['total_credits_earned'] = credits_val
-            print(f"Found credits applied (header): {data['total_credits_earned']}")
-
-    # Degree summary: Inline "GPA: N.NNN" (from the degree summary line, NOT progress bar)
-    # The progress bar shows "Overall GPA\n0.000" on separate lines.
-    # The degree summary has "GPA: 3.943" inline after "Catalog year" or "Credits applied".
-    summary_gpa = re.search(r'(?:catalog\s*year|credits\s*applied).*?gpa[:\s]+(\d\.\d{1,3})', text_lower_clean)
-    if summary_gpa:
-        gpa = float(summary_gpa.group(1))
-        if 0.0 < gpa <= 4.0:
-            data['overall_gpa'] = gpa
-            print(f"Found GPA (header): {data['overall_gpa']}")
-
-    # Student name: "Student name Last, First" -> "First Last"
-    name_match = re.search(r'student\s+name\s+([\w\'\-]+),\s*([\w\'\-]+)', text_clean, re.IGNORECASE)
+    # Student name: "Student name Last, First"
+    name_match = re.search(r'Student\s+name\s+(\w[\w\'-]+),\s+(\w[\w\'-]+)', text)
     if name_match:
         data['student_name'] = f"{name_match.group(2)} {name_match.group(1)}"
-        print(f"Found name (header): {data['student_name']}")
 
-    # Catalog year from summary line (e.g., "Catalog year:  FALL 2023")
-    cat_match = re.search(r'catalog\s*year[:\s]+((?:fall|spring|summer)\s+\d{4})', text_lower_clean)
-    if cat_match:
-        data['catalog_year'] = cat_match.group(1).upper()
-        print(f"Found catalog year (header): {data['catalog_year']}")
+    # Overall GPA: "Overall GPA\n3.953" or "GPA: 3.953"
+    gpa_match = re.search(r'Overall\s+GPA\s*[:\n]?\s*(\d\.\d{1,3})', text)
+    if gpa_match:
+        gpa = float(gpa_match.group(1))
+        if 0.0 <= gpa <= 4.0:
+            data['overall_gpa'] = gpa
 
-    # ============ GPA EXTRACTION (Most Important) ============
-    # Try many different patterns to find GPA (skip if header parser already found it)
-    gpa_found = bool(data.get('overall_gpa'))
+    # Major GPA: "Your GPA in these classes is 4.000"
+    major_gpa_match = re.search(r'Your\s+GPA\s+in\s+these\s+classes\s+is\s+(\d\.\d{1,3})', text)
+    if major_gpa_match:
+        mgpa = float(major_gpa_match.group(1))
+        if 0.0 <= mgpa <= 4.0:
+            data['major_gpa'] = mgpa
 
-    # Pattern group 1: Explicit GPA labels (most reliable)
-    gpa_patterns_explicit = [
-        r'overall\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'cumulative\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'gpa[:\s]+(\d\.\d{1,2})',
-        r'overall[:\s]+(\d\.\d{1,2})',
-        r'cumulative[:\s]+(\d\.\d{1,2})',
-        r'grade\s*point\s*average[:\s]*(\d\.\d{1,2})',
-        r'cum\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'inst\s*gpa[:\s]*(\d\.\d{1,2})',  # Institutional GPA
-        r'ovr\s*gpa[:\s]*(\d\.\d{1,2})',   # Abbreviated
-        r'total\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'current\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'career\s*gpa[:\s]*(\d\.\d{1,2})',  # Banner/DegreeWorks terminology
-        r'gpa\s*:\s*(\d\.\d{1,2})',  # GPA : 3.50
-        r'gpa\s+(\d\.\d{1,2})',  # GPA 3.50 (no colon)
-    ]
+    # Classification: "Classification 4-Senior" or "Classification Senior"
+    class_match = re.search(r'Classification\s+(?:\d-)?(Freshman|Sophomore|Junior|Senior|Graduate)', text, re.IGNORECASE)
+    if class_match:
+        data['classification'] = class_match.group(1).title()
 
-    for pattern in gpa_patterns_explicit:
-        match = re.search(pattern, text_lower_clean)
-        if match:
-            try:
-                gpa = float(match.group(1))
-                if 0.0 <= gpa <= 4.0:
-                    data['overall_gpa'] = gpa
-                    print(f"✅ Found GPA (explicit): {gpa}")
-                    gpa_found = True
-                    break
-            except: pass
+    # Credits applied: "Credits applied:  128.5"
+    credits_match = re.search(r'Credits\s+applied:\s*(\d+\.?\d*)', text)
+    if credits_match:
+        creds = float(credits_match.group(1))
+        if 0 <= creds <= 300:
+            data['total_credits_earned'] = creds
 
-    # Pattern group 2: GPA near keyword (within 30 chars)
-    if not gpa_found:
-        gpa_keywords = ['gpa', 'overall', 'cumulative', 'average', 'grade point']
-        for keyword in gpa_keywords:
-            if keyword in text_lower_clean:
-                # Find position of keyword
-                pos = text_lower_clean.find(keyword)
-                # Look for decimal in nearby text (30 chars before and after)
-                nearby = text_lower_clean[max(0, pos-30):pos+40]
-                decimal_match = re.search(r'(\d\.\d{2})', nearby)
-                if decimal_match:
-                    gpa = float(decimal_match.group(1))
-                    if 0.0 <= gpa <= 4.0:
-                        data['overall_gpa'] = gpa
-                        print(f"✅ Found GPA (near '{keyword}'): {gpa}")
-                        gpa_found = True
-                        break
+    # Credits required: "Credits required: 120"
+    creq_match = re.search(r'Credits\s+required:\s*(\d+\.?\d*)', text)
+    if creq_match:
+        creq = float(creq_match.group(1))
+        if 30 <= creq <= 300:
+            data['credits_required'] = creq
+            if data.get('total_credits_earned'):
+                remaining = max(0, creq - data['total_credits_earned'])
+                data['credits_remaining'] = remaining
 
-    # Pattern group 3: Look for X.XX X.XX pattern (often GPA and credits together)
-    if not gpa_found:
-        double_decimal = re.search(r'(\d\.\d{2})\s+(\d{1,3}\.\d{2})', text)
-        if double_decimal:
-            first = float(double_decimal.group(1))
-            if 0.0 <= first <= 4.0:
-                data['overall_gpa'] = first
-                print(f"✅ Found GPA (double pattern): {first}")
-                gpa_found = True
+    # Degree program: "Degree Bachelor of Science" + "Major Computer Science"
+    degree_match = re.search(r'Degree\s+(Bachelor\s+of\s+\w+|Master\s+of\s+\w+)', text)
+    major_match = re.search(r'Major\s+([A-Za-z ]+?)(?:\s{2,}|Program)', text)
+    if degree_match and major_match:
+        data['degree_program'] = f"{degree_match.group(1)} in {major_match.group(1).strip()}"
+    elif degree_match:
+        data['degree_program'] = degree_match.group(1)
 
-    # Pattern group 4: Find ANY decimal between 1.0 and 4.0 (last resort)
-    if not gpa_found:
-        all_decimals = re.findall(r'(?<!\d)(\d\.\d{2})(?!\d)', text)
-        for dec in all_decimals:
-            val = float(dec)
-            # GPA is typically between 1.0 and 4.0
-            if 1.5 <= val <= 4.0:
-                data['overall_gpa'] = val
-                print(f"✅ Found likely GPA (fallback): {val}")
-                gpa_found = True
-                break
+    # Advisor: "Advisor Vojislav Stojkovic" (stop at double-space or end of line)
+    advisor_match = re.search(r'Advisor\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)', text)
+    if advisor_match:
+        data['advisor'] = advisor_match.group(1).strip()
 
-    # ============ CLASSIFICATION ============
-    # BEST APPROACH: Use credits to determine classification (most reliable)
-    # Credits thresholds: Freshman (0-29), Sophomore (30-59), Junior (60-89), Senior (90+)
+    # Catalog year: "Catalog year:  SPRING 2024"
+    catalog_match = re.search(r'Catalog\s+year:\s*(\w+\s+\d{4})', text)
+    if catalog_match:
+        data['catalog_year'] = catalog_match.group(1)
 
-    # First, try to get credits if we don't have them yet
-    if not data.get('total_credits_earned'):
-        # Quick credits search - allow 2-3 digit numbers (e.g., 45, 124)
-        credits_match = re.search(r'(\d{2,3}(?:\.\d)?)\s*(?:credits|hours)', text_lower_clean)
-        if credits_match:
-            try:
-                cred_val = float(credits_match.group(1))
-                if 20 <= cred_val <= 200:  # Valid credit range
-                    data['total_credits_earned'] = cred_val
-            except:
-                pass
+    # Transfer hours (extracted but not stored in DB - kept in raw_data only)
+    # transfer_match = re.search(r'Transfer\s*Hours\s+(\d+\.?\d*)', text)
 
-    # Now determine classification from credits (skip if header parser already found it)
-    if not data.get('classification') and data.get('total_credits_earned'):
-        credits = data['total_credits_earned']
-        if credits >= 90:
-            data['classification'] = 'Senior'
-        elif credits >= 60:
-            data['classification'] = 'Junior'
-        elif credits >= 30:
-            data['classification'] = 'Sophomore'
+    # =====================================================
+    # STEP 3: Extract ALL courses from cleaned collapsed text
+    # Pattern: DEPT CODE  COURSE NAME  GRADE  CREDITS  TERM
+    # Handles multi-line names because text is collapsed
+    # =====================================================
+
+    # Course code prefixes we care about (add more as needed)
+    DEPT_PREFIXES = r'(?:COSC|MATH|CLCO|EEGR|INSS|PHYS|BIOL|CHEM|ENGL|HIST|PSYC|PHIL|HLTH|WGST|FIN|ORTR|THEA|PHEC)'
+
+    # Letter grades, transfer grades, pass/fail, and in-progress
+    VALID_GRADES = r'(?:A\+?|A-|B\+?|B-|C\+?|C-|D\+?|D-|F|TRA|TRB|TRC|TRD|PT|IP|W)'
+
+    # Main course extraction pattern on collapsed text
+    # Course name: up to ~60 chars of letters/digits/spaces/punctuation, but NOT containing
+    # another course code or grade-like pattern (prevents runaway matching)
+    course_pattern = re.compile(
+        r'(' + DEPT_PREFIXES + r'\s+\d{3}(?:TR)?)\s+'  # course code (e.g., COSC 470, PHYS 116TR)
+        r'([A-Z][A-Za-z0-9 &/\',\.\-\(\)]{2,55}?)\s+'  # course name (2-55 chars, starts with uppercase)
+        r'\b(' + VALID_GRADES + r')\b\s+'                 # grade with word boundary
+        r'(\d+\.?\d*)\s+'                                  # credits
+        r'((?:FALL|SPRING|SUMMER)\s+\d{4})',              # term
+        re.IGNORECASE
+    )
+
+    # In-progress pattern: "COSC 458 SOFTWARE ENGINEERING IP (3) SPRING 2026"
+    # Course name limited to 55 chars max to prevent runaway across multiple entries
+    ip_pattern = re.compile(
+        r'(' + DEPT_PREFIXES + r'\s+\d{3})\s+'
+        r'([A-Z][A-Za-z0-9 &/\',\.\-\(\)]{2,55}?)\s+'
+        r'IP\s+\((\d+)\)\s+'
+        r'((?:FALL|SPRING|SUMMER)\s+\d{4})',
+        re.IGNORECASE
+    )
+
+    completed_courses = []
+    ip_courses = []
+    seen_codes = set()
+
+    # First pass: extract in-progress courses (IP pattern is more specific)
+    for match in ip_pattern.finditer(collapsed):
+        code = match.group(1).upper().strip()
+        name = match.group(2).strip()
+        credits = int(match.group(3))
+        term = match.group(4).strip()
+        if code not in seen_codes:
+            seen_codes.add(code)
+            ip_courses.append({
+                "code": code,
+                "name": name,
+                "credits": credits,
+                "status": "in_progress",
+                "term": term
+            })
+
+    # Second pass: extract completed courses
+    for match in course_pattern.finditer(collapsed):
+        code = match.group(1).upper().strip()
+        name = match.group(2).strip()
+        grade = match.group(3).upper().strip()
+        credits = float(match.group(4))
+        term = match.group(5).strip()
+
+        if code in seen_codes:
+            continue
+        seen_codes.add(code)
+
+        if grade == 'IP':
+            ip_courses.append({
+                "code": code,
+                "name": name,
+                "credits": int(credits),
+                "status": "in_progress",
+                "term": term
+            })
         else:
-            data['classification'] = 'Freshman'
-        print(f"✅ Classification from credits ({credits}): {data['classification']}")
+            completed_courses.append({
+                "code": code,
+                "name": name,
+                "grade": grade,
+                "credits": credits,
+                "term": term
+            })
 
-    # If classification not set yet, try multiple fallback patterns
-    if not data.get('classification'):
-        # Pattern 1: Look for explicit "Classification: Senior" format
-        class_patterns = [
-            r'classification[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'class[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'standing[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'level[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'student\s+level[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'academic\s+level[:\s]*(senior|junior|sophomore|freshman|graduate)',
-        ]
-        for pattern in class_patterns:
-            class_match = re.search(pattern, text_lower_clean)
-            if class_match:
-                data['classification'] = class_match.group(1).title()
-                print(f"✅ Classification from label: {data['classification']}")
-                break
+    if completed_courses:
+        data['courses_completed'] = json.dumps(completed_courses)
+    if ip_courses:
+        data['courses_in_progress'] = json.dumps(ip_courses)
 
-        # Pattern 2: Look for standalone classification words with context clues
-        if not data.get('classification'):
-            # Check if "Senior" appears more than once (likely classification not course)
-            for cls in ['Senior', 'Junior', 'Sophomore', 'Freshman', 'Graduate']:
-                cls_lower = cls.lower()
-                # Count occurrences
-                count = len(re.findall(rf'\b{cls_lower}\b', text_lower_clean))
-                # If it appears multiple times or near key words, it's likely classification
-                if count >= 2:
-                    data['classification'] = cls
-                    print(f"✅ Classification from frequency ({cls} appeared {count} times): {cls}")
-                    break
-                # Check if near classification-related keywords
-                context_match = re.search(rf'(level|status|standing|class|year).*?\b{cls_lower}\b|\b{cls_lower}\b.*?(level|status|standing|class|year)', text_lower_clean)
-                if context_match:
-                    data['classification'] = cls
-                    print(f"✅ Classification from context: {cls}")
-                    break
-
-    # ============ CREDITS ============
-    # Skip if header parser already found credits
-    credits_found = bool(data.get('total_credits_earned'))
-
-    # IMPORTANT: Look for LABELED credits first (e.g., "Credits applied: 124")
-    # Avoid picking up "100%" or "100 %" which is percentage, not credits
-    credits_patterns = [
-        # DegreeWorks specific patterns - applied/earned FIRST, required LAST
-        r'credits\s*applied[:\s]*(\d{2,3}(?:\.\d{1,2})?)',  # "Credits applied: 124.0"
-        r'credits\s*earned[:\s]*(\d{2,3}(?:\.\d{1,2})?)',   # "Credits earned: 124"
-        r'total\s*credits[:\s]*(\d{2,3}(?:\.\d{1,2})?)',     # "Total credits: 124"
-        r'hours\s*earned[:\s]*(\d{2,3}(?:\.\d{1,2})?)',      # "Hours earned: 124"
-        r'transfer\s*hours[:\s]*(\d{2,3}(?:\.\d{1,2})?)',    # "Transfer Hours: 41"
-        # More general patterns
-        r'(\d{2,3}(?:\.\d{1,2})?)\s*credits?\s*(?:applied|earned|completed)',
-        r'(\d{2,3}(?:\.\d{1,2})?)\s*(?:credit\s*)?hours?\s*(?:earned|completed)',
-        # Required is LAST (fallback - prefer applied/earned over required)
-        r'credits\s*required[:\s]*(\d{2,3}(?:\.\d{1,2})?)',  # "Credits required: 120"
-    ]
-
-    for pattern in credits_patterns:
-        match = re.search(pattern, text_lower_clean)
-        if match:
-            try:
-                credits = float(match.group(1))
-                # Must be between 30-200 and NOT be 100 (which is often percentage)
-                if 30 <= credits <= 200 and credits != 100:
-                    data['total_credits_earned'] = credits
-                    print(f"✅ Found Credits (explicit): {credits}")
-                    credits_found = True
-                    break
-            except: pass
-
-    # If we found 100, double-check it's not from "100%" - look for a different number
-    if not credits_found:
-        # Look specifically for numbers > 100 or numbers like 124, 120, etc.
-        credit_match = re.search(r'(?:credits?|hours?)\s*(?:applied|earned|required)[:\s]*(\d{3}(?:\.\d)?)', text_lower_clean)
-        if credit_match:
-            credits = float(credit_match.group(1))
-            if 100 < credits <= 200:
-                data['total_credits_earned'] = credits
-                print(f"✅ Found Credits (3-digit): {credits}")
-                credits_found = True
-
-    # Fallback: Look for "124.0" or "120.0" pattern (common credit amounts)
-    if not credits_found:
-        common_credits = re.findall(r'(\d{3}\.\d)\b', text)
-        for c in common_credits:
-            val = float(c)
-            if 100 < val <= 150:  # Typical total credits range
-                data['total_credits_earned'] = val
-                print(f"✅ Found Credits (common pattern): {val}")
-                credits_found = True
-                break
-
-    # Pattern group 3: Look for standalone numbers that could be credits (last resort)
-    if not credits_found:
-        # Find 2-3 digit numbers
-        all_numbers = re.findall(r'(?<!\d)(\d{2,3})(?:\.\d{1,2})?(?!\d)', text)
-        for num in all_numbers:
-            val = int(num)
-            # Credits typically between 30 and 150 for enrolled students
-            if 30 <= val <= 150:
-                data['total_credits_earned'] = float(val)
-                print(f"✅ Found likely Credits (fallback): {val}")
-                credits_found = True
-                break
-
-    # ============ DEGREE PROGRAM ============
-    if not data.get('degree_program'):
-        degree_patterns = [
-            r'(bachelor\s+of\s+science\s+in\s+[a-z\s]+)',
-            r'(master\s+of\s+science\s+in\s+[a-z\s]+)',
-            r'(b\.?s\.?\s+(?:in\s+)?computer\s+science)',
-            r'(computer\s+science)',
-            r'(information\s+(?:systems?|science))',
-            r'(cybersecurity)',
-            r'(software\s+engineering)',
-            r'(electrical\s+engineering)',
-            r'major[:\s]*([a-z\s]+?)(?:\n|$)',
-            r'program[:\s]*([a-z\s]+?)(?:\n|$)',
-            r'degree[:\s]*([a-z\s]+?)(?:\n|$)',
-        ]
-        for pattern in degree_patterns:
-            match = re.search(pattern, text_lower_clean)
-            if match:
-                program = match.group(1).strip().title()
-                if len(program) > 3 and len(program) < 60:
-                    data['degree_program'] = program
-                    print(f"✅ Found Program: {program}")
-                    break
-
-    # ============ STUDENT NAME ============
-    if not data.get('student_name'):
-        # Look for patterns like "Name: John Smith" or just capitalized names at start
-        name_patterns = [
-            r'(?:student|name)[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
-            r'^([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',  # At start of text
-        ]
-        for pattern in name_patterns:
-            match = re.search(pattern, text_clean, re.MULTILINE)
-            if match:
-                name = match.group(1).strip()
-                if 3 < len(name) < 50:
-                    data['student_name'] = name
-                    print(f"✅ Found Name: {name}")
-                    break
-
-    # ============ STUDENT ID ============
-    id_match = re.search(r'(?:id|student)[:\s#]*(\d{7,9})', text_lower_clean)
-    if id_match:
-        data['student_id'] = id_match.group(1)
-        print(f"✅ Found Student ID: {data['student_id']}")
-    else:
-        # Just look for any 7-9 digit number
-        id_match = re.search(r'(?<!\d)(\d{7,9})(?!\d)', text)
-        if id_match:
-            data['student_id'] = id_match.group(1)
-
-    # ============ ADVISOR ============
-    if not data.get('advisor'):
-        # Look for advisor name in DegreeWorks format
-        # Example formats: "Advisor Md/dr Blakeley", "Advisor: Dr. Smith", "Advisor Walden Blakeley"
-
-        # Words that are NOT advisor names
-        not_advisor_words = [
-            'prerequisite', 'prerequsite', 'required', 'complete', 'incomplete',
-            'pending', 'satisfied', 'unsatisfied', 'needed', 'met', 'unmet',
-            'information', 'course', 'credit', 'hours', 'gpa', 'grade'
-        ]
-
-        # Try multiple patterns
-        advisor_found = False
-
-        # Pattern 1: "Advisor" followed by title and name (e.g., "Advisor Md/dr Blakeley")
-        advisor_match = re.search(r'advisor[:\s]+(?:md/?dr\.?|dr\.?|mr\.?|ms\.?|mrs\.?|prof\.?)?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', text_clean, re.IGNORECASE)
-        if advisor_match:
-            advisor = advisor_match.group(1).strip()
-            if advisor.lower() not in not_advisor_words and len(advisor) > 2:
-                data['advisor'] = advisor
-                advisor_found = True
-                print(f"✅ Found Advisor: {advisor}")
-
-        # Pattern 2: Look for name after "Advisor" with more flexible matching
-        if not advisor_found:
-            # Find the word "Advisor" and grab the next 2-3 words
-            advisor_pos = text_clean.lower().find('advisor')
-            if advisor_pos != -1:
-                # Get text after "Advisor"
-                after_advisor = text_clean[advisor_pos + 7:advisor_pos + 50].strip()
-                # Split into words and take first 1-2 capitalized words
-                words = after_advisor.split()
-                name_parts = []
-                for word in words[:3]:
-                    # Skip titles and non-names
-                    clean_word = re.sub(r'[^a-zA-Z]', '', word)
-                    if clean_word and clean_word.lower() not in not_advisor_words:
-                        if clean_word[0].isupper() and len(clean_word) > 2:
-                            name_parts.append(clean_word)
-                            if len(name_parts) >= 2:
-                                break
-                if name_parts:
-                    data['advisor'] = ' '.join(name_parts)
-                    print(f"✅ Found Advisor (parsed): {data['advisor']}")
-
-    # ============ CATALOG YEAR ============
-    if not data.get('catalog_year'):
-        catalog_match = re.search(r'(?:catalog|requirement|year)[:\s]*(\d{4}[-–]\d{4}|\d{4})', text_lower_clean)
-        if catalog_match:
-            data['catalog_year'] = catalog_match.group(1)
-            print(f"✅ Found Catalog Year: {data['catalog_year']}")
-
-    # ============ IN-PROGRESS COURSES (Parse FIRST) ============
-    # Parse IP courses BEFORE completed courses so they don't get incorrectly categorized
-    # DegreeWorks format: "COSC 458 SOFTWARE ENGINEERING IP (3) SPRING 2026"
-    courses_in_progress = []
-    seen_in_progress = set()
-
-    print("=" * 40)
-    print("PARSING IN-PROGRESS COURSES...")
-
-    # Pattern 1: DegreeWorks format - Course with IP grade and credits in parentheses
-    # Format: COSC 458 SOFTWARE ENGINEERING IP (3) SPRING 2026
-    ip_patterns = [
-        # Full format with course name: COSC 458 SOFTWARE ENGINEERING IP (3)
-        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+([A-Z][A-Za-z\s&\-,\./]+?)\s+IP\s+\((\d)\)',
-        # Short format: COSC 458 IP (3)
-        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+IP\s+\((\d)\)',
-    ]
-
-    for pattern in ip_patterns:
-        for match in re.finditer(pattern, text_clean):
-            groups = match.groups()
-            dept = groups[0]
-            num = groups[1]
-            code = f"{dept} {num}"
-
-            if code in seen_in_progress:
-                continue
-            seen_in_progress.add(code)
-
-            course = {'code': code, 'status': 'in_progress'}
-            if len(groups) >= 4:
-                course['name'] = groups[2].strip()[:50]
-                course['credits'] = int(groups[3])
-            elif len(groups) >= 3:
-                try:
-                    course['credits'] = int(groups[2])
-                except:
-                    pass
-
-            courses_in_progress.append(course)
-            print(f"   Found IP course: {code}")
-
-    # Pattern 2: Look for "Preregistered" section (DegreeWorks specific)
-    preregistered_match = re.search(r'Preregistered[:\s]*Credits[:\s]*\d+', text_clean, re.IGNORECASE)
-    if preregistered_match:
-        start_pos = preregistered_match.end()
-        preregistered_text = text_clean[start_pos:start_pos+2000]
-
-        # Find courses in preregistered section
-        ip_courses = re.findall(r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+([A-Z][A-Za-z\s&\-,\./]+?)\s+IP\s+\((\d)\)', preregistered_text)
-        for dept, num, name, credits in ip_courses:
-            code = f"{dept} {num}"
-            if code not in seen_in_progress:
-                seen_in_progress.add(code)
-                courses_in_progress.append({
-                    'code': code,
-                    'name': name.strip()[:50],
-                    'credits': int(credits),
-                    'status': 'in_progress'
-                })
-                print(f"   Found IP course (preregistered): {code}")
-
-    if courses_in_progress:
-        data['courses_in_progress'] = json.dumps(courses_in_progress[:20])
-        print(f"Found {len(courses_in_progress)} in-progress courses")
-    else:
-        print("No in-progress courses found")
-
-    # ============ COMPLETED COURSES ============
-    print("=" * 40)
-    print("PARSING COMPLETED COURSES...")
-    courses_completed = []
-    seen_courses = set()
-
-    # Only match courses with actual letter grades (A, B, C, D, F) or transfer grades (TRA, TRB)
-    # DO NOT use broad patterns that match all course codes
-    course_patterns = [
-        # Format: COSC 111 INTRO TO COMPUTER SCI I A 4 SPRING 2024
-        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+([A-Za-z][A-Za-z\s&\-,\.]+?)\s+(A[+-]?|B[+-]?|C[+-]?|D[+-]?|F|TRA|TRB|TR[A-Z]?|PT)\s+(\d(?:\.\d{1,2})?)',
-        # Format: COSC 111 A 4
-        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+(A[+-]?|B[+-]?|C[+-]?|D[+-]?|F|TRA|TRB|TR[A-Z]?|PT)\s+(\d(?:\.\d{1,2})?)',
-    ]
-
-    for pattern in course_patterns:
-        for match in re.finditer(pattern, text_clean):
-            groups = match.groups()
-            dept = groups[0]
-            num = groups[1]
-            code = f"{dept} {num}"
-
-            # Skip if already seen as completed OR if it's an in-progress course
-            if code in seen_courses or code in seen_in_progress:
-                continue
-            seen_courses.add(code)
-
-            course = {'code': code}
-            if len(groups) >= 5:
-                course['name'] = groups[2].strip()[:50]
-                course['grade'] = groups[3]
-                course['credits'] = float(groups[4])
-            elif len(groups) >= 4:
-                course['grade'] = groups[2]
-                course['credits'] = float(groups[3])
-
-            courses_completed.append(course)
-
-    if courses_completed:
-        data['courses_completed'] = json.dumps(courses_completed[:50])
-        print(f"Found {len(courses_completed)} completed courses")
-
-    # Store raw text for debugging
-    data['raw_data'] = text[:30000]
+    # Derive classification from credits if not found in header
+    if not data.get("classification") and data.get("total_credits_earned"):
+        credits = data["total_credits_earned"]
+        if credits >= 90:
+            data["classification"] = "Senior"
+        elif credits >= 60:
+            data["classification"] = "Junior"
+        elif credits >= 30:
+            data["classification"] = "Sophomore"
+        else:
+            data["classification"] = "Freshman"
 
     print("=" * 60)
     print("EXTRACTION SUMMARY:")
+    print(f"   Name: {data.get('student_name', 'NOT FOUND')}")
     print(f"   GPA: {data.get('overall_gpa', 'NOT FOUND')}")
+    print(f"   Major GPA: {data.get('major_gpa', 'NOT FOUND')}")
     print(f"   Credits: {data.get('total_credits_earned', 'NOT FOUND')}")
     print(f"   Classification: {data.get('classification', 'NOT FOUND')}")
     print(f"   Program: {data.get('degree_program', 'NOT FOUND')}")
-    print(f"   Completed Courses: {len(courses_completed)}")
-    print(f"   In-Progress Courses: {len(courses_in_progress)}")
+    print(f"   Advisor: {data.get('advisor', 'NOT FOUND')}")
+    print(f"   Courses Completed: {len(completed_courses)}")
+    print(f"   Courses In Progress: {len(ip_courses)}")
+    if completed_courses:
+        print(f"   Completed codes: {[c['code'] for c in completed_courses]}")
+    if ip_courses:
+        print(f"   In-progress codes: {[c['code'] for c in ip_courses]}")
     print("=" * 60)
 
     return data
 
 
-# ==============================================================================
-# SUPPORT TICKETS API
-# ==============================================================================
-
-class TicketCreate(BaseModel):
-    subject: str
-    category: str  # "bug", "feature", "question", "other"
-    description: str
-    attachment_data: Optional[str] = None  # Base64 encoded
-    attachment_name: Optional[str] = None
 
 
-class TicketUpdate(BaseModel):
-    status: Optional[str] = None
-    priority: Optional[str] = None
-    admin_notes: Optional[str] = None
-
-
-@app.post("/api/tickets")
-async def create_ticket(
-    ticket: TicketCreate,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Create a new support ticket"""
-    try:
-        new_ticket = SupportTicket(
-            user_id=user["user_id"],
-            subject=ticket.subject,
-            category=ticket.category,
-            description=ticket.description,
-            attachment_data=ticket.attachment_data,
-            attachment_name=ticket.attachment_name,
-            status="open",
-            priority="normal"
-        )
-        db.add(new_ticket)
-        db.commit()
-        db.refresh(new_ticket)
-
-        print(f"📩 New support ticket #{new_ticket.id} from user {user['email']}: {ticket.subject}")
-
-        return {
-            "success": True,
-            "message": "Ticket submitted successfully! We'll review it soon.",
-            "ticket_id": new_ticket.id
-        }
-    except Exception as e:
-        print(f"❌ Ticket creation error: {e}")
-        raise HTTPException(500, f"Failed to create ticket: {str(e)}")
-
-
-@app.get("/api/tickets/my")
-async def get_my_tickets(
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get current user's tickets"""
-    tickets = db.query(SupportTicket).filter(
-        SupportTicket.user_id == user["user_id"]
-    ).order_by(SupportTicket.created_at.desc()).all()
-
-    return {
-        "tickets": [
-            {
-                "id": t.id,
-                "subject": t.subject,
-                "category": t.category,
-                "status": t.status,
-                "priority": t.priority,
-                "created_at": t.created_at.isoformat(),
-                "admin_notes": t.admin_notes
-            }
-            for t in tickets
-        ]
-    }
-
-
-@app.get("/api/tickets")
-async def get_all_tickets(
-    status: Optional[str] = None,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get all tickets (admin only)"""
-    if user.get("role") != "admin":
-        raise HTTPException(403, "Admin access required")
-
-    query = db.query(SupportTicket).order_by(SupportTicket.created_at.desc())
-
-    if status:
-        query = query.filter(SupportTicket.status == status)
-
-    tickets = query.all()
-
-    return {
-        "tickets": [
-            {
-                "id": t.id,
-                "user_id": t.user_id,
-                "user_email": db.query(User).filter(User.id == t.user_id).first().email if t.user_id else None,
-                "subject": t.subject,
-                "category": t.category,
-                "description": t.description,
-                "status": t.status,
-                "priority": t.priority,
-                "admin_notes": t.admin_notes,
-                "attachment_name": t.attachment_name,
-                "has_attachment": bool(t.attachment_data),
-                "created_at": t.created_at.isoformat(),
-                "updated_at": t.updated_at.isoformat() if t.updated_at else None
-            }
-            for t in tickets
-        ],
-        "total": len(tickets)
-    }
-
-
-@app.get("/api/tickets/{ticket_id}")
-async def get_ticket(
-    ticket_id: int,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get a specific ticket"""
-    ticket = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).first()
-
-    if not ticket:
-        raise HTTPException(404, "Ticket not found")
-
-    # Users can only view their own tickets, admins can view all
-    if user.get("role") != "admin" and ticket.user_id != user["user_id"]:
-        raise HTTPException(403, "Not authorized to view this ticket")
-
-    return {
-        "id": ticket.id,
-        "user_id": ticket.user_id,
-        "subject": ticket.subject,
-        "category": ticket.category,
-        "description": ticket.description,
-        "status": ticket.status,
-        "priority": ticket.priority,
-        "admin_notes": ticket.admin_notes,
-        "attachment_data": ticket.attachment_data,
-        "attachment_name": ticket.attachment_name,
-        "created_at": ticket.created_at.isoformat(),
-        "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None
-    }
-
-
-@app.put("/api/tickets/{ticket_id}")
-async def update_ticket(
-    ticket_id: int,
-    update: TicketUpdate,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Update a ticket (admin only)"""
-    if user.get("role") != "admin":
-        raise HTTPException(403, "Admin access required")
-
-    ticket = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).first()
-
-    if not ticket:
-        raise HTTPException(404, "Ticket not found")
-
-    if update.status:
-        ticket.status = update.status
-        if update.status == "resolved":
-            ticket.resolved_by = user["user_id"]
-            ticket.resolved_at = datetime.now(timezone.utc)
-
-    if update.priority:
-        ticket.priority = update.priority
-
-    if update.admin_notes is not None:
-        ticket.admin_notes = update.admin_notes
-
-    db.commit()
-
-    return {"success": True, "message": "Ticket updated successfully"}
-
-
-@app.get("/api/tickets/stats/summary")
-async def get_ticket_stats(
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get ticket statistics (admin only)"""
-    if user.get("role") != "admin":
-        raise HTTPException(403, "Admin access required")
-
-    total = db.query(SupportTicket).count()
-    open_count = db.query(SupportTicket).filter(SupportTicket.status == "open").count()
-    in_progress = db.query(SupportTicket).filter(SupportTicket.status == "in_progress").count()
-    resolved = db.query(SupportTicket).filter(SupportTicket.status == "resolved").count()
-
-    return {
-        "total": total,
-        "open": open_count,
-        "in_progress": in_progress,
-        "resolved": resolved
-    }
-
-
-# ==============================================================================
-# 🔥 FEEDBACK ENDPOINT - Rate & Report Bot Responses
-# ==============================================================================
-class FeedbackCreate(BaseModel):
-    message_text: str
-    feedback_type: str  # 'helpful', 'not_helpful', 'report'
-    report_details: Optional[str] = None
-    session_id: Optional[str] = "default"
-
-
-@app.post("/api/feedback")
-async def submit_feedback(
-    feedback: FeedbackCreate,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Submit feedback on a bot response to help improve the chatbot"""
-    try:
-        new_feedback = Feedback(
-            user_id=user["user_id"],
-            session_id=feedback.session_id,
-            message_text=feedback.message_text[:2000],  # Limit to 2000 chars
-            feedback_type=feedback.feedback_type,
-            report_details=feedback.report_details[:1000] if feedback.report_details else None
-        )
-        db.add(new_feedback)
-        db.commit()
-
-        # Log for analytics
-        emoji = "👍" if feedback.feedback_type == "helpful" else "👎" if feedback.feedback_type == "not_helpful" else "🚩"
-        print(f"{emoji} Feedback received: {feedback.feedback_type} from user {user['email']}")
-
-        return {"success": True, "message": "Thank you for your feedback!"}
-
-    except Exception as e:
-        print(f"❌ Feedback error: {e}")
-        raise HTTPException(500, f"Failed to save feedback: {str(e)}")
-
-
-@app.get("/api/feedback/stats")
-async def get_feedback_stats(
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get feedback statistics (admin only)"""
-    if user.get("role") != "admin":
-        raise HTTPException(403, "Admin access required")
-
-    total = db.query(Feedback).count()
-    helpful = db.query(Feedback).filter(Feedback.feedback_type == "helpful").count()
-    not_helpful = db.query(Feedback).filter(Feedback.feedback_type == "not_helpful").count()
-    reports = db.query(Feedback).filter(Feedback.feedback_type == "report").count()
-
-    # Get recent reports for review
-    recent_reports = db.query(Feedback).filter(
-        Feedback.feedback_type == "report"
-    ).order_by(Feedback.timestamp.desc()).limit(10).all()
-
-    return {
-        "total": total,
-        "helpful": helpful,
-        "not_helpful": not_helpful,
-        "reports": reports,
-        "satisfaction_rate": round((helpful / total * 100), 1) if total > 0 else 0,
-        "recent_reports": [
-            {
-                "id": r.id,
-                "message_preview": r.message_text[:100] + "..." if len(r.message_text) > 100 else r.message_text,
-                "details": r.report_details,
-                "timestamp": r.timestamp.isoformat()
-            }
-            for r in recent_reports
-        ]
-    }
-
-
-# 🔥 NEW HELPER: Extract Text from Files (Updated to use 'pypdf')
 def extract_file_content(filepath: str) -> str:
     """Reads text from PDF, DOCX, or TXT files."""
     ext = filepath.split('.')[-1].lower()
@@ -2254,16 +1689,10 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
         student_context += "THIS STUDENT'S DEGREEWORKS ACADEMIC RECORD:\n"
         student_context += "="*60 + "\n\n"
 
-        if dw_data.raw_data and len(dw_data.raw_data) > 100:
-            has_raw_pdf_data = True
-            student_context += "FULL DEGREEWORKS DOCUMENT CONTENT:\n"
-            student_context += "-"*40 + "\n"
-            student_context += dw_data.raw_data[:15000] + "\n"
-            student_context += "-"*40 + "\n\n"
-
-        student_context += "PARSED SUMMARY (if available):\n"
+        # Student profile summary
+        student_context += "STUDENT PROFILE:\n"
         if dw_data.student_name:
-            student_context += f"- Student Name: {dw_data.student_name}\n"
+            student_context += f"- Name: {dw_data.student_name}\n"
         if dw_data.student_id:
             student_context += f"- Student ID: {dw_data.student_id}\n"
         if dw_data.classification:
@@ -2284,41 +1713,61 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
             student_context += f"- Academic Advisor: {dw_data.advisor}\n"
         if dw_data.catalog_year:
             student_context += f"- Catalog Year: {dw_data.catalog_year}\n"
+        student_context += "\n"
+
+        # Completed courses - clearly labeled DO NOT RECOMMEND
+        completed_codes = []
         if dw_data.courses_completed:
             try:
                 completed = json.loads(dw_data.courses_completed)
                 if completed:
-                    student_context += f"- Courses Completed ({len(completed)} total):\n"
-                    for c in completed[:20]:
-                        grade = c.get('grade', '')
-                        name = c.get('name', '')
-                        student_context += f"  - {c.get('code', '')} {name} (Grade: {grade})\n"
+                    completed_codes = [c.get('code', '') for c in completed]
+                    student_context += f"ALREADY COMPLETED COURSES (DO NOT RECOMMEND THESE):\n"
+                    for c in completed:
+                        student_context += f"  - {c.get('code', '')} {c.get('name', '')} (Grade: {c.get('grade', '')})\n"
+                    student_context += "\n"
             except: pass
+
+        # In-progress courses - clearly labeled DO NOT RECOMMEND
         if dw_data.courses_in_progress:
             try:
                 in_progress = json.loads(dw_data.courses_in_progress)
                 if in_progress:
-                    student_context += f"- Currently Enrolled In:\n"
+                    for c in in_progress:
+                        completed_codes.append(c.get('code', ''))
+                    student_context += f"CURRENTLY ENROLLED (DO NOT RECOMMEND THESE EITHER):\n"
                     for c in in_progress:
                         student_context += f"  - {c.get('code', '')} {c.get('name', '')}\n"
+                    student_context += "\n"
             except: pass
+
+        # Remaining requirements
         if dw_data.courses_remaining:
             try:
                 remaining = json.loads(dw_data.courses_remaining)
                 if remaining:
-                    student_context += f"- Still Needs to Complete:\n"
+                    student_context += f"STILL NEEDS TO COMPLETE (PRIORITIZE THESE FOR RECOMMENDATIONS):\n"
                     for c in remaining[:10]:
                         req = c.get('requirement', c.get('code', ''))
                         student_context += f"  - {req}\n"
+                    student_context += "\n"
             except: pass
+
+        student_context += "INSTRUCTION: When recommending courses, ONLY recommend from the AVAILABLE COURSES list below. NEVER recommend courses from the completed or enrolled lists above.\n"
+        if COURSE_CATALOG_TEXT:
+            student_context += "\n" + COURSE_CATALOG_TEXT + "\n"
         student_context += "="*60 + "\n\n"
+
+        # Store raw data flag but don't dump the full PDF text into context
+        if dw_data.raw_data and len(dw_data.raw_data) > 100:
+            has_raw_pdf_data = True
 
     # Fetch recent conversation history for context (last 6 exchanges)
     recent_history = db.query(ChatHistory)\
         .filter(ChatHistory.user_id == user["user_id"])\
         .filter(ChatHistory.session_id == session_id)\
         .order_by(ChatHistory.timestamp.desc())\
-        .limit(6)\
+        .limit(10)\
         .all()
 
     recent_history = list(reversed(recent_history))
@@ -2381,32 +1830,23 @@ Use the provided file content and conversation history to answer the user's ques
             answer = "I received the file link, but I cannot find the file on the server to read it."
 
     elif USE_VERTEX_AGENT:
-        # Vertex AI Agent Engine path
-        norm = re.sub(r'[\s\W]+', '', user_q.lower())
-        if re.match(r'^(hi|hello|hey)\b', user_q.lower()):
-            answer = "Hello! How can I help you today?"
-        elif re.match(r'^(bye|goodbye|see you)\b', user_q.lower()):
-            answer = "Goodbye! Have a great day."
-        elif re.search(r'\b(thankyou|thanks|thanx|thx|ty)\b', norm):
-            answer = "You're welcome! Let me know if you have any other questions."
-        else:
-            try:
-                # Build context for the agent (DegreeWorks + conversation history)
-                agent_context = ""
-                if student_context:
-                    agent_context += student_context
-                if conversation_context:
-                    agent_context += conversation_context
+        # Vertex AI Agent Engine path - send everything to the agent
+        try:
+            agent_context = ""
+            if student_context:
+                agent_context += student_context
+            if conversation_context:
+                agent_context += conversation_context
 
-                print(f"🤖 Vertex AI query: '{user_q[:50]}...' (user={user['user_id']}, context={len(agent_context)} chars)")
-                answer = query_agent(
-                    query=user_q,
-                    user_id=str(user["user_id"]),
-                    context=agent_context,
-                )
-            except Exception as e:
-                print(f"   Vertex AI Chat Error: {e}")
-                answer = "I'm having trouble processing your request. Please try again."
+            print(f"🤖 Vertex AI query: '{user_q[:50]}...' (user={user['user_id']}, context={len(agent_context)} chars)")
+            answer = query_agent(
+                query=user_q,
+                user_id=str(user["user_id"]),
+                context=agent_context,
+            )
+        except Exception as e:
+            print(f"   Vertex AI Chat Error: {e}")
+            answer = "I'm having trouble processing your request. Please try again."
     elif llm and retriever:
         # Legacy Pinecone + OpenAI RAG path (fallback)
         norm = re.sub(r'[\s\W]+', '', user_q.lower())
@@ -2618,168 +2058,46 @@ async def text_to_speech(req: TTSRequest, _user=Depends(get_current_user)):
         raise HTTPException(500, f"TTS generation failed: {str(e)}")
 
 @app.get("/api/popular-questions")
-async def get_popular_questions(db: Session = Depends(get_db)):
-    """
-    Returns 6 questions:
-    - 2 most frequently asked (from user data)
-    - 2 trending (recent popular questions)
-    - 2 general questions (hardcoded)
-    """
-    try:
-        # 2 General questions (always shown)
-        general_questions = [
-            "What internship opportunities are available?",
-            "How do I contact my academic advisor?"
-        ]
+async def get_popular_questions():
+    """Returns 8 randomly selected questions from a curated pool."""
+    import random
 
-        # Query ALL user questions to find most frequent and trending
-        queries = db.query(ChatHistory.user_query)\
-            .filter(ChatHistory.user_query.isnot(None))\
-            .filter(ChatHistory.user_query != "")\
-            .order_by(ChatHistory.timestamp.desc())\
-            .limit(1000)\
-            .all()
+    QUESTION_POOL = [
+        # Course & curriculum
+        "What courses should I take next semester if I'm interested in AI/ML?",
+        "Can you recommend a study plan for the cybersecurity track?",
+        "What are the prerequisites for COSC 450 Operating Systems?",
+        "What electives count toward the CS degree?",
+        "What math courses are required for the CS major?",
+        "What is the recommended course sequence for freshmen CS students?",
+        "Which courses cover data structures and algorithms?",
+        # Department & faculty
+        "Who are the professors in the CS department and what do they teach?",
+        "Who is the chair of the Computer Science department?",
+        "What research areas do CS faculty specialize in?",
+        "How do I find a faculty mentor for my capstone project?",
+        # Career & opportunities
+        "What internship and co-op opportunities are available for CS majors?",
+        "What career paths can I pursue with a CS degree from Morgan State?",
+        "How can I prepare for technical interviews?",
+        "What companies recruit CS students from Morgan State?",
+        # Academic advising & graduation
+        "How do I apply for graduation and what requirements do I need?",
+        "How many credits do I need to graduate with a CS degree?",
+        "What is the difference between a B.S. and B.A. in Computer Science?",
+        "What is the minimum GPA required to stay in the CS program?",
+        # Research & extracurricular
+        "What research labs and projects can I join in the CS department?",
+        "Are there any CS student organizations or clubs at Morgan State?",
+        "How can I get involved in undergraduate research?",
+        "What programming competitions can Morgan State students participate in?",
+        # Frequently asked
+        "How do I contact my academic advisor?",
+        "Where is the Computer Science department located?",
+        "How do I register for CS courses?",
+    ]
 
-        # Clean and normalize questions
-        def normalize_question(q):
-            if not q:
-                return None
-            original = q.strip()
-            normalized = re.sub(r'[^\w\s?]', '', q.lower().strip())
-            # Skip greetings and short phrases
-            skip_words = ['hi', 'hello', 'hey', 'thanks', 'thank you', 'bye', 'goodbye',
-                          'ok', 'okay', 'yes', 'no', 'sure', 'great']
-            if normalized in skip_words or len(normalized) < 15:
-                return None
-            # Skip file uploads and follow-ups
-            if 'uploads' in normalized or 'chat_files' in normalized:
-                return None
-            if any(fu in normalized for fu in ['tell me more', 'what about', 'explain more']):
-                return None
-            # Skip outdated semester-specific questions (past semesters)
-            outdated_patterns = ['fall 2024', 'fall 2025', 'spring 2024', 'spring 2025',
-                                 'summer 2024', 'summer 2025', 'did i take', 'have i taken']
-            if any(op in normalized for op in outdated_patterns):
-                return None
-            return original
-
-        # Count question frequencies
-        question_counts = Counter()
-        for (query,) in queries:
-            normalized = normalize_question(query)
-            if normalized:
-                question_counts[normalized] += 1
-
-        # Get 2 MOST FREQUENTLY asked (highest count overall)
-        frequent_questions = []
-        for question, count in question_counts.most_common(20):
-            if count >= 2 and len(question) > 15:  # Asked at least twice
-                formatted = question[0].upper() + question[1:]
-                if not formatted.endswith('?'):
-                    formatted += '?'
-                frequent_questions.append(formatted)
-                if len(frequent_questions) >= 2:
-                    break
-
-        # Get 2 TRENDING questions (recent but different from frequent)
-        recent_queries = db.query(ChatHistory.user_query)\
-            .filter(ChatHistory.user_query.isnot(None))\
-            .order_by(ChatHistory.timestamp.desc())\
-            .limit(100)\
-            .all()
-
-        recent_counts = Counter()
-        for (query,) in recent_queries:
-            normalized = normalize_question(query)
-            if normalized:
-                recent_counts[normalized] += 1
-
-        trending_questions = []
-        for question, count in recent_counts.most_common(20):
-            # Skip if already in frequent
-            if any(question.lower() in fq.lower() or fq.lower() in question.lower()
-                   for fq in frequent_questions):
-                continue
-            if len(question) > 15:
-                formatted = question[0].upper() + question[1:]
-                if not formatted.endswith('?'):
-                    formatted += '?'
-                trending_questions.append(formatted)
-                if len(trending_questions) >= 2:
-                    break
-
-        # Fallback questions if we don't have enough data
-        fallback_frequent = [
-            "Who is the chair of Computer Science department?",
-            "What are the degree requirements for CS major?"
-        ]
-        fallback_trending = [
-            "What programming languages should I learn?",
-            "When is the deadline for course registration?"
-        ]
-
-        # Fill in with fallbacks if needed
-        while len(frequent_questions) < 2:
-            for fb in fallback_frequent:
-                if fb not in frequent_questions:
-                    frequent_questions.append(fb)
-                    break
-
-        while len(trending_questions) < 2:
-            for fb in fallback_trending:
-                if fb not in trending_questions and fb not in frequent_questions:
-                    trending_questions.append(fb)
-                    break
-
-        # Combine and deduplicate: 2 frequent + 2 trending + 2 general = 6 total
-        seen = set()
-        all_questions = []
-
-        def add_if_unique(question):
-            key = question.lower().strip()
-            if key not in seen:
-                seen.add(key)
-                all_questions.append(question)
-                return True
-            return False
-
-        # Add frequent questions first
-        for q in frequent_questions[:2]:
-            add_if_unique(q)
-
-        # Add trending questions
-        for q in trending_questions[:2]:
-            add_if_unique(q)
-
-        # Add general questions
-        for q in general_questions:
-            add_if_unique(q)
-
-        # If we still don't have 6, add more fallbacks
-        extra_fallbacks = [
-            "What courses should I take for cybersecurity?",
-            "What research opportunities exist in CS?",
-            "Who is the chair of Computer Science?"
-        ]
-        for q in extra_fallbacks:
-            if len(all_questions) >= 6:
-                break
-            add_if_unique(q)
-
-        return {"questions": all_questions[:6]}
-
-    except Exception as e:
-        print(f"Error fetching popular questions: {e}")
-        return {
-            "questions": [
-                "Who is the chair of Computer Science?",
-                "What are the prerequisites for COSC 311?",
-                "What internship opportunities are available?",
-                "How do I contact my academic advisor?",
-                "What courses should I take for cybersecurity?",
-                "What research opportunities exist in CS?"
-            ]
-        }
+    return {"questions": random.sample(QUESTION_POOL, 8)}
 
 # --- Admin / Ingest Routes ---
 @app.post("/ingest")
@@ -3199,6 +2517,119 @@ async def trigger_ingestion(user: dict = Depends(get_current_user)):
         return {"message": "Ingestion completed successfully", "timestamp": datetime.now(timezone.utc).isoformat()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+# --- Admin: Cloud Knowledge Base (Vertex AI Datastore) ---
+from datastore_manager import (
+    list_datastore_documents,
+    get_document_content,
+    upload_document,
+    delete_document,
+    update_document,
+    sync_datastore,
+    search_documents as search_cloud_kb,
+)
+
+@app.get("/api/admin/cloud-kb/documents")
+async def list_cloud_kb_docs(user: dict = Depends(get_current_user)):
+    """List all documents in the Vertex AI Search datastore"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        docs = list_datastore_documents()
+        return {"documents": docs, "total": len(docs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list documents: {e}")
+
+@app.get("/api/admin/cloud-kb/documents/{doc_id}/content")
+async def read_cloud_kb_doc(doc_id: str, uri: str = "", user: dict = Depends(get_current_user)):
+    """Read content of a document from the cloud KB"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not uri:
+        raise HTTPException(status_code=400, detail="URI parameter required")
+    try:
+        content = get_document_content(uri)
+        return {"content": content, "doc_id": doc_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read document: {e}")
+
+@app.post("/api/admin/cloud-kb/upload")
+async def upload_cloud_kb_doc(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user)
+):
+    """Upload a new document to the cloud KB"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    allowed_exts = {'txt', 'pdf', 'html', 'csv', 'json'}
+    ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
+    if ext not in allowed_exts:
+        raise HTTPException(status_code=400, detail=f"Allowed types: {', '.join(allowed_exts)}")
+
+    content = await file.read()
+    content_type = file.content_type or "text/plain"
+
+    result = upload_document(file.filename, content, content_type)
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result["message"])
+    return result
+
+@app.put("/api/admin/cloud-kb/documents/{doc_id}")
+async def update_cloud_kb_doc(
+    doc_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user)
+):
+    """Update content of an existing document in the cloud KB"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    body = await request.json()
+    uri = body.get("uri", "")
+    content = body.get("content", "")
+    if not uri or not content:
+        raise HTTPException(status_code=400, detail="URI and content required")
+
+    result = update_document(uri, content.encode("utf-8"))
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result["message"])
+    return result
+
+@app.delete("/api/admin/cloud-kb/documents/{doc_id}")
+async def delete_cloud_kb_doc(doc_id: str, uri: str = "", user: dict = Depends(get_current_user)):
+    """Delete a document from the cloud KB"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    result = delete_document(doc_id, uri)
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result["message"])
+    return result
+
+@app.post("/api/admin/cloud-kb/sync")
+async def sync_cloud_kb(user: dict = Depends(get_current_user)):
+    """Re-sync all GCS documents into the datastore"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    result = sync_datastore()
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result["message"])
+    return result
+
+@app.get("/api/admin/cloud-kb/search")
+async def search_cloud_kb_docs(q: str, user: dict = Depends(get_current_user)):
+    """Search across all cloud KB documents"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not q or len(q) < 2:
+        return {"results": []}
+    try:
+        results = search_cloud_kb(q)
+        return {"results": results, "query": q, "total": len(results)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search failed: {e}")
 
 # --- Admin: Analytics ---
 @app.get("/api/admin/analytics")

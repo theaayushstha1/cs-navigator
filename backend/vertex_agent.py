@@ -12,6 +12,7 @@ Usage:
 
 import os
 import json
+import re
 import requests
 import uuid
 from typing import Optional
@@ -135,6 +136,8 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
                     final_text = part["text"]  # Keep last model text (the final answer)
 
         if final_text:
+            # Clean up citation artifacts from Gemini grounding
+            final_text = re.sub(r'\s*\[cite:\s*[^\]]*\]', '', final_text)
             return final_text.strip()
         else:
             return "I'm sorry, I couldn't generate a response. Please try rephrasing your question."

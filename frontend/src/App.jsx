@@ -190,27 +190,26 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           
-          // Check if we have history data
           if (data.history && data.history.length > 0) {
               const grouped = {};
-              
+
               // Group the flat list of messages by their session_id
               data.history.forEach(item => {
                   const sid = item.session_id || "default";
                   if (!grouped[sid]) grouped[sid] = [];
-                  
+
                   // Add User Message
-                  grouped[sid].push({ 
-                    text: item.user, 
-                    sender: "user", 
-                    time: new Date(item.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) 
+                  grouped[sid].push({
+                    text: item.user,
+                    sender: "user",
+                    time: new Date(item.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
                   });
-                  
+
                   // Add Bot Message
-                  grouped[sid].push({ 
-                    text: item.bot, 
-                    sender: "bot", 
-                    time: new Date(item.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) 
+                  grouped[sid].push({
+                    text: item.bot,
+                    sender: "bot",
+                    time: new Date(item.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
                   });
               });
 
@@ -223,14 +222,20 @@ export default function App() {
                   pinned: false,
                   archived: false
               }));
-              
+
               // Update state with database sessions
               setSessions(dbSessions);
-              
+
               // Set the active chat to the most recent one (last in the list)
               if (dbSessions.length > 0) {
                 setActiveId(dbSessions[dbSessions.length - 1].id);
               }
+          } else {
+              // New account or no history - reset to a fresh session
+              // This clears any stale sessions from a previous account
+              const freshId = Date.now().toString();
+              setSessions([{ id: freshId, title: "New Chat", messages: [], pinned: false, archived: false }]);
+              setActiveId(freshId);
           }
         }
       } catch (err) {
@@ -328,8 +333,11 @@ export default function App() {
   const handleLogout = () => {
     setToken(null);
     localStorage.removeItem("token");
-    // Clear UI but default to a new chat
-    setSessions([{ id: Date.now().toString(), title: "New Chat", messages: [], pinned: false, archived: false }]); 
+    localStorage.removeItem("chat_sessions");
+    // Clear UI and reset to a fresh chat
+    const freshId = Date.now().toString();
+    setSessions([{ id: freshId, title: "New Chat", messages: [], pinned: false, archived: false }]);
+    setActiveId(freshId);
     navigate("/login", { replace: true });
   };
 

@@ -21,14 +21,16 @@ import { FaFileImage } from "@react-icons/all-files/fa/FaFileImage";
 
 import "./Chatbox.css";
 
-// Default suggestions (fallback) - 6 questions
-const DEFAULT_SUGGESTIONS = [
-  "Who is the chair of Computer Science?",
-  "What are the prerequisites for COSC 311?",
-  "What internship opportunities are available?",
-  "How do I contact my academic advisor?",
-  "What courses should I take for cybersecurity?",
-  "What research opportunities exist in CS?"
+// Featured questions that showcase chatbot capabilities
+const FEATURED_QUESTIONS = [
+  "What courses should I take next semester if I'm interested in AI/ML?",
+  "Can you recommend a study plan for the cybersecurity track?",
+  "What are the prerequisites for COSC 450 Operating Systems?",
+  "Who are the professors in the CS department and what do they teach?",
+  "What internship and co-op opportunities are available for CS majors?",
+  "How do I apply for graduation and what requirements do I need?",
+  "What research labs and projects can I join in the CS department?",
+  "What is the difference between a B.S. and B.A. in Computer Science?",
 ];
 
 import { getApiBase } from "../lib/apiBase";
@@ -58,7 +60,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const [pendingFile, setPendingFile] = useState(null);
 
   // 🔥 Dynamic Suggestions State
-  const [suggestions, setSuggestions] = useState(DEFAULT_SUGGESTIONS);
+  const [suggestions, setSuggestions] = useState(FEATURED_QUESTIONS);
   const [suggestionsLoading, setSuggestionsLoading] = useState(true);
 
   // 🔥 Voice Mode State
@@ -147,7 +149,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
     fetchUserProfile();
   }, []);
 
-  // 6. Fetch Dynamic Suggestions
+  // 6. Fetch randomized featured questions from backend
   useEffect(() => {
     const fetchSuggestions = async () => {
       if (messages.length > 0) {
@@ -155,12 +157,11 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
         return;
       }
       try {
-        setSuggestionsLoading(true);
         const response = await fetch(`${API_BASE}/api/popular-questions`);
         if (response.ok) {
           const data = await response.json();
           if (data.questions && data.questions.length > 0) {
-            setSuggestions(data.questions.slice(0, 6)); // Show 6 suggestions
+            setSuggestions(data.questions.slice(0, 8));
           }
         }
       } catch (error) {

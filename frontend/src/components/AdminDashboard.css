@@ -1479,16 +1479,21 @@ body.dark .kb-file-item.active {
   caret-color: var(--text-main);
 }
 
-/* Yellow highlight for matched words - text is transparent, only background shows */
+/* Yellow highlight for matched words */
 .highlight-match {
   background: #FBBF24 !important;
-  color: transparent !important;
+  color: #000 !important;
   padding: 2px 0;
   border-radius: 3px;
 }
 
 body.dark .highlight-match {
   background: #F59E0B !important;
+  color: #000 !important;
+}
+
+/* Transparent text only for textarea overlay pattern (edit mode) */
+.kb-highlight-backdrop .highlight-match {
   color: transparent !important;
 }
 

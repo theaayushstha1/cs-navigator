@@ -103,6 +103,20 @@ export default function AdminDashboard() {
   const [analytics, setAnalytics] = useState(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
 
+  // Cloud KB State
+  const [cloudKbDocs, setCloudKbDocs] = useState([]);
+  const [cloudKbLoading, setCloudKbLoading] = useState(false);
+  const [cloudKbSelected, setCloudKbSelected] = useState(null);
+  const [cloudKbContent, setCloudKbContent] = useState("");
+  const [cloudKbEditing, setCloudKbEditing] = useState(false);
+  const [cloudKbEditContent, setCloudKbEditContent] = useState("");
+  const [cloudKbSyncing, setCloudKbSyncing] = useState(false);
+  const [cloudKbUploading, setCloudKbUploading] = useState(false);
+  const [cloudKbSearchResults, setCloudKbSearchResults] = useState(null); // null = no search, [] = no results
+  const [cloudKbSearching, setCloudKbSearching] = useState(false);
+  const cloudKbFileRef = useRef(null);
+  const cloudKbSearchTimer = useRef(null);
+
   // Documentation Viewer State
   const [showDocViewer, setShowDocViewer] = useState(false);
   const [docViewerMode, setDocViewerMode] = useState("docs"); // "docs" or "roadmap"
@@ -212,6 +226,148 @@ export default function AdminDashboard() {
       if (res.ok) setAnalytics(await res.json());
     } catch (err) { console.error("Failed to load analytics:", err); }
     finally { setAnalyticsLoading(false); }
+  };
+
+  // Cloud KB Functions
+  const loadCloudKbDocs = async () => {
+    setCloudKbLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/documents`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const data = await res.json();
+        setCloudKbDocs(data.documents || []);
+      }
+    } catch (err) { console.error("Failed to load cloud KB:", err); }
+    finally { setCloudKbLoading(false); }
+  };
+
+  const loadCloudKbContent = async (doc) => {
+    setCloudKbSelected(doc);
+    setCloudKbEditing(false);
+    setCloudKbContent("Loading...");
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/documents/${doc.id}/content?uri=${encodeURIComponent(doc.uri)}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCloudKbContent(data.content || "");
+      } else {
+        setCloudKbContent("Failed to load content.");
+      }
+    } catch (err) { setCloudKbContent("Error loading content."); }
+  };
+
+  const searchCloudKb = async (query) => {
+    if (!query || query.length < 2) {
+      setCloudKbSearchResults(null);
+      return;
+    }
+    setCloudKbSearching(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/search?q=${encodeURIComponent(query)}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCloudKbSearchResults(data.results || []);
+      }
+    } catch (err) { console.error("Cloud KB search failed:", err); }
+    finally { setCloudKbSearching(false); }
+  };
+
+  const handleCloudKbSearch = (value) => {
+    setKbSearch(value);
+    if (value.length >= 2) {
+      setFindText(value);
+    } else {
+      setFindText("");
+    }
+    // Debounce the API search
+    if (cloudKbSearchTimer.current) clearTimeout(cloudKbSearchTimer.current);
+    cloudKbSearchTimer.current = setTimeout(() => searchCloudKb(value), 300);
+  };
+
+  const handleCloudKbUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCloudKbUploading(true);
+    setMessage("");
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/upload`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMessage("Uploaded: " + (data.message || file.name));
+        loadCloudKbDocs();
+      } else {
+        setMessage("Upload failed: " + (data.detail || "Unknown error"));
+      }
+    } catch (err) { setMessage("Upload error: " + err.message); }
+    finally {
+      setCloudKbUploading(false);
+      if (cloudKbFileRef.current) cloudKbFileRef.current.value = "";
+    }
+  };
+
+  const handleCloudKbSave = async () => {
+    if (!cloudKbSelected) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/documents/${cloudKbSelected.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ uri: cloudKbSelected.uri, content: cloudKbEditContent })
+      });
+      if (res.ok) {
+        setMessage("Document updated successfully!");
+        setCloudKbContent(cloudKbEditContent);
+        setCloudKbEditing(false);
+        loadCloudKbDocs();
+      } else {
+        const data = await res.json();
+        setMessage("Save failed: " + (data.detail || "Unknown error"));
+      }
+    } catch (err) { setMessage("Save error: " + err.message); }
+  };
+
+  const handleCloudKbDelete = async (doc) => {
+    if (!window.confirm(`Delete "${doc.filename}" from the cloud knowledge base? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/documents/${doc.id}?uri=${encodeURIComponent(doc.uri)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        setMessage("Deleted: " + doc.filename);
+        if (cloudKbSelected?.id === doc.id) {
+          setCloudKbSelected(null);
+          setCloudKbContent("");
+        }
+        loadCloudKbDocs();
+      } else {
+        const data = await res.json();
+        setMessage("Delete failed: " + (data.detail || "Unknown error"));
+      }
+    } catch (err) { setMessage("Delete error: " + err.message); }
+  };
+
+  const handleCloudKbSync = async () => {
+    if (!window.confirm("Re-sync all documents from GCS into the datastore? This may take a few minutes.")) return;
+    setCloudKbSyncing(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/sync`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      setMessage(res.ok ? (data.message || "Sync started!") : "Sync failed: " + (data.detail || "Unknown error"));
+    } catch (err) { setMessage("Sync error: " + err.message); }
+    finally { setCloudKbSyncing(false); }
   };
 
   const loadFeedbackStats = async () => {
@@ -380,6 +536,7 @@ export default function AdminDashboard() {
     if (activeTab === "knowledge") loadKbFiles();
     if (activeTab === "analytics") loadAnalytics();
     if (activeTab === "feedback") loadFeedbackStats();
+    if (activeTab === "cloud-kb") loadCloudKbDocs();
   }, [activeTab]);
 
   useEffect(() => {
@@ -551,33 +708,35 @@ export default function AdminDashboard() {
 
   // Count matches when findText changes
   useEffect(() => {
-    if (findText && kbContent) {
+    const content = cloudKbEditing ? cloudKbEditContent : cloudKbContent;
+    if (findText && content) {
       const regex = new RegExp(findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-      const matches = kbContent.match(regex);
+      const matches = content.match(regex);
       setMatchCount(matches ? matches.length : 0);
       setCurrentMatchIndex(0);
     } else {
       setMatchCount(0);
       setCurrentMatchIndex(0);
     }
-  }, [findText, kbContent]);
+  }, [findText, cloudKbContent, cloudKbEditContent, cloudKbEditing]);
 
   // Auto-scroll to first match when opening Find & Replace from search
   useEffect(() => {
-    if (showFindReplace && findText && kbContent && textareaRef.current && !kbLoading) {
-      // Small delay to ensure textarea is rendered
+    const content = cloudKbEditing ? cloudKbEditContent : cloudKbContent;
+    if (showFindReplace && findText && content && textareaRef.current) {
       const timer = setTimeout(() => {
         const textarea = textareaRef.current;
         if (textarea) {
-          const text = kbContent.toLowerCase();
+          const text = content.toLowerCase();
           const searchTerm = findText.toLowerCase();
           const foundIndex = text.indexOf(searchTerm);
           if (foundIndex !== -1) {
-            textarea.focus();
-            textarea.setSelectionRange(foundIndex, foundIndex + findText.length);
-            // Scroll to position
+            if (cloudKbEditing) {
+              textarea.focus();
+              textarea.setSelectionRange(foundIndex, foundIndex + findText.length);
+            }
             const lineHeight = 20;
-            const linesBeforeMatch = kbContent.substring(0, foundIndex).split('\n').length - 1;
+            const linesBeforeMatch = content.substring(0, foundIndex).split('\n').length - 1;
             textarea.scrollTop = Math.max(0, linesBeforeMatch * lineHeight - 100);
             setCurrentMatchIndex(1);
           }
@@ -585,33 +744,31 @@ export default function AdminDashboard() {
       }, 100);
       return () => clearTimeout(timer);
     }
-  }, [showFindReplace, kbContent, kbLoading]);
+  }, [showFindReplace, cloudKbContent, cloudKbEditContent, cloudKbEditing]);
+
+  // Get the active content for find/replace (cloud KB editing or viewing)
+  const getActiveContent = () => cloudKbEditing ? cloudKbEditContent : cloudKbContent;
 
   const findNextMatch = () => {
     if (!findText || !textareaRef.current) return;
 
     const textarea = textareaRef.current;
-    const text = kbContent.toLowerCase();
+    const content = getActiveContent();
+    const text = content.toLowerCase();
     const searchTerm = findText.toLowerCase();
 
-    // Start searching from current cursor position
     let startPos = textarea.selectionEnd || 0;
     let foundIndex = text.indexOf(searchTerm, startPos);
-
-    // Wrap around if not found
-    if (foundIndex === -1) {
-      foundIndex = text.indexOf(searchTerm, 0);
-    }
+    if (foundIndex === -1) foundIndex = text.indexOf(searchTerm, 0);
 
     if (foundIndex !== -1) {
-      textarea.focus();
-      textarea.setSelectionRange(foundIndex, foundIndex + findText.length);
-
-      // Scroll to make selection visible
+      if (cloudKbEditing) {
+        textarea.focus();
+        textarea.setSelectionRange(foundIndex, foundIndex + findText.length);
+      }
       const lineHeight = 20;
-      const linesBeforeMatch = kbContent.substring(0, foundIndex).split('\n').length - 1;
+      const linesBeforeMatch = content.substring(0, foundIndex).split('\n').length - 1;
       textarea.scrollTop = linesBeforeMatch * lineHeight - 100;
-
       setCurrentMatchIndex(prev => (prev % matchCount) + 1);
     }
   };
@@ -620,87 +777,54 @@ export default function AdminDashboard() {
     if (!findText || !textareaRef.current) return;
 
     const textarea = textareaRef.current;
-    const text = kbContent.toLowerCase();
+    const content = getActiveContent();
+    const text = content.toLowerCase();
     const searchTerm = findText.toLowerCase();
 
-    // Start searching backwards from current cursor position
-    let startPos = Math.max(0, textarea.selectionStart - 1);
+    let startPos = Math.max(0, (textarea.selectionStart || 0) - 1);
     let foundIndex = text.lastIndexOf(searchTerm, startPos);
-
-    // Wrap around if not found
-    if (foundIndex === -1) {
-      foundIndex = text.lastIndexOf(searchTerm);
-    }
+    if (foundIndex === -1) foundIndex = text.lastIndexOf(searchTerm);
 
     if (foundIndex !== -1) {
-      textarea.focus();
-      textarea.setSelectionRange(foundIndex, foundIndex + findText.length);
-
+      if (cloudKbEditing) {
+        textarea.focus();
+        textarea.setSelectionRange(foundIndex, foundIndex + findText.length);
+      }
       const lineHeight = 20;
-      const linesBeforeMatch = kbContent.substring(0, foundIndex).split('\n').length - 1;
+      const linesBeforeMatch = content.substring(0, foundIndex).split('\n').length - 1;
       textarea.scrollTop = linesBeforeMatch * lineHeight - 100;
-
       setCurrentMatchIndex(prev => prev > 1 ? prev - 1 : matchCount);
     }
   };
 
   const replaceCurrentMatch = () => {
-    if (!findText || !textareaRef.current) return;
+    if (!findText || !textareaRef.current || !cloudKbEditing) return;
 
     const textarea = textareaRef.current;
     const selStart = textarea.selectionStart;
     const selEnd = textarea.selectionEnd;
-    const selectedText = kbContent.substring(selStart, selEnd);
+    const selectedText = cloudKbEditContent.substring(selStart, selEnd);
 
-    // Only replace if the selected text matches the find text (case insensitive)
     if (selectedText.toLowerCase() === findText.toLowerCase()) {
-      const newContent = kbContent.substring(0, selStart) + replaceText + kbContent.substring(selEnd);
-      setKbContent(newContent);
-
-      // Move cursor after replacement
+      const newContent = cloudKbEditContent.substring(0, selStart) + replaceText + cloudKbEditContent.substring(selEnd);
+      setCloudKbEditContent(newContent);
       setTimeout(() => {
         textarea.focus();
         textarea.setSelectionRange(selStart + replaceText.length, selStart + replaceText.length);
         findNextMatch();
       }, 10);
     } else {
-      // If nothing is selected, find the next match first
       findNextMatch();
     }
   };
 
   const replaceAllMatches = () => {
-    if (!findText) return;
-
+    if (!findText || !cloudKbEditing) return;
     const regex = new RegExp(findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-    const newContent = kbContent.replace(regex, replaceText);
+    const newContent = cloudKbEditContent.replace(regex, replaceText);
     const replacedCount = matchCount;
-    setKbContent(newContent);
+    setCloudKbEditContent(newContent);
     alert(`Replaced ${replacedCount} occurrence(s)`);
-  };
-
-  const openFindReplaceFromSearch = (filename, searchTerm, position) => {
-    setSelectedKbFile(filename);
-    setFindText(searchTerm);
-    setShowFindReplace(true);
-
-    // Load the file and then scroll to position
-    loadKbFileContent(filename).then(() => {
-      setTimeout(() => {
-        if (textareaRef.current) {
-          const textarea = textareaRef.current;
-          const text = kbContent.toLowerCase();
-          const foundIndex = text.indexOf(searchTerm.toLowerCase(), position > 100 ? position - 100 : 0);
-          if (foundIndex !== -1) {
-            textarea.focus();
-            textarea.setSelectionRange(foundIndex, foundIndex + searchTerm.length);
-            const lineHeight = 20;
-            const linesBeforeMatch = kbContent.substring(0, foundIndex).split('\n').length - 1;
-            textarea.scrollTop = linesBeforeMatch * lineHeight - 100;
-          }
-        }
-      }, 300);
-    });
   };
 
   // ===========================================
@@ -742,13 +866,13 @@ export default function AdminDashboard() {
 
   // Generate highlighted HTML content for preview
   const getHighlightedContent = () => {
-    if (!findText || !kbContent) return kbContent;
+    const content = getActiveContent();
+    if (!findText || !content) return content;
 
     const escapedSearch = findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(`(${escapedSearch})`, 'gi');
 
-    // Escape HTML and then highlight matches
-    const escaped = kbContent
+    const escaped = content
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
@@ -801,15 +925,16 @@ export default function AdminDashboard() {
           <FaTicketAlt size={16} /><span>Tickets</span>
           {ticketStats.open > 0 && <span className="ticket-badge">{ticketStats.open}</span>}
         </button>
-        <button className={`admin-tab ${activeTab === "knowledge" ? "active" : ""}`} onClick={() => setActiveTab("knowledge")}>
-          <FaDatabase size={16} /><span>Knowledge Base</span>
-        </button>
+        {/* Old local KB tab removed - replaced by Cloud KB */}
         <button className={`admin-tab ${activeTab === "analytics" ? "active" : ""}`} onClick={() => setActiveTab("analytics")}>
           <FaChartBar size={16} /><span>Analytics</span>
         </button>
         <button className={`admin-tab ${activeTab === "feedback" ? "active" : ""}`} onClick={() => setActiveTab("feedback")}>
           <FaSmile size={16} /><span>Feedback</span>
           {feedbackStats.reports > 0 && <span className="ticket-badge">{feedbackStats.reports}</span>}
+        </button>
+        <button className={`admin-tab ${activeTab === "cloud-kb" ? "active" : ""}`} onClick={() => setActiveTab("cloud-kb")}>
+          <FaRobot size={16} /><span>Cloud KB</span>
         </button>
         <button className={`admin-tab ${activeTab === "system" ? "active" : ""}`} onClick={() => setActiveTab("system")}>
           <FaServer size={16} /><span>System</span>
@@ -1008,226 +1133,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* =================== KNOWLEDGE BASE TAB =================== */}
-      {activeTab === "knowledge" && (
-        <div className="tab-content">
-          <div className="kb-header">
-            <h2>Knowledge Base Files</h2>
-            <p>Edit JSON files that power the chatbot's knowledge. Changes require re-ingestion.</p>
-          </div>
-
-          {/* Search Bar with Voice */}
-          <div className="kb-search-bar">
-            <div className="search-box-with-voice">
-              <div className="search-box">
-                <FaSearch size={14} />
-                <input
-                  type="text"
-                  placeholder="Search across all knowledge base files..."
-                  value={kbSearch}
-                  onChange={(e) => {
-                    setKbSearch(e.target.value);
-                    searchKnowledgeBase(e.target.value);
-                  }}
-                />
-                {kbSearch && (
-                  <button className="clear-search" onClick={() => { setKbSearch(""); setKbSearchResults([]); setHighlightTerm(""); }}>
-                    <FaTimes size={12} />
-                  </button>
-                )}
-              </div>
-              {voiceSupported && (
-                <button
-                  className={`voice-search-btn ${isListening ? "listening" : ""}`}
-                  onClick={isListening ? stopVoiceSearch : startVoiceSearch}
-                  title={isListening ? "Stop listening" : "Voice search - speak to search"}
-                >
-                  {isListening ? (
-                    <>
-                      <FaStop size={18} />
-                      <span>Listening...</span>
-                    </>
-                  ) : (
-                    <>
-                      <FaMicrophone size={18} />
-                      <span>Voice Search</span>
-                    </>
-                  )}
-                </button>
-              )}
-            </div>
-            {isListening && (
-              <div className="voice-listening-indicator">
-                <span className="pulse-dot"></span>
-                <span>Speak now... (e.g., "Find Paul Wang phone number")</span>
-              </div>
-            )}
-          </div>
-
-          {/* Search Results Summary */}
-          {kbSearchResults.length > 0 && (
-            <div className="kb-search-summary">
-              <span className="search-summary-text">
-                Found <strong>{kbSearchResults.length}</strong> matches in <strong>{matchedFiles.length}</strong> files for "<strong>{kbSearch}</strong>"
-              </span>
-              <button className="clear-search-btn" onClick={() => {
-                setKbSearch("");
-                setKbSearchResults([]);
-                setMatchedFiles([]);
-                setShowMatchedFiles(false);
-                setFindText("");
-                setShowFindReplace(false);
-              }}>
-                <FaTimes size={12} /> Clear Search
-              </button>
-            </div>
-          )}
-
-          <div className={`kb-layout ${showMatchedFiles ? "with-matches" : ""}`}>
-            {/* Matched Files Sidebar - Shows when searching */}
-            {showMatchedFiles && matchedFiles.length > 0 && (
-              <div className="kb-matched-files">
-                <h3>
-                  <FaSearch size={14} /> Matched Files ({matchedFiles.length})
-                </h3>
-                {matchedFiles.map((file) => (
-                  <div
-                    key={file.filename}
-                    className={`matched-file-item ${selectedKbFile === file.filename ? "active" : ""}`}
-                    onClick={() => {
-                      setSelectedKbFile(file.filename);
-                      setFindText(kbSearch);
-                      setShowFindReplace(true);
-                      loadKbFileContent(file.filename);
-                    }}
-                  >
-                    <span className="matched-filename">{file.filename}</span>
-                    <span className="match-badge">{file.matchCount} {file.matchCount === 1 ? 'match' : 'matches'}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Regular Files Sidebar */}
-            <div className="kb-sidebar">
-              <h3>All Files ({kbFiles.length})</h3>
-              {kbFiles.map((file) => (
-                <div
-                  key={file.filename}
-                  className={`kb-file-item ${selectedKbFile === file.filename ? "active" : ""}`}
-                  onClick={() => {
-                    setSelectedKbFile(file.filename);
-                    loadKbFileContent(file.filename);
-                    // Clear find if not from search
-                    if (!showMatchedFiles) {
-                      setFindText("");
-                      setShowFindReplace(false);
-                    }
-                  }}
-                >
-                  <span className="kb-filename">{file.filename}</span>
-                  <span className="kb-filesize">{formatBytes(file.size)}</span>
-                </div>
-              ))}
-            </div>
-
-            <div className="kb-editor">
-              {selectedKbFile ? (
-                <>
-                  <div className="kb-editor-header">
-                    <h3>{selectedKbFile}</h3>
-                    <div className="kb-editor-actions">
-                      <button
-                        className={`action-btn ${showFindReplace ? "active" : ""}`}
-                        onClick={() => setShowFindReplace(!showFindReplace)}
-                        title="Find & Replace (Ctrl+H)"
-                      >
-                        <FaSearch size={14} /> Find & Replace
-                      </button>
-                      <button className="action-btn save-btn" onClick={handleSaveKbFile} disabled={kbLoading}>
-                        <FaSave size={14} /> Save Changes
-                      </button>
-                      <button className="action-btn secondary" onClick={handleTriggerIngestion} disabled={ingesting}>
-                        <FaSync size={14} className={ingesting ? "spinning" : ""} /> {ingesting ? "Ingesting..." : "Re-ingest All"}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Find & Replace Toolbar */}
-                  {showFindReplace && (
-                    <div className="find-replace-toolbar">
-                      <div className="find-replace-row">
-                        <label>Find:</label>
-                        <input
-                          type="text"
-                          value={findText}
-                          onChange={(e) => setFindText(e.target.value)}
-                          placeholder="Search text..."
-                          onKeyDown={(e) => e.key === 'Enter' && findNextMatch()}
-                        />
-                        <span className="match-counter">
-                          {matchCount > 0 ? `${currentMatchIndex || 1} of ${matchCount}` : "No matches"}
-                        </span>
-                        <button onClick={findPrevMatch} disabled={matchCount === 0} title="Previous match">
-                          ▲
-                        </button>
-                        <button onClick={findNextMatch} disabled={matchCount === 0} title="Next match">
-                          ▼
-                        </button>
-                      </div>
-                      <div className="find-replace-row">
-                        <label>Replace:</label>
-                        <input
-                          type="text"
-                          value={replaceText}
-                          onChange={(e) => setReplaceText(e.target.value)}
-                          placeholder="Replace with..."
-                          onKeyDown={(e) => e.key === 'Enter' && replaceCurrentMatch()}
-                        />
-                        <button onClick={replaceCurrentMatch} disabled={matchCount === 0} className="replace-btn">
-                          Replace
-                        </button>
-                        <button onClick={replaceAllMatches} disabled={matchCount === 0} className="replace-all-btn">
-                          Replace All
-                        </button>
-                      </div>
-                      <button className="close-find-replace" onClick={() => setShowFindReplace(false)}>
-                        <FaTimes size={12} />
-                      </button>
-                    </div>
-                  )}
-
-                  {kbLoading ? (
-                    <div className="loading-state">Loading file...</div>
-                  ) : (
-                    <div className="kb-editor-container">
-                      {/* Highlighted backdrop - shows yellow highlights */}
-                      {findText && (
-                        <div
-                          ref={highlightRef}
-                          className="kb-highlight-backdrop"
-                          dangerouslySetInnerHTML={{ __html: getHighlightedContent() }}
-                        />
-                      )}
-                      {/* Editable textarea on top */}
-                      <textarea
-                        ref={textareaRef}
-                        className={`kb-textarea ${findText ? "with-highlights" : ""}`}
-                        value={kbContent}
-                        onChange={(e) => setKbContent(e.target.value)}
-                        onScroll={handleTextareaScroll}
-                        spellCheck={false}
-                      />
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="kb-placeholder">Select a file to edit</div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Old local Knowledge Base tab removed - replaced by Cloud KB tab */}
 
       {/* =================== ANALYTICS TAB =================== */}
       {activeTab === "analytics" && (
@@ -1340,6 +1246,251 @@ export default function AdminDashboard() {
       )}
 
       {/* =================== SYSTEM TAB =================== */}
+      {/* =================== CLOUD KB TAB =================== */}
+      {activeTab === "cloud-kb" && (
+        <div className="tab-content">
+          <div className="kb-header">
+            <h2>Cloud Knowledge Base</h2>
+            <p>Manage documents in the Vertex AI Search datastore. Edit content directly or upload new files.</p>
+          </div>
+
+          {/* Search Bar */}
+          <div className="kb-search-bar">
+            <div className="search-box-with-voice">
+              <div className="search-box">
+                <FaSearch size={14} />
+                <input
+                  type="text"
+                  placeholder="Search across all cloud KB documents..."
+                  value={kbSearch}
+                  onChange={(e) => handleCloudKbSearch(e.target.value)}
+                />
+                {kbSearch && (
+                  <button className="clear-search" onClick={() => { setKbSearch(""); setFindText(""); setShowFindReplace(false); setCloudKbSearchResults(null); }}>
+                    <FaTimes size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Search Results Summary */}
+          {cloudKbSearchResults !== null && kbSearch && (
+            <div className="kb-search-summary">
+              <span className="search-summary-text">
+                {cloudKbSearching ? "Searching..." : (
+                  <>Found matches in <strong>{cloudKbSearchResults.length}</strong> files for "<strong>{kbSearch}</strong>"</>
+                )}
+              </span>
+            </div>
+          )}
+
+          {message && <p className="message" style={{ margin: "8px 0" }}>{message}</p>}
+          {cloudKbUploading && <div className="loading-state">Uploading document...</div>}
+
+          <div className="kb-layout">
+            {/* Document List Sidebar */}
+            <div className="kb-sidebar">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                <h3>{cloudKbSearchResults !== null && kbSearch
+                  ? `Matches (${cloudKbSearchResults.length})`
+                  : `Documents (${cloudKbDocs.length})`
+                }</h3>
+                <div style={{ display: "flex", gap: "4px" }}>
+                  <button className="action-btn" onClick={loadCloudKbDocs} disabled={cloudKbLoading} title="Refresh" style={{ padding: "4px 8px" }}>
+                    <FaSync size={12} className={cloudKbLoading ? "spinning" : ""} />
+                  </button>
+                  <label className="action-btn" style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "4px", padding: "4px 8px" }} title="Upload new document">
+                    <FaCalendarPlus size={12} />
+                    <input type="file" ref={cloudKbFileRef} accept=".txt,.pdf,.html,.csv,.json" onChange={handleCloudKbUpload} style={{ display: "none" }} />
+                  </label>
+                </div>
+              </div>
+              {cloudKbLoading || cloudKbSearching ? (
+                <div className="loading-state">{cloudKbSearching ? "Searching..." : "Loading..."}</div>
+              ) : cloudKbSearchResults !== null && kbSearch ? (
+                // Show only matched files when searching
+                cloudKbSearchResults.length === 0 ? (
+                  <div className="empty-state">No matches found</div>
+                ) : (
+                  cloudKbSearchResults.map((result) => {
+                    // Find matching doc from full list to get the id
+                    const doc = cloudKbDocs.find(d => d.filename === result.filename) || { id: result.filename, filename: result.filename, uri: result.uri, size: result.size };
+                    return (
+                      <div
+                        key={result.filename}
+                        className={`kb-file-item ${cloudKbSelected?.filename === result.filename ? "active" : ""}`}
+                        onClick={() => {
+                          loadCloudKbContent(doc);
+                          setFindText(kbSearch);
+                          setShowFindReplace(true);
+                        }}
+                      >
+                        <span className="kb-filename">{result.filename}</span>
+                        <span className="match-badge" style={{ background: "#e8f0fe", color: "#1a73e8", borderRadius: "10px", padding: "1px 8px", fontSize: "11px", fontWeight: 600 }}>
+                          {result.match_count} {result.match_count === 1 ? "match" : "matches"}
+                        </span>
+                      </div>
+                    );
+                  })
+                )
+              ) : (
+                // Show all files when not searching
+                cloudKbDocs.map((doc) => (
+                  <div
+                    key={doc.id}
+                    className={`kb-file-item ${cloudKbSelected?.id === doc.id ? "active" : ""}`}
+                    onClick={() => loadCloudKbContent(doc)}
+                  >
+                    <span className="kb-filename">{doc.filename}</span>
+                    <span className="kb-filesize">{doc.size > 0 ? formatBytes(doc.size) : ""}</span>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Document Editor */}
+            <div className="kb-editor">
+              {cloudKbSelected ? (
+                <>
+                  <div className="kb-editor-header">
+                    <h3>{cloudKbSelected.filename}</h3>
+                    <div className="kb-editor-actions">
+                      <button
+                        className={`action-btn ${showFindReplace ? "active" : ""}`}
+                        onClick={() => setShowFindReplace(!showFindReplace)}
+                        title="Find & Replace"
+                      >
+                        <FaSearch size={14} /> Find & Replace
+                      </button>
+                      {cloudKbEditing ? (
+                        <>
+                          <button className="action-btn save-btn" onClick={handleCloudKbSave}>
+                            <FaSave size={14} /> Save to Cloud
+                          </button>
+                          <button className="action-btn" onClick={() => { setCloudKbEditing(false); }}>
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button className="action-btn" onClick={() => { setCloudKbEditing(true); setCloudKbEditContent(cloudKbContent); }}>
+                          <FaEdit size={14} /> Edit
+                        </button>
+                      )}
+                      <button className="action-btn secondary" onClick={handleCloudKbSync} disabled={cloudKbSyncing}>
+                        <FaSync size={14} className={cloudKbSyncing ? "spinning" : ""} /> {cloudKbSyncing ? "Syncing..." : "Re-sync"}
+                      </button>
+                      <button className="action-btn danger" onClick={() => handleCloudKbDelete(cloudKbSelected)} title="Delete this document">
+                        <FaTrash size={14} /> Delete
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Find & Replace Toolbar */}
+                  {showFindReplace && (
+                    <div className="find-replace-toolbar">
+                      <div className="find-replace-row">
+                        <label>Find:</label>
+                        <input
+                          type="text"
+                          value={findText}
+                          onChange={(e) => setFindText(e.target.value)}
+                          placeholder="Search text..."
+                          onKeyDown={(e) => e.key === 'Enter' && findNextMatch()}
+                        />
+                        <span className="match-counter">
+                          {matchCount > 0 ? `${currentMatchIndex || 1} of ${matchCount}` : "No matches"}
+                        </span>
+                        <button onClick={findPrevMatch} disabled={matchCount === 0} title="Previous match">
+                          &#9650;
+                        </button>
+                        <button onClick={findNextMatch} disabled={matchCount === 0} title="Next match">
+                          &#9660;
+                        </button>
+                      </div>
+                      {cloudKbEditing && (
+                        <div className="find-replace-row">
+                          <label>Replace:</label>
+                          <input
+                            type="text"
+                            value={replaceText}
+                            onChange={(e) => setReplaceText(e.target.value)}
+                            placeholder="Replace with..."
+                            onKeyDown={(e) => e.key === 'Enter' && replaceCurrentMatch()}
+                          />
+                          <button onClick={replaceCurrentMatch} disabled={matchCount === 0} className="replace-btn">
+                            Replace
+                          </button>
+                          <button onClick={replaceAllMatches} disabled={matchCount === 0} className="replace-all-btn">
+                            Replace All
+                          </button>
+                        </div>
+                      )}
+                      <button className="close-find-replace" onClick={() => setShowFindReplace(false)}>
+                        <FaTimes size={12} />
+                      </button>
+                    </div>
+                  )}
+
+                  {cloudKbContent === "Loading..." ? (
+                    <div className="loading-state">Loading file...</div>
+                  ) : cloudKbEditing ? (
+                    <div className="kb-editor-container">
+                      {findText && (
+                        <div
+                          ref={highlightRef}
+                          className="kb-highlight-backdrop"
+                          dangerouslySetInnerHTML={{ __html: getHighlightedContent() }}
+                        />
+                      )}
+                      <textarea
+                        ref={textareaRef}
+                        className={`kb-textarea ${findText ? "with-highlights" : ""}`}
+                        value={cloudKbEditContent}
+                        onChange={(e) => setCloudKbEditContent(e.target.value)}
+                        onScroll={handleTextareaScroll}
+                        spellCheck={false}
+                      />
+                    </div>
+                  ) : (
+                    <div className="kb-editor-container">
+                      {findText ? (
+                        <div
+                          ref={textareaRef}
+                          className="kb-textarea"
+                          style={{
+                            whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "monospace",
+                            fontSize: "13px", background: "#f8f9fa", padding: "16px", borderRadius: "6px",
+                            border: "1px solid #e0e0e0", overflow: "auto", lineHeight: "1.5",
+                            height: "100%", margin: 0
+                          }}
+                          dangerouslySetInnerHTML={{ __html: getHighlightedContent() }}
+                        />
+                      ) : (
+                        <pre
+                          ref={textareaRef}
+                          className="kb-textarea"
+                          style={{
+                            whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "monospace",
+                            fontSize: "13px", background: "#f8f9fa", padding: "16px", borderRadius: "6px",
+                            border: "1px solid #e0e0e0", overflow: "auto", lineHeight: "1.5",
+                            height: "100%", margin: 0
+                          }}
+                        >
+                          {cloudKbContent}
+                        </pre>
+                      )}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="kb-placeholder">Select a document to view or edit</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {activeTab === "system" && (
         <div className="tab-content">
           <div className="system-header">

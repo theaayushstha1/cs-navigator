@@ -18,6 +18,11 @@ export default defineConfig({
       '/chat': {
         target: BACKEND_URL,
         changeOrigin: true,
+        bypass(req) {
+          if (req.method === 'GET' && req.headers.accept?.includes('text/html')) {
+            return '/index.html'
+          }
+        },
       },
       '/reset-history': {
         target: BACKEND_URL,
