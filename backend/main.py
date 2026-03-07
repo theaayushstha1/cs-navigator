@@ -2,18 +2,18 @@ import sys
 # Force unbuffered output so we see logs immediately
 sys.stdout.reconfigure(line_buffering=True)
 
-print("✅✅✅ main.py loaded successfully")
+print("[OK] main.py loaded successfully")
 
 import os
 import re
 import json
 # import time  # Commented: currently unused, kept for potential future use
-import shutil # 🔥 NEW: For file operations
+import shutil #  NEW: For file operations
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-# 🔥 FIXED IMPORTS: Use 'pypdf' which you installed, not 'PyPDF2'
+#  FIXED IMPORTS: Use 'pypdf' which you installed, not 'PyPDF2'
 import pypdf 
 import docx
 from langchain.schema import SystemMessage, HumanMessage 
@@ -52,18 +52,18 @@ if os.path.exists(_catalog_path):
             _lines.append(f"  {c['course_code']} - {c['course_name']} ({c.get('credits',3)} cr, {c.get('category','')}) Prereqs: {prereqs}")
         COURSE_CATALOG_TEXT = "AVAILABLE CS COURSES AT MORGAN STATE (from official catalog):\n" + "\n".join(_lines) + "\n"
     except Exception as _e:
-        print(f"⚠️ Failed to load course catalog: {_e}")
+        print(f"[WARN] Failed to load course catalog: {_e}")
 
-print(f"🔍 Looking for .env at: {ENV_PATH}")
+print(f"[INFO] Looking for .env at: {ENV_PATH}")
 
 if os.path.exists(ENV_PATH):
     load_dotenv(ENV_PATH)
-    print("✅ .env file loaded!")
+    print("[OK] .env file loaded!")
 else:
-    print("❌ .env file NOT found at root. Checking backend folder...")
+    print("[ERROR] .env file NOT found at root. Checking backend folder...")
     load_dotenv(os.path.join(BACKEND_DIR, ".env"))
 
-print(f"🔑 JWT_SECRET Check: {'FOUND' if os.getenv('JWT_SECRET') else 'MISSING'}")
+print(f"[KEY] JWT_SECRET Check: {'FOUND' if os.getenv('JWT_SECRET') else 'MISSING'}")
 
 # SQLAlchemy Imports
 from sqlalchemy.orm import Session
@@ -71,7 +71,10 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, text
 
 # Vertex AI Agent Engine (replaces Pinecone + OpenAI RAG pipeline)
-from vertex_agent import query_agent, check_agent_health, reset_session
+from vertex_agent import query_agent, query_agent_stream, check_agent_health, reset_session
+
+# Query caching for faster responses
+from cache import query_cache, get_context_hash, log_cache_stats
 
 
 # Legacy imports kept for /ingest endpoint and file analysis fallback
@@ -112,21 +115,21 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 240
 
 # Upload configuration
 UPLOAD_FOLDER = os.path.join(BACKEND_DIR, "uploads", "profile_pictures")
-CHAT_FILES_FOLDER = os.path.join(BACKEND_DIR, "uploads", "chat_files") # 🔥 NEW: Chat files folder
+CHAT_FILES_FOLDER = os.path.join(BACKEND_DIR, "uploads", "chat_files") #  NEW: Chat files folder
 
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'txt', 'docx', 'doc', 'mov', 'mp4'} # 🔥 NEW: Added Docs
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'txt', 'docx', 'doc', 'mov', 'mp4'} #  NEW: Added Docs
 
 # Create folders if not exist
 for folder in [UPLOAD_FOLDER, CHAT_FILES_FOLDER]:
     if not os.path.exists(folder):
         os.makedirs(folder, exist_ok=True)
-        print(f"✅ Created folder: {folder}")
+        print(f"[OK] Created folder: {folder}")
 
 # Safety check for keys
 if USE_VERTEX_AGENT:
-    print(f"🚀 Using Vertex AI Agent Engine at {ADK_BASE_URL}")
+    print(f"[INFO] Using Vertex AI Agent Engine at {ADK_BASE_URL}")
 elif not all([PINECONE_API_KEY, PINECONE_ENV, PINECONE_INDEX, OPENAI_API_KEY]):
-    print("⚠️ WARNING: Some API keys are missing. Chatbot features will be limited.")
+    print("[WARN] WARNING: Some API keys are missing. Chatbot features will be limited.")
 
 # ==============================================================================
 # 3. DATABASE MODELS (UPDATED WITH SESSION_ID)
@@ -139,14 +142,14 @@ class ChatHistory(Base):
     __tablename__ = "chat_history"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
-    session_id = Column(String(255), default="default") # 🔥 NEW: Support multiple threads
+    session_id = Column(String(255), default="default") #  NEW: Support multiple threads
     user_query = Column(Text)
     bot_response = Column(Text)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Feedback(Base):
     """
-    🔥 NEW: Stores user feedback on bot responses for improving the chatbot.
+     NEW: Stores user feedback on bot responses for improving the chatbot.
     """
     __tablename__ = "feedback"
     id = Column(Integer, primary_key=True, index=True)
@@ -162,9 +165,9 @@ def init_db():
     # 1. Create tables if missing
     try:
         Base.metadata.create_all(bind=engine)
-        print("✅ Database tables checked/created.")
+        print("[OK] Database tables checked/created.")
     except Exception as e:
-        print(f"⚠️ DB Connection Error: {e}")
+        print(f"[WARN] DB Connection Error: {e}")
 
     # 2. Add session_id column if missing (For existing DBs)
     with engine.connect() as conn:
@@ -172,44 +175,44 @@ def init_db():
             # Check if column exists by selecting from it
             conn.execute(text("SELECT session_id FROM chat_history LIMIT 1"))
         except (OperationalError, ProgrammingError):
-            print("⚠️ 'session_id' column missing. Adding it now...")
+            print("[WARN] 'session_id' column missing. Adding it now...")
             try:
                 conn.execute(text("ALTER TABLE chat_history ADD COLUMN session_id VARCHAR(255) DEFAULT 'default'"))
                 conn.commit()
-                print("✅ Successfully added 'session_id' column!")
+                print("[OK] Successfully added 'session_id' column!")
             except Exception as e:
-                print(f"❌ Failed to add column: {e}")
+                print(f"[ERROR] Failed to add column: {e}")
 
         # 3. Add profile_picture_data column if missing (For base64 storage)
         try:
             conn.execute(text("SELECT profile_picture_data FROM users LIMIT 1"))
         except (OperationalError, ProgrammingError):
-            print("⚠️ 'profile_picture_data' column missing. Adding it now...")
+            print("[WARN] 'profile_picture_data' column missing. Adding it now...")
             try:
                 conn.execute(text("ALTER TABLE users ADD COLUMN profile_picture_data LONGTEXT"))
                 conn.commit()
-                print("✅ Successfully added 'profile_picture_data' column!")
+                print("[OK] Successfully added 'profile_picture_data' column!")
             except Exception as e:
-                print(f"❌ Failed to add profile_picture_data column: {e}")
+                print(f"[ERROR] Failed to add profile_picture_data column: {e}")
 
         # 4. Add morgan_connected_at column if missing
         try:
             conn.execute(text("SELECT morgan_connected_at FROM users LIMIT 1"))
         except (OperationalError, ProgrammingError):
-            print("⚠️ 'morgan_connected_at' column missing. Adding it now...")
+            print("[WARN] 'morgan_connected_at' column missing. Adding it now...")
             try:
                 conn.execute(text("ALTER TABLE users ADD COLUMN morgan_connected_at DATETIME"))
                 conn.commit()
-                print("✅ Successfully added 'morgan_connected_at' column!")
+                print("[OK] Successfully added 'morgan_connected_at' column!")
             except Exception as e:
-                print(f"❌ Failed to add morgan_connected_at column: {e}")
+                print(f"[ERROR] Failed to add morgan_connected_at column: {e}")
 
         # 5. Check if degreeworks_data table exists
         try:
             conn.execute(text("SELECT id FROM degreeworks_data LIMIT 1"))
-            print("✅ degreeworks_data table exists")
+            print("[OK] degreeworks_data table exists")
         except (OperationalError, ProgrammingError):
-            print("⚠️ 'degreeworks_data' table missing. Creating it now...")
+            print("[WARN] 'degreeworks_data' table missing. Creating it now...")
             try:
                 conn.execute(text("""
                     CREATE TABLE degreeworks_data (
@@ -237,16 +240,16 @@ def init_db():
                     )
                 """))
                 conn.commit()
-                print("✅ Successfully created 'degreeworks_data' table!")
+                print("[OK] Successfully created 'degreeworks_data' table!")
             except Exception as e:
-                print(f"❌ Failed to create degreeworks_data table: {e}")
+                print(f"[ERROR] Failed to create degreeworks_data table: {e}")
 
         # 6. Check if support_tickets table exists
         try:
             conn.execute(text("SELECT id FROM support_tickets LIMIT 1"))
-            print("✅ support_tickets table exists")
+            print("[OK] support_tickets table exists")
         except (OperationalError, ProgrammingError):
-            print("⚠️ 'support_tickets' table missing. Creating it now...")
+            print("[WARN] 'support_tickets' table missing. Creating it now...")
             try:
                 conn.execute(text("""
                     CREATE TABLE support_tickets (
@@ -269,9 +272,9 @@ def init_db():
                     )
                 """))
                 conn.commit()
-                print("✅ Successfully created 'support_tickets' table!")
+                print("[OK] Successfully created 'support_tickets' table!")
             except Exception as e:
-                print(f"❌ Failed to create support_tickets table: {e}")
+                print(f"[ERROR] Failed to create support_tickets table: {e}")
 
     # 7. Create/Update admin account
     try:
@@ -286,9 +289,9 @@ def init_db():
             if existing_admin.role != "admin":
                 existing_admin.role = "admin"
                 db.commit()
-                print(f"✅ Updated {admin_email} to admin role!")
+                print(f"[OK] Updated {admin_email} to admin role!")
             else:
-                print(f"✅ Admin account {admin_email} already exists with admin role.")
+                print(f"[OK] Admin account {admin_email} already exists with admin role.")
         else:
             # Create new admin account
             from security import hash_password
@@ -301,11 +304,11 @@ def init_db():
             )
             db.add(admin_user)
             db.commit()
-            print(f"✅ Created admin account: {admin_email}")
+            print(f"[OK] Created admin account: {admin_email}")
 
         db.close()
     except Exception as e:
-        print(f"❌ Failed to create/update admin account: {e}")
+        print(f"[ERROR] Failed to create/update admin account: {e}")
 
 init_db()
 
@@ -324,17 +327,17 @@ def build_qa_chain():
     if USE_VERTEX_AGENT:
         # Check Vertex AI Agent health
         health = check_agent_health()
-        print(f"🤖 Vertex AI Agent: {health['status']} - {health['message']}")
+        print(f" Vertex AI Agent: {health['status']} - {health['message']}")
         if health["status"] != "connected":
-            print("⚠️ ADK server not running. Start it with:")
+            print("[WARN] ADK server not running. Start it with:")
             print("   cd google-ai-engine-research/adk_deploy && python -m google.adk.cli web . --port 8080")
         return
 
     if not LEGACY_RAG_AVAILABLE:
-        print("⚠️ Legacy RAG libraries not installed. Chatbot will be offline.")
+        print("[WARN] Legacy RAG libraries not installed. Chatbot will be offline.")
         return
     if not all([PINECONE_API_KEY, OPENAI_API_KEY, PINECONE_INDEX]):
-        print("⚠️ API Keys missing. Chatbot will be offline.")
+        print("[WARN] API Keys missing. Chatbot will be offline.")
         return
     try:
         pc = Pinecone(api_key=PINECONE_API_KEY)
@@ -354,9 +357,9 @@ def build_qa_chain():
         )
         llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-3.5-turbo", temperature=0)
         qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents=True)
-        print("✅ Legacy AI System Initialized (Pinecone + OpenAI)")
+        print("[OK] Legacy AI System Initialized (Pinecone + OpenAI)")
     except Exception as e:
-        print(f"❌ AI Init Failed: {e}")
+        print(f"[ERROR] AI Init Failed: {e}")
 
 @asynccontextmanager
 async def lifespan(app):
@@ -386,12 +389,12 @@ UPLOADS_DIR = os.path.join(BACKEND_DIR, "uploads")
 if os.path.exists(UPLOADS_DIR):
     try:
         app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
-        print(f"✅ Static files mounted: /uploads -> {UPLOADS_DIR}")
+        print(f"[OK] Static files mounted: /uploads -> {UPLOADS_DIR}")
     except Exception as e:
-        print(f"❌ Error mounting static files: {e}")
+        print(f"[ERROR] Error mounting static files: {e}")
 else:
     os.makedirs(UPLOADS_DIR, exist_ok=True)
-    print(f"✅ Created uploads directory: {UPLOADS_DIR}")
+    print(f"[OK] Created uploads directory: {UPLOADS_DIR}")
 
 # ==============================================================================
 # 5. AUTHENTICATION HELPERS
@@ -445,7 +448,7 @@ class LoginRequest(BaseModel):
 
 class QueryRequest(BaseModel):
     query: str
-    session_id: str = "default" # 🔥 NEW: Accept session ID
+    session_id: str = "default" #  NEW: Accept session ID
 
 class GuestQueryRequest(BaseModel):
     query: str
@@ -493,7 +496,7 @@ class TTSRequest(BaseModel):
     text: str
     voice: str = "alloy"  # Options: alloy, echo, fable, onyx, nova, shimmer
 
-# 🔥 DegreeWorks Data Schema
+#  DegreeWorks Data Schema
 class DegreeWorksRequest(BaseModel):
     student_name: Optional[str] = None
     student_id: Optional[str] = None
@@ -666,7 +669,7 @@ async def upload_profile_picture(profilePicture: UploadFile = File(...), user: d
     # Return base64 data URL for immediate display
     return {"url": data_url}
 
-# 🔥 NEW: Chat File Upload Endpoint
+#  NEW: Chat File Upload Endpoint
 @app.post("/api/upload-file")
 async def upload_chat_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     # 1. Validate File Type
@@ -685,7 +688,7 @@ async def upload_chat_file(file: UploadFile = File(...), user: dict = Depends(ge
         with open(filepath, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
     except Exception as e:
-        print(f"❌ File Save Error: {e}")
+        print(f"[ERROR] File Save Error: {e}")
         raise HTTPException(500, "Could not save file")
 
     # 4. Return the public URL
@@ -789,7 +792,7 @@ async def sync_degreeworks(
         }
 
     except Exception as e:
-        print(f"❌ DegreeWorks Sync Error: {e}")
+        print(f"[ERROR] DegreeWorks Sync Error: {e}")
         raise HTTPException(500, f"Failed to sync DegreeWorks data: {str(e)}")
 
 
@@ -944,7 +947,7 @@ async def disconnect_degreeworks(user: dict = Depends(get_current_user), db: Ses
 
         return {"success": True, "message": "DegreeWorks data disconnected"}
     except Exception as e:
-        print(f"❌ DegreeWorks Disconnect Error: {e}")
+        print(f"[ERROR] DegreeWorks Disconnect Error: {e}")
         raise HTTPException(500, f"Failed to disconnect: {str(e)}")
 
 
@@ -1076,7 +1079,7 @@ async def upload_degreeworks_pdf(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ DegreeWorks PDF Upload Error: {e}")
+        print(f"[ERROR] DegreeWorks PDF Upload Error: {e}")
         raise HTTPException(500, f"Failed to process PDF: {str(e)}")
 
 
@@ -1146,7 +1149,7 @@ async def scrape_degreeworks_html(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ DegreeWorks HTML Scrape Error: {e}")
+        print(f"[ERROR] DegreeWorks HTML Scrape Error: {e}")
         raise HTTPException(500, f"Failed to process DegreeWorks data: {str(e)}")
 
 
@@ -1650,7 +1653,7 @@ def extract_file_content(filepath: str) -> str:
     text = ""
     try:
         if ext == 'pdf':
-            # 🔥 UPDATED: Uses pypdf instead of PyPDF2
+            #  UPDATED: Uses pypdf instead of PyPDF2
             reader = pypdf.PdfReader(filepath)
             for page in reader.pages:
                 text += page.extract_text() + "\n"
@@ -1838,7 +1841,7 @@ Use the provided file content and conversation history to answer the user's ques
             if conversation_context:
                 agent_context += conversation_context
 
-            print(f"🤖 Vertex AI query: '{user_q[:50]}...' (user={user['user_id']}, context={len(agent_context)} chars)")
+            print(f" Vertex AI query: '{user_q[:50]}...' (user={user['user_id']}, context={len(agent_context)} chars)")
             answer = query_agent(
                 query=user_q,
                 user_id=str(user["user_id"]),
@@ -1886,9 +1889,216 @@ ONLY answer based on the KNOWLEDGE BASE CONTEXT provided. If info is not found, 
         db.add(new_chat)
         db.commit()
     except Exception as e:
-        print(f"❌ Failed to save chat history: {e}")
+        print(f"[ERROR] Failed to save chat history: {e}")
 
     return {"response": answer}
+
+
+# ==============================================================================
+# STREAMING CHAT ENDPOINT (Server-Sent Events)
+# ==============================================================================
+@app.post("/chat/stream")
+async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Streaming chat endpoint using Server-Sent Events (SSE).
+    Returns text chunks as they arrive from the AI agent for faster perceived response time.
+    """
+    if not user:
+        raise HTTPException(401, "Unauthorized")
+
+    user_q = req.query.strip()
+    session_id = req.session_id or "default"
+
+    # Build context (same as regular /chat endpoint)
+    student_context = ""
+    dw_data = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
+    if dw_data:
+        student_context = "\n" + "="*60 + "\n"
+        student_context += "THIS STUDENT'S DEGREEWORKS ACADEMIC RECORD:\n"
+        student_context += "="*60 + "\n\n"
+        student_context += "STUDENT PROFILE:\n"
+        if dw_data.student_name:
+            student_context += f"- Name: {dw_data.student_name}\n"
+        if dw_data.student_id:
+            student_context += f"- Student ID: {dw_data.student_id}\n"
+        if dw_data.classification:
+            student_context += f"- Classification: {dw_data.classification}\n"
+        if dw_data.degree_program:
+            student_context += f"- Degree Program: {dw_data.degree_program}\n"
+        if dw_data.overall_gpa:
+            student_context += f"- Overall GPA: {dw_data.overall_gpa}\n"
+        if dw_data.major_gpa:
+            student_context += f"- Major GPA: {dw_data.major_gpa}\n"
+        if dw_data.total_credits_earned:
+            student_context += f"- Credits Earned: {dw_data.total_credits_earned}\n"
+        if dw_data.credits_required:
+            student_context += f"- Credits Required: {dw_data.credits_required}\n"
+        if dw_data.credits_remaining:
+            student_context += f"- Credits Remaining: {dw_data.credits_remaining}\n"
+        if dw_data.advisor:
+            student_context += f"- Academic Advisor: {dw_data.advisor}\n"
+        if dw_data.catalog_year:
+            student_context += f"- Catalog Year: {dw_data.catalog_year}\n"
+        student_context += "\n"
+
+        # Completed courses
+        if dw_data.courses_completed:
+            try:
+                completed = json.loads(dw_data.courses_completed)
+                if completed:
+                    student_context += "ALREADY COMPLETED COURSES (DO NOT RECOMMEND THESE):\n"
+                    for c in completed[:15]:
+                        student_context += f"  - {c.get('code', '')} {c.get('name', '')} (Grade: {c.get('grade', '')})\n"
+                    student_context += "\n"
+            except: pass
+
+        # Remaining requirements
+        if dw_data.courses_remaining:
+            try:
+                remaining = json.loads(dw_data.courses_remaining)
+                if remaining:
+                    student_context += "STILL NEEDS TO COMPLETE (PRIORITIZE THESE FOR RECOMMENDATIONS):\n"
+                    for c in remaining[:10]:
+                        req_text = c.get('requirement', c.get('code', ''))
+                        student_context += f"  - {req_text}\n"
+                    student_context += "\n"
+            except: pass
+
+        student_context += "INSTRUCTION: When recommending courses, ONLY recommend from the AVAILABLE COURSES list below.\n"
+        if COURSE_CATALOG_TEXT:
+            student_context += "\n" + COURSE_CATALOG_TEXT + "\n"
+        student_context += "="*60 + "\n\n"
+
+    # Conversation history
+    recent_history = db.query(ChatHistory)\
+        .filter(ChatHistory.user_id == user["user_id"])\
+        .filter(ChatHistory.session_id == session_id)\
+        .order_by(ChatHistory.timestamp.desc())\
+        .limit(6)\
+        .all()
+    recent_history = list(reversed(recent_history))
+
+    conversation_context = ""
+    if recent_history:
+        conversation_context = "Previous conversation:\n"
+        for chat in recent_history:
+            conversation_context += f"User: {chat.user_query}\n"
+            conversation_context += f"Assistant: {chat.bot_response}\n"
+        conversation_context += "\n"
+
+    agent_context = student_context + conversation_context
+
+    # Store user_id and session_id for saving history after stream completes
+    user_id = user["user_id"]
+
+    # =========================================================================
+    # CACHE CHECK - Return cached response instantly if available
+    # =========================================================================
+    context_hash = get_context_hash(user_id, has_degreeworks=bool(dw_data))
+    cached_response = query_cache.get(user_q, context_hash)
+
+    if cached_response:
+        print(f"[CACHE] HIT for query: {user_q[:50]}...")
+
+        async def generate_cached_sse():
+            """Return cached response as SSE."""
+            # Send status to show it's from cache
+            yield f"data: {json.dumps({'type': 'status', 'content': 'Retrieved from cache'})}\n\n"
+            # Send the full response immediately
+            yield f"data: {json.dumps({'type': 'done', 'content': cached_response})}\n\n"
+
+            # Still save to chat history
+            try:
+                with SessionLocal() as save_db:
+                    new_chat = ChatHistory(
+                        user_id=user_id,
+                        session_id=session_id,
+                        user_query=user_q,
+                        bot_response=cached_response
+                    )
+                    save_db.add(new_chat)
+                    save_db.commit()
+            except Exception as e:
+                print(f"[ERROR] Failed to save cached chat history: {e}")
+
+        return StreamingResponse(
+            generate_cached_sse(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+
+    # =========================================================================
+    # CACHE MISS - Stream from AI agent and cache the result
+    # =========================================================================
+    print(f"[CACHE] MISS for query: {user_q[:50]}...")
+
+    async def generate_sse():
+        """SSE generator that streams text chunks from the agent."""
+        full_response = ""
+        try:
+            for event in query_agent_stream(
+                query=user_q,
+                user_id=str(user_id),
+                context=agent_context
+            ):
+                event_type = event.get("type", "")
+                content = event.get("content", "")
+
+                if event_type == "status":
+                    yield f"data: {json.dumps({'type': 'status', 'content': content})}\n\n"
+
+                elif event_type == "chunk":
+                    full_response += content
+                    # Send SSE event
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': content})}\n\n"
+
+                elif event_type == "done":
+                    full_response = content or full_response
+                    yield f"data: {json.dumps({'type': 'done', 'content': full_response})}\n\n"
+
+                elif event_type == "error":
+                    yield f"data: {json.dumps({'type': 'error', 'content': content})}\n\n"
+                    full_response = content
+                    break
+
+        except Exception as e:
+            print(f"[ERROR] Streaming error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'content': 'An error occurred during streaming.'})}\n\n"
+            full_response = "An error occurred during streaming."
+
+        # Cache the successful response
+        if full_response and "error" not in full_response.lower()[:50]:
+            if query_cache.set(user_q, full_response, context_hash):
+                print(f"[CACHE] Stored response for: {user_q[:50]}...")
+
+        # Save to chat history after stream completes
+        try:
+            with SessionLocal() as save_db:
+                new_chat = ChatHistory(
+                    user_id=user_id,
+                    session_id=session_id,
+                    user_query=user_q,
+                    bot_response=full_response
+                )
+                save_db.add(new_chat)
+                save_db.commit()
+        except Exception as e:
+            print(f"[ERROR] Failed to save streamed chat history: {e}")
+
+    return StreamingResponse(
+        generate_sse(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
 
 # ==============================================================================
 # GUEST CHAT ENDPOINT (No Authentication Required)
@@ -1954,6 +2164,15 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
     elif len(norm) <= 2 or not any(c.isalpha() for c in user_q):
         return {"response": "I'm here to help! Ask me about CS courses, professors, degree requirements, or anything else about Morgan State's Computer Science program."}
 
+    # =========================================================================
+    # CACHE CHECK - Return cached response instantly for guest queries
+    # =========================================================================
+    # Guest queries share cache (no user-specific context)
+    cached_response = query_cache.get(user_q, context_hash="")
+    if cached_response:
+        print(f"[CACHE] HIT (guest) for: {user_q[:50]}...")
+        return {"response": cached_response, "cached": True}
+
     # Use Vertex AI Agent for real questions
     if USE_VERTEX_AGENT:
         try:
@@ -1970,12 +2189,17 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
 
             # Use a guest-specific user_id based on IP for session management
             guest_user_id = f"guest_{client_ip.replace('.', '_')}"
-            print(f"🤖 [Guest] Vertex AI query: '{user_q[:50]}...'")
+            print(f"[CACHE] MISS (guest) for: '{user_q[:50]}...'")
             answer = query_agent(
                 query=user_q,
                 user_id=guest_user_id,
                 context=guest_context,
             )
+
+            # Cache the successful response
+            if answer and "error" not in answer.lower()[:50]:
+                query_cache.set(user_q, answer, context_hash="")
+
         except Exception as e:
             print(f"   Guest Vertex AI Error: {e}")
             answer = "I'm having trouble processing your request. Please try again."
@@ -2617,6 +2841,35 @@ async def sync_cloud_kb(user: dict = Depends(get_current_user)):
     if not result["success"]:
         raise HTTPException(status_code=500, detail=result["message"])
     return result
+
+
+# ==============================================================================
+# CACHE MANAGEMENT ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/admin/cache/stats")
+async def get_cache_stats(user: dict = Depends(get_current_user)):
+    """Get cache statistics - hits, misses, hit rate, etc."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    stats = query_cache.get_stats()
+    return {
+        "success": True,
+        "cache_stats": stats
+    }
+
+@app.post("/api/admin/cache/clear")
+async def clear_cache(user: dict = Depends(get_current_user)):
+    """Clear all cached responses"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    cleared_count = query_cache.clear()
+    return {
+        "success": True,
+        "message": f"Cleared {cleared_count} cached items"
+    }
 
 @app.get("/api/admin/cloud-kb/search")
 async def search_cloud_kb_docs(q: str, user: dict = Depends(get_current_user)):

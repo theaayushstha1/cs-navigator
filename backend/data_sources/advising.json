@@ -1,8 +1,17 @@
 {
     "academic_advising": {
       "overview": {
-        "description": "Academic advising is a crucial part of students' academic journey at the School of Computer, Mathematical, and Natural Sciences (SCMNS). It is a collaborative and interactive process where students work closely with their academic advisors to plan and navigate their educational path. To support you, we’ve developed a roadmap that outlines the advising process. Please note that advising opens at different times throughout the semester, and class registration dates vary based on student classification (freshman, sophomore, junior, senior). For the most up-to-date class registration timeline, refer to the link below.",
+        "description": "Academic advising is a crucial part of students' academic journey at the School of Computer, Mathematical, and Natural Sciences (SCMNS). It is a collaborative and interactive process where students work closely with their academic advisors to plan and navigate their educational path. To support you, we've developed a roadmap that outlines the advising process. Please note that advising opens at different times throughout the semester, and class registration dates vary based on student classification (freshman, sophomore, junior, senior). For the most up-to-date class registration timeline, refer to the link below.",
         "registration_link": "https://www.morgan.edu/office-of-the-registrar/priority-registration-time-ticket-groupings",
+        "fall_2026_registration_dates": {
+          "seniors_90_plus_credits": "March 30, 2026",
+          "graduate_students": "March 30, 2026",
+          "honors_athletes_veterans_sdss": "March 30, 2026",
+          "juniors_56_to_89_credits": "April 6, 2026",
+          "sophomores_25_to_55_credits": "April 13, 2026",
+          "freshmen_0_to_24_credits": "April 13, 2026",
+          "general_registration_all_students": "April 27 - September 8, 2026"
+        },
         "additional_advising_info": {
             "general_advising": "For more details about academic advising, please visit the general advising page: https://www.morgan.edu/school-of-computer-mathematical-and-natural-sciences/students/scmns-advising",
             "computer_science_advising": "For specific advising related to Computer Science, visit the Computer Science advising page: https://www.morgan.edu/computer-science/current-students"

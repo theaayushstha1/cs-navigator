@@ -646,6 +646,138 @@ body.dark .send-btn:hover:not(:disabled) {
   }
 }
 
+/* Thinking indicator - ChatGPT/Claude style with shimmer */
+.thinking-bubble {
+  padding: 14px 20px !important;
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border-color);
+}
+
+.thinking-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Pulsing orb indicator */
+.thinking-orb {
+  width: 14px;
+  height: 14px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.orb-pulse {
+  width: 10px;
+  height: 10px;
+  background: linear-gradient(135deg, var(--msu-blue), var(--msu-orange, #f37021));
+  border-radius: 50%;
+  animation: orbPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes orbPulse {
+  0%, 100% {
+    transform: scale(0.8);
+    opacity: 0.6;
+    box-shadow: 0 0 0 0 rgba(0, 45, 114, 0.4);
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 1;
+    box-shadow: 0 0 12px 4px rgba(0, 45, 114, 0.3);
+  }
+}
+
+/* Shimmer text effect like ChatGPT */
+.thinking-text-shimmer {
+  font-size: 0.9rem;
+  font-weight: 500;
+  background: linear-gradient(
+    110deg,
+    var(--text-secondary, #666) 35%,
+    var(--text-primary, #333) 50%,
+    var(--text-secondary, #666) 65%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmerText 2.5s linear infinite;
+}
+
+@keyframes shimmerText {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Timer */
+.thinking-timer {
+  font-size: 0.75rem;
+  color: var(--text-tertiary, #999);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+/* Inline thinking status (shown inside message bubble) */
+.inline-thinking {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.inline-thinking .thinking-orb {
+  width: 12px;
+  height: 12px;
+}
+
+.inline-thinking .orb-pulse {
+  width: 8px;
+  height: 8px;
+}
+
+.inline-thinking .thinking-text-shimmer {
+  font-size: 0.85rem;
+}
+
+/* Streaming cursor - pulsing dots like modern AI chat */
+.streaming-cursor {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  gap: 4px;
+  vertical-align: middle;
+}
+
+.stream-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--msu-blue, #002d72), var(--msu-orange, #f37021));
+  animation: streamPulse 1.4s ease-in-out infinite;
+}
+
+.stream-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.stream-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes streamPulse {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(0.7);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
 /* Text-to-Speech Button */
 .tts-btn {
   background: transparent;

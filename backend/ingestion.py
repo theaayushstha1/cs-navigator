@@ -24,13 +24,13 @@ root_dir = os.path.dirname(backend_dir)
 # 3. Build path to .env file in the root
 env_path = os.path.join(root_dir, ".env")
 
-print(f"🔍 Checking for .env at: {env_path}")
+print(f" Checking for .env at: {env_path}")
 
 if os.path.exists(env_path):
-    print("✅ Found .env file. Loading variables...")
+    print(" Found .env file. Loading variables...")
     load_dotenv(env_path)
 else:
-    print("⚠️  WARNING: .env file NOT found at root. Checking current directory...")
+    print("️  WARNING: .env file NOT found at root. Checking current directory...")
     # Fallback: check if it's inside backend/ for some reason
     load_dotenv() 
 
@@ -49,7 +49,7 @@ print(f"   - OPENAI_API_KEY:   {'OK' if OPENAI_API_KEY else 'MISSING'}")
 
 if not all([PINECONE_API_KEY, PINECONE_ENV, PINECONE_INDEX, OPENAI_API_KEY]):
     raise RuntimeError(
-        "\n❌ CRITICAL ERROR: Missing environment variables.\n"
+        "\n CRITICAL ERROR: Missing environment variables.\n"
         f"Please create a .env file at: {env_path}\n"
         "It must contain: PINECONE_API_KEY, PINECONE_ENV, PINECONE_INDEX_NAME, OPENAI_API_KEY"
     )
@@ -102,7 +102,7 @@ def load_json_documents(paths: List[str]) -> List[Dict]:
     docs: List[Dict] = []
     for path in paths:
         if not os.path.exists(path):
-            print(f"⚠️  Skipping missing file: {path}")
+            print(f"️  Skipping missing file: {path}")
             continue
         fn = os.path.basename(path)
         try:
@@ -111,7 +111,7 @@ def load_json_documents(paths: List[str]) -> List[Dict]:
             pretty = json.dumps(normalize_keys(raw), indent=2, ensure_ascii=False)
             docs.append({"text": pretty, "source": fn})
         except Exception as e:
-            print(f"⚠️  Failed to parse {fn}: {e}")
+            print(f"️  Failed to parse {fn}: {e}")
     return docs
 
 # ── Main ingestion ─────────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ async def ingest_data(file_paths: Optional[List[str]] = None) -> None:
         # data_sources is assumed to be inside backend/
         data_dir = os.path.join(backend_dir, "data_sources")
         if not os.path.exists(data_dir):
-             print(f"⚠️  Data directory not found at: {data_dir}")
+             print(f"️  Data directory not found at: {data_dir}")
              return
         
         file_paths = [
@@ -139,7 +139,7 @@ async def ingest_data(file_paths: Optional[List[str]] = None) -> None:
     # 2) Load
     docs = load_json_documents(file_paths)
     if not docs:
-        print("⚠️  No JSON documents found to ingest.")
+        print("️  No JSON documents found to ingest.")
         return
 
     # 3) Chunking
@@ -185,16 +185,16 @@ async def ingest_data(file_paths: Optional[List[str]] = None) -> None:
         if texts:
             vstore.add_texts(texts=texts, metadatas=metadatas, ids=ids)
             total_chunks += len(texts)
-            print(f"📦 {src}: upserted {len(texts)} chunks")
+            print(f" {src}: upserted {len(texts)} chunks")
 
     # Pinecone stats can lag briefly; wait and then read per-namespace count
     time.sleep(3)
     stats = _to_dict(index.describe_index_stats())
     ns_total = stats.get("namespaces", {}).get(NAMESPACE, {}).get("vector_count", 0)
-    print(f"✅ Upserted {total_chunks} chunks. Total in namespace '{NAMESPACE}': {ns_total}")
+    print(f" Upserted {total_chunks} chunks. Total in namespace '{NAMESPACE}': {ns_total}")
 
 # ── Entrypoint ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     start = time.time()
     asyncio.run(ingest_data())
-    print(f"✔️  Done in {time.time() - start:.1f}s")
+    print(f"️  Done in {time.time() - start:.1f}s")

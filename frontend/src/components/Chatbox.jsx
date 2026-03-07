@@ -74,6 +74,17 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const [reportModal, setReportModal] = useState(null); // index of message being reported
   const [reportText, setReportText] = useState("");
 
+  // 🔥 Thinking status - cycles through messages like ChatGPT/Claude
+  const [thinkingStatus, setThinkingStatus] = useState("Searching knowledge base");
+  const [thinkingTimer, setThinkingTimer] = useState(0);
+  const thinkingMessages = [
+    "Searching knowledge base",
+    "Analyzing your question",
+    "Reviewing course catalog",
+    "Checking department info",
+    "Preparing response"
+  ];
+
   // --- REFS ---
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -185,6 +196,34 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
       window.speechSynthesis?.cancel();
     };
   }, []);
+
+  // 8. Cycle through thinking messages and timer while loading
+  useEffect(() => {
+    if (!isLoading || messages.some(m => m.isStreaming)) {
+      setThinkingTimer(0);
+      return;
+    }
+
+    let index = 0;
+    setThinkingStatus(thinkingMessages[0]);
+    setThinkingTimer(0);
+
+    // Status message cycle
+    const statusInterval = setInterval(() => {
+      index = (index + 1) % thinkingMessages.length;
+      setThinkingStatus(thinkingMessages[index]);
+    }, 2500);
+
+    // Timer countdown
+    const timerInterval = setInterval(() => {
+      setThinkingTimer(prev => prev + 1);
+    }, 1000);
+
+    return () => {
+      clearInterval(statusInterval);
+      clearInterval(timerInterval);
+    };
+  }, [isLoading, messages]);
 
   // --- HANDLERS ---
 
@@ -560,7 +599,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
     return () => document.removeEventListener('click', handleClickOutside);
   }, [feedbackMenuOpen]);
 
-  // 🔥 MAIN SEND LOGIC
+  // 🔥 MAIN SEND LOGIC - With Streaming Support
   const handleSend = async (e) => {
     e.preventDefault();
     if ((!input.trim() && !pendingFile) || isLoading) return;
@@ -585,10 +624,10 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
             if (uploadRes.ok) {
                 const data = await uploadRes.json();
                 const fullUrl = data.url.startsWith("http") ? data.url : `${API_BASE}${data.url}`;
-                
+
                 // Create Markdown Link: [filename](url)
                 const fileMarkdown = `[${data.filename}](${fullUrl})`;
-                
+
                 // Append to message
                 if (finalMessage) {
                     finalMessage = `${fileMarkdown}\n${finalMessage}`;
@@ -605,33 +644,131 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
         setInput("");
         setPendingFile(null);
 
-        // 3. Send to Chat API
-        const res = await fetch(`${API_BASE}/chat`, {
+        // 3. Add placeholder bot message for streaming
+        const botMessageIndex = messages.length + 1; // Index after user message
+        const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        setMessages((prev) => [...prev, { text: "", sender: "bot", time, isStreaming: true }]);
+
+        // 4. Stream from Chat API using fetch with ReadableStream
+        const res = await fetch(`${API_BASE}/chat/stream`, {
             method: "POST",
-            headers: { 
-                "Content-Type": "application/json", 
-                "Authorization": `Bearer ${token}` 
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${token}`
             },
-            body: JSON.stringify({ 
-                query: finalMessage, 
-                session_id: sessionId || "default" 
+            body: JSON.stringify({
+                query: finalMessage,
+                session_id: sessionId || "default"
             }),
         });
 
         if (res.status === 401 || res.status === 403) {
-            addMessage("⚠️ Session expired. Please log in again.", "bot");
+            setMessages((prev) => {
+                const newMessages = [...prev];
+                newMessages[newMessages.length - 1] = {
+                    ...newMessages[newMessages.length - 1],
+                    text: "Session expired. Please log in again.",
+                    isStreaming: false
+                };
+                return newMessages;
+            });
+            setIsLoading(false);
             return;
         }
-        
+
         if (!res.ok) throw new Error(res.statusText);
-        
-        const data = await res.json();
-        const botResponse = data.response || data.message || "No response.";
-        
-        addMessage(botResponse, "bot");
+
+        // 5. Read SSE stream
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let fullText = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || ""; // Keep incomplete line in buffer
+
+            for (const line of lines) {
+                if (line.startsWith("data: ")) {
+                    try {
+                        const event = JSON.parse(line.slice(6));
+
+                        if (event.type === "status") {
+                            // Real-time status from ADK tool calls
+                            setThinkingStatus(event.content);
+                        } else if (event.type === "chunk") {
+                            fullText += event.content;
+                            // Update the streaming message
+                            setMessages((prev) => {
+                                const newMessages = [...prev];
+                                newMessages[newMessages.length - 1] = {
+                                    ...newMessages[newMessages.length - 1],
+                                    text: fullText
+                                };
+                                return newMessages;
+                            });
+                        } else if (event.type === "done") {
+                            // Finalize the message
+                            fullText = event.content || fullText;
+                            setMessages((prev) => {
+                                const newMessages = [...prev];
+                                newMessages[newMessages.length - 1] = {
+                                    ...newMessages[newMessages.length - 1],
+                                    text: fullText,
+                                    isStreaming: false
+                                };
+                                return newMessages;
+                            });
+                        } else if (event.type === "error") {
+                            setMessages((prev) => {
+                                const newMessages = [...prev];
+                                newMessages[newMessages.length - 1] = {
+                                    ...newMessages[newMessages.length - 1],
+                                    text: event.content || "An error occurred.",
+                                    isStreaming: false
+                                };
+                                return newMessages;
+                            });
+                        }
+                    } catch (parseErr) {
+                        console.warn("SSE parse error:", parseErr);
+                    }
+                }
+            }
+        }
+
+        // Finalize if stream ended without explicit done
+        setMessages((prev) => {
+            const newMessages = [...prev];
+            const lastMsg = newMessages[newMessages.length - 1];
+            if (lastMsg.isStreaming) {
+                newMessages[newMessages.length - 1] = {
+                    ...lastMsg,
+                    isStreaming: false
+                };
+            }
+            return newMessages;
+        });
 
     } catch (err) {
-        addMessage("Error: " + err.message, "bot");
+        console.error("Send error:", err);
+        setMessages((prev) => {
+            const newMessages = [...prev];
+            if (newMessages.length > 0 && newMessages[newMessages.length - 1].sender === "bot") {
+                newMessages[newMessages.length - 1] = {
+                    ...newMessages[newMessages.length - 1],
+                    text: "Error: " + err.message,
+                    isStreaming: false
+                };
+            } else {
+                newMessages.push({ text: "Error: " + err.message, sender: "bot", time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) });
+            }
+            return newMessages;
+        });
     } finally {
         setIsLoading(false);
         // Regain focus
@@ -707,7 +844,22 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                       {msg.text}
                     </ReactMarkdown>
 
-                    {msg.sender === "bot" && (
+                    {/* Streaming indicator - show status when no text, dots when text is streaming */}
+                    {msg.isStreaming && !msg.text && (
+                      <div className="inline-thinking">
+                        <div className="thinking-orb"><div className="orb-pulse"></div></div>
+                        <span className="thinking-text-shimmer">{thinkingStatus}</span>
+                      </div>
+                    )}
+                    {msg.isStreaming && msg.text && (
+                      <span className="streaming-cursor">
+                        <span className="stream-dot"></span>
+                        <span className="stream-dot"></span>
+                        <span className="stream-dot"></span>
+                      </span>
+                    )}
+
+                    {msg.sender === "bot" && !msg.isStreaming && (
                       <button
                         className="tts-btn"
                         onClick={() => speak(msg.text)}
@@ -779,13 +931,19 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
           ))
         )}
         
-        {/* Typing Indicator */}
-        {isLoading && (
+        {/* Thinking Indicator - ChatGPT/Claude style with shimmer */}
+        {isLoading && !messages.some(m => m.isStreaming) && (
           <div className="message bot">
             <img src="/bot_avatar.jpg" alt="Bot" className="avatar-img" />
             <div className="message-content">
-              <div className="message-bubble typing-bubble">
-                <div className="dot"></div><div className="dot"></div><div className="dot"></div>
+              <div className="message-bubble thinking-bubble">
+                <div className="thinking-status">
+                  <div className="thinking-orb">
+                    <div className="orb-pulse"></div>
+                  </div>
+                  <span className="thinking-text-shimmer">{thinkingStatus}</span>
+                  <span className="thinking-timer">{thinkingTimer}s</span>
+                </div>
               </div>
             </div>
           </div>

@@ -13,7 +13,7 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False, default="student")  # "admin" or "student"
 
-    # 🔥 Profile fields
+    #  Profile fields
     name = Column(String(255), nullable=True)
     student_id = Column(String(50), nullable=True)
     major = Column(String(100), nullable=True, default="Computer Science")

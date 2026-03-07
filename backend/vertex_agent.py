@@ -176,3 +176,140 @@ def check_agent_health() -> dict:
 def reset_session(user_id: str) -> None:
     """Reset the ADK session for a user (forces new session on next query)."""
     _session_cache.pop(user_id, None)
+
+
+def query_agent_stream(query: str, user_id: str = "default", context: str = ""):
+    """
+    Send a query to the CS Navigator agent and stream text chunks as they arrive.
+
+    Yields:
+        dict with 'type' ('chunk', 'done', 'error') and 'content' (text chunk or error message)
+    """
+    session_id = _get_or_create_session(user_id)
+    if not session_id:
+        yield {"type": "error", "content": "The AI agent is currently unavailable. Please try again in a moment."}
+        return
+
+    # Build the message: prepend context if provided
+    message = query
+    if context:
+        message = f"{context}\n\nQuestion: {query}"
+
+    yield from _run_query_stream(message, user_id, session_id)
+
+
+def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool = False):
+    """Stream query results from ADK, yielding text chunks as they arrive."""
+    try:
+        resp = requests.post(
+            f"{ADK_BASE_URL}/run_sse",
+            headers={"Content-Type": "application/json"},
+            json={
+                "app_name": ADK_APP_NAME,
+                "user_id": user_id,
+                "session_id": session_id,
+                "new_message": {
+                    "role": "user",
+                    "parts": [{"text": message}],
+                },
+            },
+            stream=True,
+            timeout=120,
+        )
+
+        # Handle "Session not found" - create a fresh session and retry once
+        if resp.status_code == 404 and not retried:
+            print(f"   ADK session {session_id} not found, creating a new one...")
+            _session_cache.pop(user_id, None)
+            new_session_id = _create_session(user_id)
+            if new_session_id:
+                yield from _run_query_stream(message, user_id, new_session_id, retried=True)
+                return
+            yield {"type": "error", "content": "The AI agent is currently unavailable. Please try again in a moment."}
+            return
+
+        resp.raise_for_status()
+
+        # Map tool/agent names to user-friendly status messages
+        TOOL_STATUS_MAP = {
+            "transfer_to_agent": "Routing to specialist",
+            "Academic_Advisor": "Consulting Academic Advisor",
+            "Academic_Advisor_KB": "Searching course catalog",
+            "Career_Guidance": "Checking career resources",
+            "Career_Guidance_KB": "Searching career database",
+            "Financial_Aid": "Looking up financial aid info",
+            "Financial_Aid_KB": "Searching financial aid database",
+            "Course_Recommender": "Analyzing course options",
+            "Schedule_Builder": "Building schedule",
+            "General_QA": "Searching general knowledge",
+            "General_QA_KB": "Searching knowledge base",
+        }
+
+        # Stream SSE events and yield text chunks + status updates
+        full_text = ""
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            decoded = line.decode("utf-8")
+            if not decoded.startswith("data: "):
+                continue
+
+            json_str = decoded[6:]  # Strip "data: " prefix
+            try:
+                event = json.loads(json_str)
+            except json.JSONDecodeError:
+                continue
+
+            content = event.get("content", {})
+            if not isinstance(content, dict):
+                continue
+
+            role = content.get("role", "")
+            parts = content.get("parts", [])
+
+            # Check for tool calls and yield status updates
+            for part in parts:
+                if isinstance(part, dict):
+                    # Handle function calls (tools being invoked)
+                    if "functionCall" in part:
+                        func_name = part["functionCall"].get("name", "")
+                        args = part["functionCall"].get("args", {})
+                        # Check for agent transfer
+                        if func_name == "transfer_to_agent":
+                            agent_name = args.get("agent_name", "specialist")
+                            status = TOOL_STATUS_MAP.get(agent_name, f"Consulting {agent_name.replace('_', ' ')}")
+                        else:
+                            status = TOOL_STATUS_MAP.get(func_name, f"Processing {func_name.replace('_', ' ')}")
+                        yield {"type": "status", "content": status}
+
+            # Extract text from model responses
+            if role != "model":
+                continue
+
+            for part in parts:
+                if isinstance(part, dict) and "text" in part:
+                    text = part["text"]
+                    # Clean citation artifacts
+                    text = re.sub(r'\s*\[cite:\s*[^\]]*\]', '', text)
+                    if text.strip():
+                        # Yield the new text chunk (delta from previous)
+                        if len(text) > len(full_text):
+                            chunk = text[len(full_text):]
+                            full_text = text
+                            yield {"type": "chunk", "content": chunk}
+                        elif text != full_text:
+                            # Complete replacement - yield the whole thing
+                            full_text = text
+                            yield {"type": "chunk", "content": text}
+
+        yield {"type": "done", "content": full_text.strip()}
+
+    except requests.exceptions.ConnectionError:
+        print("   ADK server not reachable. Is it running on port 8080?")
+        yield {"type": "error", "content": "The AI agent is currently unavailable. Please try again in a moment."}
+    except requests.exceptions.Timeout:
+        print("   ADK query timed out after 120s")
+        yield {"type": "error", "content": "The request took too long. Please try a simpler question."}
+    except Exception as e:
+        print(f"   ADK stream error: {e}")
+        yield {"type": "error", "content": "An error occurred while processing your question. Please try again."}

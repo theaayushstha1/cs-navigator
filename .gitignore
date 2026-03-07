@@ -75,3 +75,6 @@ test_rag.py
 *.zip
 jan.txt
 *.docx
+
+# Local database
+*.db
