@@ -2847,9 +2847,19 @@ async def sync_cloud_kb(user: dict = Depends(get_current_user)):
 # CACHE MANAGEMENT ENDPOINTS
 # ==============================================================================
 
+@app.get("/api/cache/stats")
+async def get_cache_stats_public():
+    """Get cache statistics (public, read-only)."""
+    stats = query_cache.get_stats()
+    return {
+        "success": True,
+        "cache_stats": stats,
+        "cache_type": "multi-tier (L1: in-memory, L2: Redis)"
+    }
+
 @app.get("/api/admin/cache/stats")
-async def get_cache_stats(user: dict = Depends(get_current_user)):
-    """Get cache statistics - hits, misses, hit rate, etc."""
+async def get_cache_stats_admin(user: dict = Depends(get_current_user)):
+    """Get cache statistics - admin version with more details."""
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
 
