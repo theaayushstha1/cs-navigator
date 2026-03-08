@@ -4,6 +4,8 @@
 
 CS Navigator is a full-stack RAG (Retrieval-Augmented Generation) chatbot that helps Computer Science students at Morgan State University navigate their academic journey. It answers questions about courses, degree requirements, campus resources, and career guidance using AI-powered semantic search.
 
+> **Current Version:** 2.2 | **Latest:** Multi-tier caching with Redis Cloud
+
 ---
 
 ## Demo
@@ -47,6 +49,17 @@ CS Navigator is a full-stack RAG (Retrieval-Augmented Generation) chatbot that h
 │  │                                        │   GPT-3.5   │      │    │
 │  │                                        └─────────────┘      │    │
 │  └─────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                         CACHING LAYER                               │
+│  ┌─────────────────┐          ┌─────────────────┐                  │
+│  │  L1: In-Memory  │          │  L2: Redis      │                  │
+│  │  - LRU Cache    │   miss   │  Cloud          │                  │
+│  │  - 500 entries  │─────────▶│  - Distributed  │                  │
+│  │  - ~0.001ms     │          │  - 24hr TTL     │                  │
+│  │  - 1hr TTL      │◀─────────│  - ~1-2ms       │                  │
+│  └─────────────────┘  promote └─────────────────┘                  │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -108,6 +121,8 @@ Answer: "COSC 311 (Data Structures) requires COSC 211
 | Styling | Tailwind CSS | Utility-first CSS |
 | Backend | FastAPI (Python 3.11) | High-performance API |
 | Database | AWS RDS MySQL | User data, chat history |
+| Cache L1 | In-Memory LRU | Ultra-fast query cache (~0.001ms) |
+| Cache L2 | Redis Cloud | Distributed cache (~1-2ms) |
 | Vector DB | Pinecone | Semantic search |
 | AI Model | OpenAI GPT-3.5-turbo | Response generation |
 | Embeddings | text-embedding-3-small | Vector conversion |
@@ -121,7 +136,9 @@ Answer: "COSC 311 (Data Structures) requires COSC 211
 | Feature | Description |
 |---------|-------------|
 | **AI Chat** | Context-aware responses grounded in university data |
+| **Multi-Tier Cache** | 56x faster responses with L1 + L2 caching (14s → 0.25s) |
 | **Voice Mode** | Speech-to-text input, text-to-speech output |
+| **SSE Streaming** | Real-time response streaming with status updates |
 | **Curriculum Tracker** | Visual progress through CS degree requirements |
 | **DegreeWorks Parser** | Upload PDF transcripts for automatic grade import |
 | **Multi-Session** | Create and manage multiple conversation threads |
@@ -175,6 +192,11 @@ PINECONE_INDEX=your_index
 JWT_SECRET=your_secret
 DATABASE_URL=mysql+pymysql://user:pass@host:3306/db
 
+# Redis Cache (optional - falls back to in-memory only)
+REDIS_HOST=your_redis_host
+REDIS_PORT=6379
+REDIS_PASSWORD=your_redis_password
+
 # 3. Run with Docker
 docker-compose up --build
 
@@ -197,9 +219,11 @@ bash deploy.sh
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/chat` | POST | Yes | Send message, receive AI response |
+| `/chat/stream` | POST | Yes | SSE streaming chat response |
 | `/api/register` | POST | No | Create user account |
 | `/api/login` | POST | No | Authenticate, receive JWT |
 | `/api/profile` | GET/PUT | Yes | User profile management |
+| `/api/cache/stats` | GET | No | Cache hit rates and statistics |
 | `/chat-history` | GET | Yes | Retrieve conversation history |
 | `/sessions` | GET/POST/DELETE | Yes | Manage chat sessions |
 | `/api/curriculum` | GET | Yes | CS curriculum data |
@@ -222,6 +246,17 @@ The chatbot is trained on 11 curated knowledge sources:
 9. **Graduate Programs** - MS/PhD pathways
 10. **FAQ** - Common student questions
 11. **Contact Information** - Department contacts
+
+---
+
+## Version History
+
+| Version | Release | Highlights |
+|---------|---------|------------|
+| **v2.2** | Mar 2025 | Multi-tier caching (L1 + Redis Cloud), 56x faster responses |
+| **v2.1** | Mar 2025 | SSE streaming, cache warmup, data cleanup |
+| **v2.0** | Feb 2025 | Google ADK AI Agent, voice mode, admin dashboard |
+| **v1.0** | Jan 2025 | Initial RAG pipeline with Pinecone + OpenAI |
 
 ---
 
