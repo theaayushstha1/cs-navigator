@@ -4,7 +4,7 @@
 
 CS Navigator is a full-stack RAG (Retrieval-Augmented Generation) chatbot that helps Computer Science students at Morgan State University navigate their academic journey. It answers questions about courses, degree requirements, campus resources, and career guidance using AI-powered semantic search.
 
-> **Current Version:** 2.2 | **Latest:** Multi-tier caching with Redis Cloud
+> **Current Version:** 3.0 | **Latest:** Optimized multi-agent architecture with security hardening
 
 ---
 
@@ -253,10 +253,45 @@ The chatbot is trained on 11 curated knowledge sources:
 
 | Version | Release | Highlights |
 |---------|---------|------------|
-| **v2.2** | Mar 2025 | Multi-tier caching (L1 + Redis Cloud), 56x faster responses |
-| **v2.1** | Mar 2025 | SSE streaming, cache warmup, data cleanup |
-| **v2.0** | Feb 2025 | Google ADK AI Agent, voice mode, admin dashboard |
-| **v1.0** | Jan 2025 | Initial RAG pipeline with Pinecone + OpenAI |
+| **v3.0** | Mar 2026 | Optimized multi-agent architecture, 4 specialized datastores, security hardening |
+| **v2.2** | Mar 2026 | Multi-tier caching (L1 + Redis Cloud), 56x faster responses |
+| **v2.1** | Mar 2026 | SSE streaming, cache warmup, data cleanup |
+| **v2.0** | Feb 2026 | Google ADK AI Agent, voice mode, admin dashboard |
+| **v1.0** | Jan 2026 | Initial RAG pipeline with Pinecone + OpenAI |
+
+---
+
+## v3.0 Changelog (March 9, 2026)
+
+### Agent Architecture Optimization
+- **4 specialized datastores** replacing 1 shared datastore for better retrieval precision
+  - `academic-kb` (13 docs): courses, prerequisites, degree requirements, faculty
+  - `career-kb` (5 docs): career paths, internships, job resources
+  - `financial-kb` (14 docs): scholarships, FAFSA, tuition, financial aid
+  - `general-kb` (12 docs): department info, contacts, student orgs
+- **Dual-model strategy**: `gemini-2.0-flash` for routing, `gemini-2.5-flash` for specialists
+- **Smart routing**: Router handles greetings/trivial queries directly (1 LLM hop instead of 3)
+- **Enriched specialist prompts** with domain-specific facts and strict grounding rules
+- **Response format rules**: concise, under 300 words, bullet points, bold key info
+
+### Performance
+- Greeting latency: ~6s to **1.7s** (72% faster)
+- Simple factual queries: ~10% faster
+- Benchmark across all 7 specialists: average 12.6s
+
+### Security Hardening (Promptfoo Red-Teaming)
+- 23 automated test cases across 6 categories
+- **3 critical vulnerabilities found and patched:**
+  - Prompt injection (agent complied with "ignore instructions" attacks)
+  - System prompt leakage (dumped full system prompt when asked)
+  - Instruction smuggling (accepted fake "SYSTEM UPDATE" commands)
+- Added 5 strict security rules to router system prompt
+- Final score: 23/23 (100% effective pass rate)
+
+### Agent Files
+- Agent code: `adk_agent/cs_navigator_unified/agent.py`
+- Security eval config: `adk_agent/cs_navigator_unified/promptfooconfig.yaml`
+- Deploy scripts: `adk_agent/cs_navigator_unified/deploy.py`
 
 ---
 

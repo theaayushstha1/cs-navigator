@@ -7,7 +7,7 @@ print("[OK] main.py loaded successfully")
 import os
 import re
 import json
-# import time  # Commented: currently unused, kept for potential future use
+import asyncio
 import shutil #  NEW: For file operations
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
@@ -75,6 +75,7 @@ from vertex_agent import query_agent, query_agent_stream, check_agent_health, re
 
 # Query caching for faster responses
 from cache import query_cache, get_context_hash, log_cache_stats
+from cache_warmer import warm_cache
 
 
 # Legacy imports kept for /ingest endpoint and file analysis fallback
@@ -366,6 +367,9 @@ async def lifespan(app):
     """Modern lifespan event handler for FastAPI"""
     # Startup
     build_qa_chain()
+    # Warm cache in background (doesn't block server startup)
+    if USE_VERTEX_AGENT:
+        asyncio.create_task(warm_cache())
     yield
     # Shutdown (cleanup if needed)
 
@@ -2880,6 +2884,14 @@ async def clear_cache(user: dict = Depends(get_current_user)):
         "success": True,
         "message": f"Cleared {cleared_count} cached items"
     }
+
+@app.post("/api/admin/cache/warm")
+async def warm_cache_endpoint(user: dict = Depends(get_current_user)):
+    """Manually trigger cache warming in the background."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    asyncio.create_task(warm_cache())
+    return {"success": True, "message": "Cache warming started in background. Check logs for progress."}
 
 @app.get("/api/admin/cloud-kb/search")
 async def search_cloud_kb_docs(q: str, user: dict = Depends(get_current_user)):
