@@ -1944,8 +1944,19 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
                 completed = json.loads(dw_data.courses_completed)
                 if completed:
                     student_context += "ALREADY COMPLETED COURSES (DO NOT RECOMMEND THESE):\n"
-                    for c in completed[:15]:
+                    for c in completed:
                         student_context += f"  - {c.get('code', '')} {c.get('name', '')} (Grade: {c.get('grade', '')})\n"
+                    student_context += "\n"
+            except: pass
+
+        # In-progress courses
+        if dw_data.courses_in_progress:
+            try:
+                in_progress = json.loads(dw_data.courses_in_progress)
+                if in_progress:
+                    student_context += "CURRENTLY ENROLLED (DO NOT RECOMMEND THESE EITHER):\n"
+                    for c in in_progress:
+                        student_context += f"  - {c.get('code', '')} {c.get('name', '')}\n"
                     student_context += "\n"
             except: pass
 
