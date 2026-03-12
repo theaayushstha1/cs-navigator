@@ -25,13 +25,14 @@ ADK_APP_NAME = os.getenv("ADK_APP_NAME", "cs_navigator_unified")
 _session_cache: dict[str, str] = {}
 
 
-def _create_session(user_id: str) -> str:
-    """Create a new ADK session for the user."""
+def _create_session(user_id: str, state: Optional[dict] = None) -> str:
+    """Create a new ADK session for the user, optionally with initial state."""
     try:
+        body = {"state": state} if state else {}
         resp = requests.post(
             f"{ADK_BASE_URL}/apps/{ADK_APP_NAME}/users/{user_id}/sessions",
             headers={"Content-Type": "application/json"},
-            json={},
+            json=body,
             timeout=10,
         )
         resp.raise_for_status()
@@ -56,24 +57,25 @@ def query_agent(query: str, user_id: str = "default", context: str = "") -> str:
     """
     Send a query to the CS Navigator agent and return the final text response.
 
+    Fresh session per query to prevent context accumulation.
+    DegreeWorks data is passed via session state (read by agent's _build_instruction),
+    NOT prepended to the message text which would pollute the search grounding.
+
     Args:
         query: The user's question
-        user_id: Unique user identifier (for session management)
-        context: Optional context to prepend (e.g., DegreeWorks data, conversation history)
+        user_id: Unique user identifier
+        context: DegreeWorks student data (injected into session state, not message)
 
     Returns:
         The agent's text response, or an error message
     """
-    session_id = _get_or_create_session(user_id)
+    # Create a fresh session with DegreeWorks in state (not accumulated history)
+    state = {"degreeworks": context} if context else None
+    session_id = _create_session(user_id, state=state)
     if not session_id:
         return "The AI agent is currently unavailable. Please try again in a moment."
 
-    # Build the message: prepend context if provided
-    message = query
-    if context:
-        message = f"{context}\n\nQuestion: {query}"
-
-    return _run_query(message, user_id, session_id)
+    return _run_query(query, user_id, session_id)
 
 
 def _run_query(message: str, user_id: str, session_id: str, retried: bool = False) -> str:
@@ -182,20 +184,19 @@ def query_agent_stream(query: str, user_id: str = "default", context: str = ""):
     """
     Send a query to the CS Navigator agent and stream text chunks as they arrive.
 
+    Fresh session per query. DegreeWorks via session state, not message text.
+
     Yields:
         dict with 'type' ('chunk', 'done', 'error') and 'content' (text chunk or error message)
     """
-    session_id = _get_or_create_session(user_id)
+    # Create a fresh session with DegreeWorks in state
+    state = {"degreeworks": context} if context else None
+    session_id = _create_session(user_id, state=state)
     if not session_id:
         yield {"type": "error", "content": "The AI agent is currently unavailable. Please try again in a moment."}
         return
 
-    # Build the message: prepend context if provided
-    message = query
-    if context:
-        message = f"{context}\n\nQuestion: {query}"
-
-    yield from _run_query_stream(message, user_id, session_id)
+    yield from _run_query_stream(query, user_id, session_id)
 
 
 def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool = False):
@@ -232,17 +233,8 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
 
         # Map tool/agent names to user-friendly status messages
         TOOL_STATUS_MAP = {
-            "transfer_to_agent": "Routing to specialist",
-            "Academic_Advisor": "Consulting Academic Advisor",
-            "Academic_Advisor_KB": "Searching course catalog",
-            "Career_Guidance": "Checking career resources",
-            "Career_Guidance_KB": "Searching career database",
-            "Financial_Aid": "Looking up financial aid info",
-            "Financial_Aid_KB": "Searching financial aid database",
-            "Course_Recommender": "Analyzing course options",
-            "Schedule_Builder": "Building schedule",
-            "General_QA": "Searching general knowledge",
-            "General_QA_KB": "Searching knowledge base",
+            "vertex_ai_search": "Searching knowledge base",
+            "discovery_engine_search": "Searching knowledge base",
         }
 
         # Stream SSE events and yield text chunks + status updates

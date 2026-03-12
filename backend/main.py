@@ -1756,9 +1756,7 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
                     student_context += "\n"
             except: pass
 
-        student_context += "INSTRUCTION: When recommending courses, ONLY recommend from the AVAILABLE COURSES list below. NEVER recommend courses from the completed or enrolled lists above.\n"
-        if COURSE_CATALOG_TEXT:
-            student_context += "\n" + COURSE_CATALOG_TEXT + "\n"
+        student_context += "INSTRUCTION: Do NOT recommend courses from the completed or enrolled lists above. Search the knowledge base for available courses.\n"
         student_context += "="*60 + "\n\n"
 
         # Store raw data flag but don't dump the full PDF text into context
@@ -1833,13 +1831,12 @@ Use the provided file content and conversation history to answer the user's ques
             answer = "I received the file link, but I cannot find the file on the server to read it."
 
     elif USE_VERTEX_AGENT:
-        # Vertex AI Agent Engine path - send everything to the agent
+        # Vertex AI Agent Engine path
+        # NOTE: Only send DegreeWorks student data, NOT conversation history.
+        # ADK manages its own session memory. Sending old responses as context
+        # causes hallucination loops (model repeats previous wrong answers).
         try:
-            agent_context = ""
-            if student_context:
-                agent_context += student_context
-            if conversation_context:
-                agent_context += conversation_context
+            agent_context = student_context  # DegreeWorks data only
 
             print(f" Vertex AI query: '{user_q[:50]}...' (user={user['user_id']}, context={len(agent_context)} chars)")
             answer = query_agent(
@@ -1964,9 +1961,7 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
                     student_context += "\n"
             except: pass
 
-        student_context += "INSTRUCTION: When recommending courses, ONLY recommend from the AVAILABLE COURSES list below.\n"
-        if COURSE_CATALOG_TEXT:
-            student_context += "\n" + COURSE_CATALOG_TEXT + "\n"
+        student_context += "INSTRUCTION: Do NOT recommend courses from the completed or enrolled lists above. Search the knowledge base for available courses.\n"
         student_context += "="*60 + "\n\n"
 
     # Conversation history
@@ -1986,7 +1981,9 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
             conversation_context += f"Assistant: {chat.bot_response}\n"
         conversation_context += "\n"
 
-    agent_context = student_context + conversation_context
+    # Only send DegreeWorks data, NOT conversation history.
+    # ADK manages its own session memory. Old responses in history cause hallucination loops.
+    agent_context = student_context
 
     # Store user_id and session_id for saving history after stream completes
     user_id = user["user_id"]
