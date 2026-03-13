@@ -19,7 +19,6 @@ __pycache__/
 *.log
 tests/
 docs/
-data_sources/
 *.sqlite3
 *.dll
 *.pyd
