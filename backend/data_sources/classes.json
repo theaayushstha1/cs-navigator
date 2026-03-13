@@ -90,7 +90,7 @@
       "credits": 3,
       "category": "Required",
       "requirement_type": "required",
-      "prerequisites": ["COSC 112 (Grade C or higher)", "MATH 141 (Grade C or higher)"],
+      "prerequisites": ["COSC 112 (Grade C or higher)", "MATH 241 (Grade C or higher)"],
       "offered": ["Fall", "Spring"]
     },
     {
@@ -232,7 +232,7 @@
       "category": "Group B Elective",
       "requirement_type": "group_b",
       "elective_note": "Choose 2 courses from Group B",
-      "prerequisites": ["COSC 238 (Grade C or higher)", "MATH 312 (Grade C or higher)"],
+      "prerequisites": ["COSC 238 (Grade C or higher)", "MATH 312 (Grade C or higher)"]
       "offered": ["Fall", "Spring"]
     },
     {

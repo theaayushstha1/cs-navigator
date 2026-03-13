@@ -540,7 +540,122 @@ class DegreeWorksRequest(BaseModel):
 # ==============================================================================
 DATA_DIR       = os.path.join(BACKEND_DIR, "data_sources")
 CLASSES_FILE   = os.path.join(DATA_DIR, "classes.json")
+KB_COURSES_FILE = os.path.join(DATA_DIR, "courses.txt")
 RESOURCES_FILE = os.path.join(DATA_DIR, "academic_resources.json")
+
+# Cached parsed curriculum from txt source of truth
+_parsed_curriculum = None
+
+def parse_curriculum_from_txt():
+    """Parse courses.txt into the structured JSON format the frontend expects.
+    This makes the txt knowledge base files the single source of truth for the curriculum page."""
+    global _parsed_curriculum
+    if _parsed_curriculum is not None:
+        return _parsed_curriculum
+
+    degree_info = {
+        "program": "Computer Science, B.S.",
+        "university": "Morgan State University",
+        "total_credits": 120,
+        "general_education_credits": 44,
+        "supporting_credits": 11,
+        "major_credits": 65,
+        "cs_core_credits": 76,
+        "description": "A minimum of 120 credit hours are required to graduate with a B.S. in Computer Science."
+    }
+
+    elective_requirements = {
+        "group_a": {"name": "Group A Electives", "required_courses": 3,
+                    "description": "Students must choose three (3) courses from Group A"},
+        "group_b": {"name": "Group B Electives", "required_courses": 2,
+                    "description": "Students must choose two (2) courses from Group B"},
+        "group_c": {"name": "Group C Electives", "required_courses": 4,
+                    "description": "Students must choose four (4) courses from Group C. Note: COSC 470 OR COSC 472 - only one counts."},
+        "group_d": {"name": "Group D Electives", "required_courses": 1,
+                    "description": "Students must choose one (1) course from Group D, or any 300-400 level COSC course not previously taken"}
+    }
+
+    section_map = {
+        "REQUIRED COURSES": ("Required", "required", None),
+        "SUPPORTING COURSES": ("Supporting", "supporting", None),
+        "GROUP A ELECTIVES": ("Group A Elective", "group_a", "Choose 3 courses from Group A"),
+        "GROUP B ELECTIVES": ("Group B Elective", "group_b", "Choose 2 courses from Group B"),
+        "GROUP C ELECTIVES": ("Group C Elective", "group_c", "Choose 4 courses from Group C (COSC 470 OR COSC 472)"),
+        "GROUP D ELECTIVES": ("Group D Elective", "group_d", "Choose 1 course from Group D"),
+    }
+
+    courses = []
+    with open(KB_COURSES_FILE, encoding="utf-8") as f:
+        lines = f.read().split('\n')
+
+    current_cat = current_req = current_note = None
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Detect section headers
+        matched = False
+        for key, (cat, req, note) in section_map.items():
+            if line.upper().startswith(key):
+                current_cat, current_req, current_note = cat, req, note
+                matched = True
+                break
+        if matched:
+            i += 1
+            continue
+
+        # Detect course line: "COSC 111 - Introduction to Computer Science I"
+        m = re.match(r'^([A-Z]+\s+\d{3})\s*[-\u2013\u2014]\s*(.+)$', line)
+        if m and current_cat:
+            course = {
+                "course_code": m.group(1).strip(),
+                "course_name": m.group(2).strip(),
+                "credits": 3,
+                "category": current_cat,
+                "requirement_type": current_req,
+                "prerequisites": [],
+                "offered": ["Fall", "Spring"],
+            }
+            if current_note:
+                course["elective_note"] = current_note
+
+            # Parse detail lines until blank line
+            i += 1
+            while i < len(lines) and lines[i].strip():
+                d = lines[i].strip()
+                if d.lower().startswith("credits:"):
+                    try:
+                        course["credits"] = int(d.split(":", 1)[1].strip())
+                    except ValueError:
+                        pass
+                elif d.lower().startswith("prerequisite"):
+                    raw = d.split(":", 1)[1].strip()
+                    if raw.lower() in ("none", ""):
+                        course["prerequisites"] = []
+                    else:
+                        parts = [p.strip() for p in raw.split(",")]
+                        course["prerequisites"] = [
+                            p[3:].strip() if p.startswith("or ") else p
+                            for p in parts if p
+                        ]
+                elif d.lower().startswith("offered:"):
+                    course["offered"] = [o.strip() for o in d.split(":", 1)[1].split(",") if o.strip()]
+                elif d.lower().startswith("also satisfies"):
+                    course["note"] = d
+                i += 1
+
+            courses.append(course)
+            continue
+
+        i += 1
+
+    result = {
+        "degree_info": degree_info,
+        "courses": courses,
+        "elective_requirements": elective_requirements
+    }
+    _parsed_curriculum = result
+    return result
 
 helpful_links = {}
 if os.path.exists(RESOURCES_FILE):
@@ -2493,11 +2608,16 @@ async def delete_course(code: str, user=Depends(get_current_user)):
 
 @app.get("/api/curriculum")
 async def get_curriculum():
-    """Returns full curriculum data including degree info, courses, and elective requirements"""
+    """Returns full curriculum data including degree info, courses, and elective requirements.
+    Source of truth: courses.txt (KB file). Falls back to classes.json if txt not available."""
     try:
+        # Primary: parse from txt knowledge base (single source of truth)
+        if os.path.exists(KB_COURSES_FILE):
+            return parse_curriculum_from_txt()
+
+        # Fallback: classes.json (legacy)
         data = json.load(open(CLASSES_FILE, encoding="utf-8"))
 
-        # New structure with degree_info, courses, and elective_requirements
         if isinstance(data, dict) and "courses" in data:
             return {
                 "degree_info": data.get("degree_info", {}),
@@ -2505,7 +2625,6 @@ async def get_curriculum():
                 "elective_requirements": data.get("elective_requirements", {})
             }
 
-        # Legacy support for old structure
         if isinstance(data, list):
             return {"degree_info": {}, "courses": data, "elective_requirements": {}}
 
@@ -2513,10 +2632,6 @@ async def get_curriculum():
             arr = data.get(key)
             if isinstance(arr, list):
                 return {"degree_info": {}, "courses": arr, "elective_requirements": {}}
-
-        cs = data.get("computer_science_courses")
-        if isinstance(cs, dict) and isinstance(cs.get("computer_science_courses"), list):
-            return {"degree_info": {}, "courses": cs["computer_science_courses"], "elective_requirements": {}}
 
         return {"degree_info": {}, "courses": [], "elective_requirements": {}}
     except FileNotFoundError:
