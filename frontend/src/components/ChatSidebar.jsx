@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import { toast } from 'sonner';
 import { FaPlus } from "@react-icons/all-files/fa/FaPlus";
 import { FaSearch } from "@react-icons/all-files/fa/FaSearch";
 import { FaBook } from "@react-icons/all-files/fa/FaBook";
@@ -61,6 +62,20 @@ export default function ChatSidebar({
 
   const API_BASE = getApiBase();
 
+  // PWA install prompt
+  const deferredPromptRef = useRef(null);
+  const [canInstall, setCanInstall] = useState(false);
+
+  useEffect(() => {
+    const handler = (e) => {
+      e.preventDefault();
+      deferredPromptRef.current = e;
+      setCanInstall(true);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
   // 🔥 Fetch user profile on mount - PRESERVED
   useEffect(() => {
     fetchUserProfile();
@@ -90,7 +105,7 @@ export default function ChatSidebar({
           } else if (imageUrl.startsWith('http')) {
             // Full URL - use directly
             setProfileImageUrl(imageUrl);
-          } else if (!imageUrl.startsWith('/user_icon')) {
+          } else if (!imageUrl.startsWith('/user_icon.webp')) {
             // Relative path - prepend API base
             setProfileImageUrl(`${API_BASE}${imageUrl}`);
           }
@@ -102,12 +117,36 @@ export default function ChatSidebar({
   };
 
   // Filter logic - PRESERVED
-  const filteredSessions = sessions.filter(s => 
+  const filteredSessions = sessions.filter(s =>
     !s.archived && s.title.toLowerCase().includes(searchQuery.toLowerCase())
   );
   const archivedSessions = sessions.filter(s => s.archived);
   const pinnedSessions = filteredSessions.filter(s => s.pinned);
   const regularSessions = filteredSessions.filter(s => !s.pinned);
+
+  // Date grouping for chat history
+  const groupSessionsByDate = (sessions) => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+    const weekAgo = new Date(today); weekAgo.setDate(today.getDate() - 7);
+
+    const groups = { "Today": [], "Yesterday": [], "Previous 7 Days": [], "Older": [] };
+
+    sessions.forEach(s => {
+      const ts = parseInt(s.id);
+      if (isNaN(ts)) { groups["Older"].push(s); return; }
+      const date = new Date(ts);
+      if (date >= today) groups["Today"].push(s);
+      else if (date >= yesterday) groups["Yesterday"].push(s);
+      else if (date >= weekAgo) groups["Previous 7 Days"].push(s);
+      else groups["Older"].push(s);
+    });
+
+    return groups;
+  };
+
+  const dateGroups = groupSessionsByDate(regularSessions);
 
   const handleContextMenu = (e, sessionId) => {
     e.preventDefault();
@@ -131,14 +170,26 @@ export default function ChatSidebar({
     setRenameValue("");
   };
 
-  const handleInstallApp = () => alert("Install App feature - Will be connected later!");
+  const handleInstallApp = async () => {
+    if (deferredPromptRef.current) {
+      deferredPromptRef.current.prompt();
+      const { outcome } = await deferredPromptRef.current.userChoice;
+      if (outcome === 'accepted') {
+        toast.success("App installed!");
+        setCanInstall(false);
+      }
+      deferredPromptRef.current = null;
+    } else {
+      toast("To install, use your browser's 'Add to Home Screen' or 'Install App' option.", { duration: 4000 });
+    }
+  };
 
   // 🎫 Support Ticket Handlers
   const handleTicketAttachment = (e) => {
     const file = e.target.files[0];
     if (file) {
       if (file.size > 5 * 1024 * 1024) {
-        alert("File size must be under 5MB");
+        toast.warning("File size must be under 5MB");
         return;
       }
       const reader = new FileReader();
@@ -156,7 +207,7 @@ export default function ChatSidebar({
   const handleTicketSubmit = async (e) => {
     e.preventDefault();
     if (!ticketForm.subject.trim() || !ticketForm.description.trim()) {
-      alert("Please fill in subject and description");
+      toast.warning("Please fill in subject and description");
       return;
     }
 
@@ -194,11 +245,11 @@ export default function ChatSidebar({
         }, 2000);
       } else {
         const data = await response.json();
-        alert(data.detail || "Failed to submit ticket");
+        toast.error(data.detail || "Failed to submit ticket");
       }
     } catch (error) {
       console.error("Error submitting ticket:", error);
-      alert("Failed to submit ticket. Please try again.");
+      toast.error("Failed to submit ticket. Please try again.");
     } finally {
       setTicketSubmitting(false);
     }
@@ -329,12 +380,18 @@ export default function ChatSidebar({
           </>
         )}
 
-        <div className="section-header">Chat History</div>
         <div className="chat-history-list">
           {regularSessions.length === 0 ? (
             <div className="empty-state">No chats found</div>
           ) : (
-            regularSessions.map(s => renderChatItem(s))
+            Object.entries(dateGroups).map(([label, items]) =>
+              items.length > 0 && (
+                <React.Fragment key={label}>
+                  <div className="date-group-header">{label}</div>
+                  {items.map(s => renderChatItem(s))}
+                </React.Fragment>
+              )
+            )
           )}
         </div>
 

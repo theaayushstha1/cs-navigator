@@ -1512,31 +1512,40 @@ export default function AdminDashboard() {
                   </div>
                 </div>
 
-                <div className={`health-card ${healthStatus.pinecone?.status === "connected" ? "healthy" : healthStatus.pinecone?.status === "not_configured" ? "warning" : "error"}`}>
-                  <FaServer className="health-icon" />
+                <div className={`health-card ${healthStatus.vertex_agent?.status === "connected" ? "healthy" : healthStatus.vertex_agent?.status === "not_configured" ? "warning" : "error"}`}>
+                  <FaRobot className="health-icon" />
                   <div className="health-info">
-                    <h4>Pinecone Vector DB</h4>
-                    <span className="health-status">{healthStatus.pinecone?.status}</span>
-                    <p>{healthStatus.pinecone?.message}</p>
-                    {healthStatus.vector_count > 0 && <p className="vector-count">{healthStatus.vector_count.toLocaleString()} vectors</p>}
+                    <h4>Vertex AI Agent (ADK)</h4>
+                    <span className="health-status">{healthStatus.vertex_agent?.status}</span>
+                    <p>{healthStatus.vertex_agent?.message}</p>
                   </div>
                 </div>
 
-                <div className={`health-card ${healthStatus.openai?.status === "configured" ? "healthy" : "warning"}`}>
-                  <FaLightbulb className="health-icon" />
+                <div className={`health-card ${healthStatus.openai_tts?.status === "configured" ? "healthy" : "warning"}`}>
+                  <FaMicrophone className="health-icon" />
                   <div className="health-info">
-                    <h4>OpenAI API</h4>
-                    <span className="health-status">{healthStatus.openai?.status}</span>
-                    <p>{healthStatus.openai?.message}</p>
+                    <h4>OpenAI TTS</h4>
+                    <span className="health-status">{healthStatus.openai_tts?.status}</span>
+                    <p>{healthStatus.openai_tts?.message}</p>
                   </div>
                 </div>
+
+                {healthStatus.mode && (
+                  <div className="health-card healthy">
+                    <FaServer className="health-icon" />
+                    <div className="health-info">
+                      <h4>AI Mode</h4>
+                      <span className="health-status">{healthStatus.mode === "vertex_ai" ? "Google ADK" : "Legacy RAG"}</span>
+                      <p>{healthStatus.mode === "vertex_ai" ? "Vertex AI Search + Gemini 2.0 Flash" : "Pinecone + OpenAI GPT-3.5"}</p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="system-actions">
                 <h3>Quick Actions</h3>
                 <div className="action-buttons">
-                  <button className="action-btn" onClick={handleReingest}><FaSync size={14} /> Re-ingest Data</button>
-                  <button className="action-btn danger" onClick={handleClearIndex}><FaTrash size={14} /> Clear Index</button>
+                  <button className="action-btn" onClick={handleReingest}><FaSync size={14} /> Re-ingest KB Docs</button>
                 </div>
                 {message && <p className="message">{message}</p>}
               </div>

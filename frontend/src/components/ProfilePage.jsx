@@ -1,5 +1,5 @@
 // src/components/ProfilePage.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { FaArrowLeft } from "@react-icons/all-files/fa/FaArrowLeft";
 import { FaUser } from "@react-icons/all-files/fa/FaUser";
@@ -34,7 +34,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
     email: userEmail || "",
     studentId: "",
     major: "Computer Science",
-    profilePicture: "/user_icon.jpg",
+    profilePicture: "/user_icon.webp",
     morganConnected: false,
     role: "student"
   });
@@ -46,6 +46,15 @@ export default function ProfilePage({ userEmail, onLogout }) {
   });
 
   const [showPasswordForm, setShowPasswordForm] = useState(false);
+
+  // Bookmarklet ref - React blocks javascript: URLs, so we set href via DOM
+  const bookmarkletRef = useRef(null);
+  const setBookmarkletHref = useCallback((node) => {
+    if (node) {
+      node.setAttribute('href', getBookmarkletCode());
+      bookmarkletRef.current = node;
+    }
+  }, []);
 
   // DegreeWorks Modal State
   const [showMorganModal, setShowMorganModal] = useState(false);
@@ -133,50 +142,11 @@ export default function ProfilePage({ userEmail, onLogout }) {
     }
   };
 
-  // Generate the bookmarklet code - sends HTML to backend for parsing
+  // Generate the bookmarklet code - tiny loader that fetches the full script from the server
+  // This avoids Chrome's ~2KB URL length limit for bookmarklets
   const getBookmarkletCode = () => {
     const token = localStorage.getItem("token");
-    return `javascript:(function(){
-      const API='${API_BASE}';
-      const TOKEN='${token}';
-
-      // Show loading message
-      const msg=document.createElement('div');
-      msg.style.cssText='position:fixed;top:20px;right:20px;background:#333;color:#fff;padding:20px;border-radius:10px;z-index:999999;font-family:Arial;';
-      msg.innerHTML='<strong>CS Navigator</strong><br>Syncing your DegreeWorks data...';
-      document.body.appendChild(msg);
-
-      // Get the page HTML
-      const html=document.documentElement.outerHTML;
-
-      fetch(API+'/api/degreeworks/scrape-html',{
-        method:'POST',
-        headers:{
-          'Content-Type':'application/json',
-          'Authorization':'Bearer '+TOKEN
-        },
-        body:JSON.stringify({html:html})
-      })
-      .then(r=>r.json())
-      .then(d=>{
-        msg.remove();
-        if(d.success){
-          const info=d.data||{};
-          let details='';
-          if(info.overall_gpa) details+='GPA: '+info.overall_gpa+'\\n';
-          if(info.classification) details+='Classification: '+info.classification+'\\n';
-          if(info.total_credits_earned) details+='Credits: '+info.total_credits_earned+'\\n';
-          if(info.courses_count) details+='Courses found: '+info.courses_count+'\\n';
-          alert('✅ DegreeWorks synced successfully!\\n\\n'+details+'\\nYou can now close this tab and return to CS Navigator.');
-        }else{
-          alert('❌ Sync failed: '+(d.detail||d.message||'Unknown error')+'\\n\\nTry using manual entry instead.');
-        }
-      })
-      .catch(e=>{
-        msg.remove();
-        alert('❌ Error: '+e.message+'\\n\\nTry using manual entry instead.');
-      });
-    })();`;
+    return `javascript:void(function(){var s=document.createElement('script');s.src='${API_BASE}/api/bookmarklet.js?token=${token}&api=${encodeURIComponent(API_BASE)}';document.body.appendChild(s)}())`;
   };
 
   const copyBookmarklet = () => {
@@ -455,7 +425,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
               src={profile.profilePicture} 
               alt="Profile" 
               className="profile-picture"
-              onError={(e) => e.target.src = "/user_icon.jpg"}
+              onError={(e) => e.target.src = "/user_icon.webp"}
             />
             <label className="upload-overlay">
               <FaCamera size={24} />
@@ -805,47 +775,63 @@ export default function ProfilePage({ userEmail, onLogout }) {
                     <FaArrowLeft /> Back to options
                   </button>
 
-                  <h3>One-Click Sync</h3>
+                  <h3>Sync DegreeWorks</h3>
 
                   <div className="pdf-instructions">
                     <div className="instruction-step">
                       <span className="step-num">1</span>
                       <div>
-                        <strong>Open DegreeWorks</strong>
-                        <p>Go to your DegreeWorks page in MyMSU Banner (if not already there)</p>
-                        <button className="step-action-btn small" onClick={openMorganPortal}>
-                          <FaExternalLinkAlt /> Open Morgan State
-                        </button>
-                      </div>
-                    </div>
-                    <div className="instruction-step">
-                      <span className="step-num">2</span>
-                      <div>
-                        <strong>Create Sync Bookmark</strong>
-                        <p>Click the button below to copy the sync code, then create a new bookmark and paste it as the URL:</p>
-                        <button className="bookmarklet-copy-btn" onClick={copyBookmarklet}>
-                          <FaBookmark /> Copy Sync Code
-                        </button>
+                        <strong>Drag this button to your bookmarks bar</strong>
+                        <p>This is a one-time setup. Just drag it up there.</p>
+                        <div className="bookmarklet-drag-container">
+                          <a
+                            ref={setBookmarkletHref}
+                            onClick={(e) => e.preventDefault()}
+                            className="bookmarklet-drag-btn"
+                            title="Drag me to your bookmarks bar!"
+                          >
+                            <FaSync /> Sync to CS Navigator
+                          </a>
+                          <span className="drag-hint">Drag me up to your bookmarks bar</span>
+                        </div>
                         <div className="bookmark-instructions">
                           <small>
-                            <strong>Chrome:</strong> Right-click bookmarks bar → Add page → Paste code as URL<br/>
-                            <strong>Firefox:</strong> Ctrl+Shift+B → Right-click → New Bookmark → Paste code as URL
+                            Don't see a bookmarks bar? Press <strong>Ctrl+Shift+B</strong> (Chrome) or <strong>Ctrl+B</strong> (Firefox) to show it.
+                          </small>
+                        </div>
+                        <div className="bookmark-instructions" style={{ marginTop: '8px' }}>
+                          <small>
+                            <strong>Can't drag?</strong>{' '}
+                            <button className="inline-copy-btn" onClick={copyBookmarklet}>
+                              Copy the code
+                            </button>{' '}
+                            and create a bookmark manually with it as the URL.
                           </small>
                         </div>
                       </div>
                     </div>
                     <div className="instruction-step">
+                      <span className="step-num">2</span>
+                      <div>
+                        <strong>Go to DegreeWorks and log in</strong>
+                        <p>Open your DegreeWorks audit page through MyMSU Banner.</p>
+                        <button className="step-action-btn small" onClick={openMorganPortal}>
+                          <FaExternalLinkAlt /> Open MyMSU
+                        </button>
+                      </div>
+                    </div>
+                    <div className="instruction-step">
                       <span className="step-num">3</span>
                       <div>
-                        <strong>Click the Bookmark</strong>
-                        <p>While on your DegreeWorks page, click the bookmark you just created. Your data will sync automatically!</p>
+                        <strong>Click "Sync to CS Navigator" in your bookmarks bar</strong>
+                        <p>While on the DegreeWorks page, click the bookmark. You'll see a confirmation when it's done.</p>
                       </div>
                     </div>
                   </div>
 
                   <div className="info-box">
                     <FaCheckCircle />
-                    <p>After syncing, refresh this page to see your updated academic data.</p>
+                    <p>After syncing, refresh this page to see your GPA, courses, and academic progress.</p>
                   </div>
                 </div>
               ) : showPdfUpload === 'pdf' ? (

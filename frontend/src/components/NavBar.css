@@ -1,20 +1,22 @@
-/* ========== Navbar - Full Width, Clean Layout ========== */
+/* ========== Navbar - Glass Morphism ========== */
 .navbar {
   position: sticky;
   top: 0;
   z-index: 1000;
   width: 100%;
-  background-color: var(--bg-card);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--border-color);
-  transition: all 0.3s ease;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   height: 70px;
   display: flex;
   align-items: center;
 }
 
 .navbar.scrolled {
-  box-shadow: var(--shadow-md);
+  box-shadow: 0 1px 12px rgba(0, 0, 0, 0.06);
+  border-bottom-color: transparent;
 }
 
 /* Container spans full width */
@@ -40,7 +42,7 @@
 
 .navbar-left:hover {
   opacity: 0.9;
-  background: rgba(0, 45, 114, 0.04);
+  background: rgba(66, 133, 244, 0.04);
 }
 
 .navbar-left:active {
@@ -62,7 +64,7 @@
 }
 
 .logo-hamburger-toggle:hover {
-  background: rgba(0, 45, 114, 0.08);
+  background: rgba(66, 133, 244, 0.08);
 }
 
 /* Logo image - visible by default */
@@ -117,18 +119,18 @@
 }
 
 .brand-main {
-  font-weight: 800;
-  color: var(--msu-blue);
+  font-weight: 700;
+  color: var(--text-main);
   font-size: 1.1rem;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
 }
 
 .brand-sub {
-  font-size: 0.75rem;
-  color: var(--msu-gold);
-  font-weight: 700;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
 }
 
 /* ========== Right Side - Navigation Links ========== */
@@ -149,12 +151,12 @@
 }
 
 .nav-link:hover {
-  background-color: rgba(0, 45, 114, 0.08);
+  background-color: rgba(66, 133, 244, 0.08);
   color: var(--msu-blue);
 }
 
 .nav-link.active {
-  background-color: rgba(0, 45, 114, 0.1);
+  background-color: rgba(66, 133, 244, 0.1);
   color: var(--msu-blue);
   font-weight: 600;
 }
@@ -188,10 +190,9 @@
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  /* 🔥 LIGHT MODE: White background with strong border */
   background: #ffffff;
-  border: 2.5px solid #002D72;
-  color: #002D72;
+  border: 2px solid #dadce0;
+  color: #5f6368;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -200,8 +201,7 @@
   overflow: hidden;
   padding: 0;
   position: relative;
-  /* 🔥 Strong shadow for light mode visibility */
-  box-shadow: 0 2px 6px rgba(0, 45, 114, 0.2);
+  box-shadow: 0 1px 3px rgba(60, 64, 67, 0.15);
 }
 
 /* Profile Avatar Image */
@@ -225,17 +225,17 @@
   display: none;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #002D72, #F7941E);
+  background: linear-gradient(135deg, #4285F4, #34A853);
   color: white;
   z-index: 0;
 }
 
 /* Hover Effects - LIGHT MODE */
 .profile-icon-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 45, 114, 0.3);
-  border-color: #F7941E;
-  background: rgba(247, 148, 30, 0.05);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(60, 64, 67, 0.2);
+  border-color: #4285F4;
+  background: rgba(66, 133, 244, 0.04);
 }
 
 .profile-icon-btn:active {
@@ -244,7 +244,7 @@
 
 .profile-icon-btn:focus {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(0, 45, 114, 0.2);
+  box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.2);
 }
 
 /* ========== Admin Navigation Button ========== */
@@ -261,14 +261,14 @@
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
-  box-shadow: 0 2px 6px rgba(0, 45, 114, 0.2);
+  box-shadow: 0 2px 6px rgba(66, 133, 244, 0.2);
 }
 
 .admin-nav-btn:hover {
   background: var(--msu-blue-hover);
   border-color: var(--msu-blue-hover);
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 45, 114, 0.3);
+  box-shadow: 0 4px 12px rgba(66, 133, 244, 0.3);
 }
 
 .admin-nav-btn:active {
@@ -277,48 +277,54 @@
 
 /* ========== DARK MODE SUPPORT ========== */
 .dark .navbar {
-  background-color: rgba(15, 23, 42, 0.95);
-  border-bottom-color: rgba(255, 255, 255, 0.1);
+  background: rgba(31, 31, 31, 0.88);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+
+.dark .navbar.scrolled {
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.3);
+  border-bottom-color: transparent;
 }
 
 .dark .navbar-left:hover {
-  background: rgba(247, 148, 30, 0.08);
+  background: rgba(138, 180, 248, 0.08);
 }
 
 .dark .hamburger-overlay {
-  color: var(--msu-gold);
+  color: #8ab4f8;
 }
 
 .dark .profile-icon-btn {
-  /* 🔥 DARK MODE: Gradient background */
-  background: linear-gradient(135deg, #002D72, #F7941E);
-  border-color: rgba(255, 255, 255, 0.2);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
-  color: white;
+  background: #3c4043;
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  color: #e8eaed;
 }
 
 .dark .profile-icon-btn:hover {
-  border-color: rgba(255, 255, 255, 0.4);
-  box-shadow: 0 4px 12px rgba(247, 148, 30, 0.5);
-  background: linear-gradient(135deg, #003087, #FF9F2E);
+  border-color: rgba(138, 180, 248, 0.4);
+  box-shadow: 0 4px 12px rgba(138, 180, 248, 0.2);
+  background: #4c4c4c;
   transform: translateY(-2px);
 }
 
 .dark .profile-icon-fallback {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(138, 180, 248, 0.15);
   backdrop-filter: blur(10px);
 }
 
 .dark .admin-nav-btn {
-  background: var(--msu-gold);
-  border-color: var(--msu-gold);
-  color: #0f172a;
+  background: #8ab4f8;
+  border-color: #8ab4f8;
+  color: #202124;
 }
 
 .dark .admin-nav-btn:hover {
-  background: var(--msu-gold-hover);
-  border-color: var(--msu-gold-hover);
-  box-shadow: 0 4px 12px rgba(255, 183, 3, 0.4);
+  background: #aecbfa;
+  border-color: #aecbfa;
+  box-shadow: 0 4px 12px rgba(138, 180, 248, 0.3);
 }
 
 /* ========== RESPONSIVE BREAKPOINTS ========== */

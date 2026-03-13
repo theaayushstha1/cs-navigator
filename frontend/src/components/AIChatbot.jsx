@@ -5,7 +5,7 @@ function AIChatbot() {
   return (
     <div className="welcome-container">
       <img
-        src="/msu_logo.png"
+        src="/msu_logo.webp"
         alt="Morgan State University Logo"
         style={{
           width: "120px",        // fixed width

@@ -59,12 +59,12 @@
 }
 
 body.dark .back-home-btn {
-  background: var(--msu-gold);
-  color: #0f172a;
+  background: #8ab4f8;
+  color: #202124;
 }
 
 body.dark .back-home-btn:hover {
-  background: var(--msu-gold-hover);
+  background: #aecbfa;
 }
 
 .AdminDashboard .page-icon {
@@ -73,7 +73,7 @@ body.dark .back-home-btn:hover {
 }
 
 body.dark .AdminDashboard .page-icon {
-  color: var(--msu-gold);
+  color: #8ab4f8;
 }
 
 .AdminDashboard .page-title {
@@ -127,9 +127,9 @@ body.dark .AdminDashboard .page-icon {
 }
 
 body.dark .admin-tab.active {
-  background: var(--msu-gold);
-  border-color: var(--msu-gold);
-  color: #0f172a;
+  background: #8ab4f8;
+  border-color: #8ab4f8;
+  color: #202124;
 }
 
 .ticket-badge {
@@ -173,12 +173,12 @@ body.dark .admin-tab.active {
 }
 
 body.dark .action-btn {
-  background: var(--msu-gold);
-  color: #0f172a;
+  background: #8ab4f8;
+  color: #202124;
 }
 
 body.dark .action-btn:hover {
-  background: var(--msu-gold-hover);
+  background: #aecbfa;
 }
 
 /* ========================================
@@ -215,11 +215,11 @@ body.dark .action-btn:hover {
 .admin-form input:focus {
   outline: none;
   border-color: var(--msu-blue);
-  box-shadow: 0 0 0 3px rgba(0, 45, 114, 0.1);
+  box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.1);
 }
 
 body.dark .admin-form input:focus {
-  border-color: var(--msu-gold);
+  border-color: #8ab4f8;
   box-shadow: 0 0 0 3px rgba(255, 183, 3, 0.1);
 }
 
@@ -308,7 +308,7 @@ body.dark .admin-form input:focus {
 }
 
 body.dark .stat-card:hover {
-  border-color: var(--msu-gold);
+  border-color: #8ab4f8;
 }
 
 .stat-card .stat-icon {
@@ -379,9 +379,9 @@ body.dark .stat-card.progress .stat-number { color: #3B82F6; }
 }
 
 body.dark .filter-btn.active {
-  background: var(--msu-gold);
-  border-color: var(--msu-gold);
-  color: #0f172a;
+  background: #8ab4f8;
+  border-color: #8ab4f8;
+  color: #202124;
 }
 
 /* Tickets List */
@@ -416,7 +416,7 @@ body.dark .filter-btn.active {
 }
 
 body.dark .ticket-card:hover {
-  border-color: var(--msu-gold);
+  border-color: #8ab4f8;
 }
 
 .ticket-header-row {
@@ -818,7 +818,7 @@ body.dark .ticket-card:hover {
 }
 
 body.dark .search-box:focus-within {
-  border-color: var(--msu-gold);
+  border-color: #8ab4f8;
 }
 
 .search-box svg {
@@ -1020,12 +1020,12 @@ body.dark .search-box:focus-within {
 }
 
 body.dark .voice-search-btn {
-  background: var(--msu-gold);
-  color: #0f172a;
+  background: #8ab4f8;
+  color: #202124;
 }
 
 body.dark .voice-search-btn:hover {
-  background: var(--msu-gold-hover);
+  background: #aecbfa;
 }
 
 .voice-search-btn.listening {
@@ -1106,7 +1106,7 @@ body.dark .voice-search-btn.listening {
 }
 
 body.dark .kb-search-results {
-  border-color: var(--msu-gold);
+  border-color: #8ab4f8;
 }
 
 .kb-search-results h3 {
@@ -1121,7 +1121,7 @@ body.dark .kb-search-results {
 }
 
 body.dark .kb-search-results h3 strong {
-  color: var(--msu-gold);
+  color: #8ab4f8;
 }
 
 .search-hint {
@@ -1162,7 +1162,7 @@ body.dark .kb-search-results h3 strong {
 }
 
 body.dark .search-result-item:hover {
-  border-color: var(--msu-gold);
+  border-color: #8ab4f8;
 }
 
 .search-result-item:last-child {
@@ -1178,7 +1178,7 @@ body.dark .search-result-item:hover {
 }
 
 body.dark .result-filename {
-  color: var(--msu-gold);
+  color: #8ab4f8;
 }
 
 .result-match {
@@ -1251,7 +1251,7 @@ body.dark .search-summary-text {
 }
 
 body.dark .clear-search-btn {
-  background: #1e293b;
+  background: #2d2d2d;
   border-color: #F59E0B;
   color: #FDE68A;
 }
@@ -1324,7 +1324,7 @@ body.dark .matched-file-item:hover {
 
 body.dark .matched-file-item.active {
   background: #F59E0B;
-  color: #1e293b;
+  color: #2d2d2d;
 }
 
 .matched-filename {
@@ -1386,8 +1386,8 @@ body.dark .matched-file-item.active {
 }
 
 body.dark .kb-file-item.active {
-  background: var(--msu-gold);
-  color: #0f172a;
+  background: #8ab4f8;
+  color: #202124;
 }
 
 .kb-filename {
@@ -1501,7 +1501,7 @@ body.dark .highlight-match {
 .kb-search-results mark,
 .result-match mark {
   background: #FBBF24;
-  color: #1e293b;
+  color: #2d2d2d;
   padding: 1px 4px;
   border-radius: 3px;
   font-weight: 600;
@@ -1628,7 +1628,7 @@ body.dark .result-match mark {
 }
 
 .action-btn.active {
-  background: var(--msu-orange) !important;
+  background: var(--msu-blue) !important;
 }
 
 .action-btn.save-btn {
@@ -1873,7 +1873,7 @@ body.dark .result-match mark {
 
 .chart-bar {
   width: 50px;
-  background: linear-gradient(180deg, var(--msu-blue) 0%, rgba(0, 45, 114, 0.7) 100%);
+  background: linear-gradient(180deg, var(--msu-blue) 0%, rgba(66, 133, 244, 0.7) 100%);
   border-radius: 8px 8px 0 0;
   display: flex;
   align-items: flex-start;
@@ -1884,7 +1884,7 @@ body.dark .result-match mark {
 }
 
 body.dark .chart-bar {
-  background: linear-gradient(180deg, var(--msu-gold) 0%, rgba(255, 183, 3, 0.7) 100%);
+  background: linear-gradient(180deg, #8ab4f8 0%, rgba(138, 180, 248, 0.7) 100%);
 }
 
 .chart-bar:hover {
@@ -1898,7 +1898,7 @@ body.dark .chart-bar {
 }
 
 body.dark .chart-value {
-  color: #0f172a;
+  color: #202124;
 }
 
 .chart-label {
@@ -2088,10 +2088,10 @@ body.dark .chart-value {
 }
 
 .doc-card:hover {
-  background: rgba(0, 82, 204, 0.1);
+  background: rgba(66, 133, 244, 0.1);
   border-color: #0052CC;
   transform: translateY(-4px);
-  box-shadow: 0 8px 24px rgba(0, 82, 204, 0.2);
+  box-shadow: 0 8px 24px rgba(66, 133, 244, 0.2);
 }
 
 .doc-card svg {
@@ -2338,7 +2338,7 @@ body.dark .footer-icon-btn:hover {
   font-size: 0.9rem;
   color: var(--text-main);
   line-height: 1.5;
-  background: rgba(0, 45, 114, 0.03);
+  background: rgba(66, 133, 244, 0.03);
   padding: 10px 12px;
   border-radius: 8px;
   border-left: 3px solid var(--msu-blue);
@@ -2373,12 +2373,12 @@ body.dark .satisfaction-bar-container {
 }
 
 body.dark .feedback-card {
-  background: #1e293b;
+  background: #2d2d2d;
 }
 
 body.dark .feedback-message p {
-  background: rgba(255, 183, 3, 0.05);
-  border-left-color: var(--msu-gold);
+  background: rgba(138, 180, 248, 0.05);
+  border-left-color: #8ab4f8;
 }
 
 body.dark .feedback-details p {

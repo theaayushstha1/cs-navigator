@@ -69,9 +69,9 @@ NO_CACHE_KEYWORDS = [
 
 # Redis Configuration (from environment variables)
 REDIS_URL = os.getenv("REDIS_URL", "")
-REDIS_HOST = os.getenv("REDIS_HOST", "redis-10159.c8.us-east-1-3.ec2.cloud.redislabs.com")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "10159"))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "eABZepeDtaNLP4vNd0KQUTC2rBNcMEzH")
+REDIS_HOST = os.getenv("REDIS_HOST", "")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 REDIS_USERNAME = os.getenv("REDIS_USERNAME", "default")
 
 

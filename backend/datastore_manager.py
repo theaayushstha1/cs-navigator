@@ -16,10 +16,10 @@ from google.api_core.client_options import ClientOptions
 
 # Configuration from environment
 GCP_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "csnavigator-vertex-ai")
-GCS_BUCKET_NAME = os.getenv("GCS_KB_BUCKET", "csnavigator-kb-2026")
+GCS_BUCKET_NAME = os.getenv("GCS_KB_BUCKET", "csnavigator-unified-kb")
 DATASTORE_ID = os.getenv(
     "VERTEX_AI_DATASTORE_ID",
-    "projects/csnavigator-vertex-ai/locations/us/collections/default_collection/dataStores/csnavigator-kb-uscentral_1768951850167"
+    "projects/csnavigator-vertex-ai/locations/us/collections/default_collection/dataStores/csnavigator-unified-kb-v4"
 )
 
 # Extract location from datastore ID (e.g., "us" from ".../locations/us/...")
@@ -30,7 +30,7 @@ LOCATION = _ds_parts[_ds_parts.index("locations") + 1] if "locations" in _ds_par
 API_ENDPOINT = f"{LOCATION}-discoveryengine.googleapis.com"
 
 BRANCH = f"{DATASTORE_ID}/branches/default_branch"
-GCS_PREFIX = "MSU_Knowledge_Base/"
+GCS_PREFIX = "v4_split/"
 
 
 def _get_doc_client():

@@ -279,8 +279,12 @@ def init_db():
     # 7. Create/Update admin account
     try:
         db = SessionLocal()
-        admin_email = os.getenv("ADMIN_EMAIL", "admin@test.com")
-        admin_password = os.getenv("ADMIN_PASSWORD", "changeme")
+        admin_email = os.getenv("ADMIN_EMAIL", "admin@morgan.edu")
+        admin_password = os.getenv("ADMIN_PASSWORD")
+        if not admin_password:
+            print("[WARN] ADMIN_PASSWORD not set in env, skipping admin account creation")
+            db.close()
+            return
 
         existing_admin = db.query(User).filter(User.email == admin_email).first()
 
@@ -371,9 +375,11 @@ async def lifespan(app):
 
 app = FastAPI(title="CS Chatbot API", version="2.1.0", lifespan=lifespan)
 
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173,http://localhost:5175,https://inavigator.ai,https://csnavigator-frontend-750361124802.us-central1.run.app").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -381,7 +387,7 @@ app.add_middleware(
 
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["*"]
+    allowed_hosts=os.getenv("TRUSTED_HOSTS", "localhost,127.0.0.1,inavigator.ai,csnavigator-backend-750361124802.us-central1.run.app,csnavigator-frontend-750361124802.us-central1.run.app").split(",")
 )
 
 # Mount Static Files (Profile Pictures AND Chat Files)
@@ -442,6 +448,19 @@ class RegisterRequest(BaseModel):
     email: str
     password: str
 
+    @staticmethod
+    def validate_email_format(v):
+        import re
+        if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', v):
+            raise ValueError("Invalid email format")
+        return v
+
+    @staticmethod
+    def validate_password_strength(v):
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
+
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -449,6 +468,7 @@ class LoginRequest(BaseModel):
 class QueryRequest(BaseModel):
     query: str
     session_id: str = "default" #  NEW: Accept session ID
+    skip_cache: bool = False     #  NEW: Bypass cache on regenerate
 
 class GuestQueryRequest(BaseModel):
     query: str
@@ -558,6 +578,12 @@ def load_json_documents(paths: List[str]) -> List[Dict[str,Any]]:
 # --- Auth ---
 @app.post("/api/register", status_code=status.HTTP_201_CREATED)
 def register(req: RegisterRequest, db: Session = Depends(get_db)):
+    # Validate email and password
+    import re
+    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', req.email):
+        raise HTTPException(status_code=400, detail="Invalid email format")
+    if len(req.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     if db.query(User).filter(User.email == req.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
     hashed = hash_password(req.password)
@@ -1083,6 +1109,58 @@ async def upload_degreeworks_pdf(
         raise HTTPException(500, f"Failed to process PDF: {str(e)}")
 
 
+@app.get("/api/bookmarklet.js")
+async def serve_bookmarklet_js(token: str = "", api: str = ""):
+    """
+    Serves the full bookmarklet sync script.
+    The bookmarklet itself is a tiny loader that injects this script.
+    This avoids Chrome's ~2KB URL length limit for bookmarklets.
+    """
+    js_code = f"""
+(function() {{
+  var API = '{api}';
+  var TOKEN = '{token}';
+
+  var msg = document.createElement('div');
+  msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#002D72;color:#fff;padding:20px 24px;border-radius:12px;z-index:999999;font-family:system-ui,Arial;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,0.3);';
+  msg.innerHTML = '<strong>CS Navigator</strong><br>Syncing your DegreeWorks data...';
+  document.body.appendChild(msg);
+
+  var html = document.documentElement.outerHTML;
+
+  fetch(API + '/api/degreeworks/scrape-html', {{
+    method: 'POST',
+    headers: {{
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + TOKEN
+    }},
+    body: JSON.stringify({{ html: html }})
+  }})
+  .then(function(r) {{ return r.json(); }})
+  .then(function(d) {{
+    msg.remove();
+    if (d.success) {{
+      var info = d.data || {{}};
+      var details = '';
+      if (info.overall_gpa) details += 'GPA: ' + info.overall_gpa + '\\n';
+      if (info.classification) details += 'Classification: ' + info.classification + '\\n';
+      if (info.total_credits_earned) details += 'Credits: ' + info.total_credits_earned + '\\n';
+      if (info.courses_count) details += 'Courses found: ' + info.courses_count + '\\n';
+      alert('DegreeWorks synced successfully!\\n\\n' + details + '\\nYou can now close this tab and return to CS Navigator.');
+    }} else {{
+      alert('Sync failed: ' + (d.detail || d.message || 'Unknown error') + '\\n\\nTry using manual entry instead.');
+    }}
+  }})
+  .catch(function(e) {{
+    msg.remove();
+    alert('Error: ' + e.message + '\\n\\nTry using manual entry instead.');
+  }});
+}})();
+"""
+    from fastapi.responses import Response
+    return Response(content=js_code, media_type="application/javascript")
+
+
 @app.post("/api/degreeworks/scrape-html")
 async def scrape_degreeworks_html(
     request: dict,
@@ -1174,16 +1252,24 @@ def parse_degreeworks_html(html: str) -> dict:
     html_lower = html.lower()
 
     # Extract Student Name - look in multiple places
+    # Blacklist common false positives from DegreeWorks labels
+    name_blacklist = {'academic standing', 'good standing', 'computer science', 'general education',
+                      'bachelor of science', 'student self service', 'morgan state', 'degree works',
+                      'natural science', 'free electives', 'university requirements'}
     name_patterns = [
         r'student[:\s]+name[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
-        r'name[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
+        # DegreeWorks profile area: name appears after "Profile" aria label
+        r'Profile["\s>]+[^<]*>([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)<',
+        # Hello greeting from Banner
+        r'Hello\s+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
         r'>([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)</(?:h1|h2|div|span)',
+        r'name[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
     ]
     for pattern in name_patterns:
         match = re.search(pattern, html)
         if match:
             name = match.group(1).strip()
-            if len(name) > 3 and len(name) < 50:
+            if len(name) > 3 and len(name) < 50 and name.lower() not in name_blacklist:
                 data['student_name'] = name
                 break
 
@@ -1198,17 +1284,17 @@ def parse_degreeworks_html(html: str) -> dict:
             data['student_id'] = match.group(1)
             break
 
-    # Overall GPA - this is critical
+    # Overall GPA - this is critical (support 1-3 decimal places)
     gpa_patterns = [
-        r'overall\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'cumulative\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'gpa[:\s]+(\d\.\d{1,2})',
-        r'gpa\s*:\s*(\d\.\d{1,2})',
-        r'gpa\s+(\d\.\d{1,2})',
-        r'total\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'career\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'>(\d\.\d{2})<.*?gpa',
-        r'gpa.*?>(\d\.\d{2})<',
+        r'overall\s*gpa[:\s]*(\d\.\d{1,3})',
+        r'cumulative\s*gpa[:\s]*(\d\.\d{1,3})',
+        r'gpa[:\s]+(\d\.\d{1,3})',
+        r'gpa\s*:\s*(\d\.\d{1,3})',
+        r'gpa\s+(\d\.\d{1,3})',
+        r'total\s*gpa[:\s]*(\d\.\d{1,3})',
+        r'career\s*gpa[:\s]*(\d\.\d{1,3})',
+        r'>(\d\.\d{2,3})<.*?gpa',
+        r'gpa.*?>(\d\.\d{2,3})<',
     ]
     for pattern in gpa_patterns:
         match = re.search(pattern, text_lower)
@@ -1226,16 +1312,16 @@ def parse_degreeworks_html(html: str) -> dict:
         # Look near GPA keyword
         gpa_area = re.search(r'gpa.{0,30}', text_lower)
         if gpa_area:
-            gpa_match = re.search(r'(\d\.\d{1,2})', gpa_area.group())
+            gpa_match = re.search(r'(\d\.\d{1,3})', gpa_area.group())
             if gpa_match:
                 gpa = float(gpa_match.group(1))
                 if 1.0 <= gpa <= 4.0:
                     data['overall_gpa'] = gpa
 
-    # Major GPA
+    # Major GPA (support 1-3 decimal places)
     major_gpa_patterns = [
-        r'major\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'program\s*gpa[:\s]*(\d\.\d{1,2})',
+        r'major\s*gpa[:\s]*(\d\.\d{1,3})',
+        r'program\s*gpa[:\s]*(\d\.\d{1,3})',
     ]
     for pattern in major_gpa_patterns:
         match = re.search(pattern, text_lower)
@@ -1243,14 +1329,14 @@ def parse_degreeworks_html(html: str) -> dict:
             data['major_gpa'] = float(match.group(1))
             break
 
-    # Classification
+    # Classification - handle DegreeWorks format like "4-Senior" or bare "Senior"
     class_patterns = [
-        r'classification[:\s]*(freshman|sophomore|junior|senior|graduate)',
-        r'class[:\s]*(freshman|sophomore|junior|senior|graduate)',
-        r'standing[:\s]*(freshman|sophomore|junior|senior|graduate)',
-        r'level[:\s]*(freshman|sophomore|junior|senior|graduate)',
-        r'student\s*level[:\s]*(freshman|sophomore|junior|senior|graduate)',
-        r'>(freshman|sophomore|junior|senior|graduate)<',
+        r'classification[:\s]*(?:\d[- ])?(freshman|sophomore|junior|senior|graduate)',
+        r'class[:\s]*(?:\d[- ])?(freshman|sophomore|junior|senior|graduate)',
+        r'standing[:\s]*(?:\d[- ])?(freshman|sophomore|junior|senior|graduate)',
+        r'level[:\s]*(?:\d[- ])?(freshman|sophomore|junior|senior|graduate)',
+        r'student\s*level[:\s]*(?:\d[- ])?(freshman|sophomore|junior|senior|graduate)',
+        r'>(?:\d[- ])?(freshman|sophomore|junior|senior|graduate)<',
     ]
     for pattern in class_patterns:
         match = re.search(pattern, text_lower)
@@ -1286,10 +1372,11 @@ def parse_degreeworks_html(html: str) -> dict:
                 data['degree_program'] = program
                 break
 
-    # Credits - look for various patterns
+    # Credits - look for various patterns (DegreeWorks uses "Credits applied")
     credits_patterns = [
+        r'credits\s*applied[:\s]*(\d{2,3}(?:\.\d)?)',
         r'(?:total|earned|completed)\s*(?:credits|hours)[:\s]*(\d{2,3}(?:\.\d)?)',
-        r'(\d{2,3}(?:\.\d)?)\s*(?:credits|hours)\s*(?:earned|completed|total)',
+        r'(\d{2,3}(?:\.\d)?)\s*(?:credits|hours)\s*(?:earned|completed|applied|total)',
         r'credits\s*(?:earned|applied)[:\s]*(\d{2,3}(?:\.\d)?)',
         r'hours\s*earned[:\s]*(\d{2,3}(?:\.\d)?)',
         r'credits\s*:\s*(\d{2,3}(?:\.\d)?)',
@@ -1334,34 +1421,44 @@ def parse_degreeworks_html(html: str) -> dict:
                 data['credits_remaining'] = remain
                 break
 
-    # Catalog Year
-    catalog_match = re.search(r'(?:catalog|requirement)[:\s]*(\d{4}[-–]\d{4}|\d{4})', text_lower)
+    # Catalog Year - handle "SPRING 2024" or "2024-2025" or just "2024"
+    catalog_match = re.search(r'catalog\s*year[:\s]*((?:spring|summer|fall|winter)\s+\d{4})', text_lower)
     if catalog_match:
-        data['catalog_year'] = catalog_match.group(1)
+        data['catalog_year'] = catalog_match.group(1).title()
+    else:
+        catalog_match = re.search(r'(?:catalog|requirement)[:\s]*(\d{4}[-\u2013]\d{4}|\d{4})', text_lower)
+        if catalog_match:
+            data['catalog_year'] = catalog_match.group(1)
 
-    # Advisor
+    # Advisor - require at least 2 words (first + last name), blacklist common false positives
+    advisor_blacklist = {'prerequisite', 'self service', 'good standing', 'academic standing',
+                         'computer science', 'general education'}
     advisor_patterns = [
-        r'advisor[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)*)',
+        r'advisor[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
         r'advised\s+by[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
     ]
     for pattern in advisor_patterns:
         match = re.search(pattern, text)
         if match:
             advisor = match.group(1).strip()
-            if len(advisor) > 3:
+            if len(advisor) > 3 and advisor.lower() not in advisor_blacklist:
                 data['advisor'] = advisor
                 break
 
     # Extract completed courses - look for course patterns
     # Pattern: DEPT 123 Course Title Grade Credits Term
+    # DegreeWorks uses UPPERCASE terms (SPRING 2024) and TRA for transfer grades
+    VALID_GRADES = ['A', 'A-', 'A+', 'B', 'B-', 'B+', 'C', 'C-', 'C+', 'D', 'D-', 'D+', 'F',
+                     'TRA', 'TRB', 'TRC', 'TRD', 'TR', 'P', 'S', 'IP', 'W']
     courses_completed = []
     course_patterns = [
-        # Standard format: COSC 111 Intro to CS A 3.00 Fall 2024
-        r'([A-Z]{2,4})\s*(\d{3}[A-Z]?)\s+([A-Za-z][A-Za-z\s&\-,]+?)\s+([ABCDF][+-]?)\s+(\d(?:\.\d{1,2})?)\s+((?:Fall|Spring|Summer|Winter)\s*\d{4})',
-        # Without term: COSC 111 Intro to CS A 3.00
-        r'([A-Z]{2,4})\s*(\d{3}[A-Z]?)\s+([A-Za-z][A-Za-z\s&\-,]{3,30}?)\s+([ABCDF][+-]?)\s+(\d(?:\.\d{1,2})?)',
-        # Minimal: COSC 111 A 3.00
-        r'([A-Z]{2,4})\s*(\d{3}[A-Z]?)\s+([ABCDF][+-]?)\s+(\d(?:\.\d{1,2})?)',
+        # Standard format: COSC 111 INTRO TO COMPUTER SCI I A 3 SPRING 2024
+        # Course numbers can have up to 2 letter suffixes (e.g. PHYS 116TR)
+        r'([A-Z]{2,4})\s*(\d{3}[A-Z]{0,2})\s+([A-Za-z][A-Za-z\s&\-,\(\)\']+?)\s+([ABCDF][+-]?|TR[A-D]|TR|IP|P|S|W)\s+(\d{1,2}(?:\.\d{1,2})?)\s+((?:FALL|SPRING|SUMMER|WINTER|Fall|Spring|Summer|Winter)\s*\d{4})',
+        # Without term: COSC 111 INTRO TO CS A 3
+        r'([A-Z]{2,4})\s*(\d{3}[A-Z]{0,2})\s+([A-Za-z][A-Za-z\s&\-,\(\)\']{3,40}?)\s+([ABCDF][+-]?|TR[A-D]|TR|IP|P|S|W)\s+(\d{1,2}(?:\.\d{1,2})?)',
+        # Minimal: COSC 111 A 3
+        r'([A-Z]{2,4})\s*(\d{3}[A-Z]{0,2})\s+([ABCDF][+-]?|TR[A-D]|TR|IP|P|S|W)\s+(\d{1,2}(?:\.\d{1,2})?)',
     ]
 
     seen_courses = set()
@@ -1383,7 +1480,7 @@ def parse_degreeworks_html(html: str) -> dict:
                     course['name'] = groups[2].strip()[:50]
                     course['grade'] = groups[3]
                     course['credits'] = float(groups[4])
-                    course['term'] = groups[5]
+                    course['term'] = groups[5].title()
                 elif len(groups) == 5:  # Without term
                     course['name'] = groups[2].strip()[:50]
                     course['grade'] = groups[3]
@@ -1392,7 +1489,7 @@ def parse_degreeworks_html(html: str) -> dict:
                     course['grade'] = groups[2]
                     course['credits'] = float(groups[3])
 
-                if course.get('grade') in ['A', 'A-', 'A+', 'B', 'B-', 'B+', 'C', 'C-', 'C+', 'D', 'D-', 'D+', 'F']:
+                if course.get('grade') in VALID_GRADES:
                     courses_completed.append(course)
 
     if courses_completed:
@@ -2003,7 +2100,13 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     # CACHE CHECK - Return cached response instantly if available
     # =========================================================================
     context_hash = get_context_hash(user_id, has_degreeworks=bool(dw_data))
-    cached_response = query_cache.get(user_q, context_hash)
+
+    # Skip cache when user taps "Regenerate" for a fresh answer
+    if req.skip_cache:
+        print(f"[CACHE] SKIP (regenerate) for query: {user_q[:50]}...")
+        cached_response = None
+    else:
+        cached_response = query_cache.get(user_q, context_hash)
 
     if cached_response:
         print(f"[CACHE] HIT for query: {user_q[:50]}...")

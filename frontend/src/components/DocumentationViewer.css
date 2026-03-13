@@ -632,7 +632,7 @@
 
 /* Code Block */
 .code-block {
-  background: #1e293b;
+  background: #2d2d2d;
   color: #e2e8f0;
   padding: 20px;
   border-radius: 8px;
@@ -991,7 +991,7 @@
 
 /* Dashboard Preview */
 .dashboard-preview {
-  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  background: linear-gradient(135deg, #2d2d2d 0%, #202124 100%);
   border-radius: 12px;
   padding: 24px;
   margin: 24px 0;

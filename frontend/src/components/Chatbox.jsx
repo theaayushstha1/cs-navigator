@@ -1,6 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { toast } from 'sonner';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { motion, AnimatePresence } from 'framer-motion';
 
 import { FaMicrophone } from "@react-icons/all-files/fa/FaMicrophone";
 import { FaPaperclip } from "@react-icons/all-files/fa/FaPaperclip";
@@ -23,14 +27,14 @@ import "./Chatbox.css";
 
 // Featured questions that showcase chatbot capabilities
 const FEATURED_QUESTIONS = [
-  "What courses should I take next semester if I'm interested in AI/ML?",
-  "Can you recommend a study plan for the cybersecurity track?",
-  "What are the prerequisites for COSC 450 Operating Systems?",
-  "Who are the professors in the CS department and what do they teach?",
-  "What internship and co-op opportunities are available for CS majors?",
-  "How do I apply for graduation and what requirements do I need?",
-  "What research labs and projects can I join in the CS department?",
-  "What is the difference between a B.S. and B.A. in Computer Science?",
+  "What's the difference between the B.S. in CS and Cloud Computing?",
+  "What are the prerequisites for COSC 220 Data Structures?",
+  "Who is the chair of the CS department and how do I contact them?",
+  "How do I request a course override or substitute a requirement?",
+  "What Group A and Group B electives should I take as a junior?",
+  "Tell me about the 4+1 accelerated B.S./M.S. program",
+  "Where can I get tutoring for intro CS courses like COSC 111?",
+  "What scholarships are available for CS majors at Morgan State?",
 ];
 
 import { getApiBase } from "../lib/apiBase";
@@ -54,7 +58,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const [userProfilePicture, setUserProfilePicture] = useState("/user_icon.jpg");
+  const [userProfilePicture, setUserProfilePicture] = useState("/user_icon.webp");
 
   // 🔥 Staging State for File Uploads
   const [pendingFile, setPendingFile] = useState(null);
@@ -73,6 +77,9 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const [feedbackGiven, setFeedbackGiven] = useState({}); // {messageIndex: 'helpful' | 'not_helpful' | 'reported'}
   const [reportModal, setReportModal] = useState(null); // index of message being reported
   const [reportText, setReportText] = useState("");
+
+  // 🔥 Drag-and-drop state
+  const [isDragging, setIsDragging] = useState(false);
 
   // 🔥 Thinking status - cycles through messages like ChatGPT/Claude
   const [thinkingStatus, setThinkingStatus] = useState("Searching knowledge base");
@@ -307,7 +314,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
 
   // Simple TTS for manual speaker button (uses browser TTS)
   const speak = (text) => {
-    if (!window.speechSynthesis) return alert("Text-to-speech not supported.");
+    if (!window.speechSynthesis) return toast.warning("Text-to-speech not supported in this browser.");
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1.05;
@@ -315,9 +322,20 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   };
 
   // Handle File Selection (Staging)
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+  const ALLOWED_FILE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'application/pdf', 'text/plain', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
   const handleFileSelect = (e) => {
     if (e.target.files && e.target.files[0]) {
-      setPendingFile(e.target.files[0]);
+      const file = e.target.files[0];
+      if (file.size > MAX_FILE_SIZE) {
+        toast.error("File too large. Maximum size is 10MB.");
+        return;
+      }
+      if (!ALLOWED_FILE_TYPES.includes(file.type)) {
+        toast.error("Unsupported file type.");
+        return;
+      }
+      setPendingFile(file);
     }
     // Reset value so onChange triggers again if same file selected
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -338,7 +356,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
 
     const SpeechAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechAPI) {
-      alert("Speech recognition not supported. Try Chrome or Edge.");
+      toast.warning("Speech recognition not supported. Try Chrome or Edge.");
       return;
     }
 
@@ -498,7 +516,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
 
     const SpeechAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechAPI) {
-      alert("Speech recognition not supported. Try Chrome or Edge.");
+      toast.warning("Speech recognition not supported. Try Chrome or Edge.");
       return;
     }
 
@@ -528,7 +546,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
       if (e.error === "no-speech") {
         // User was silent, just stop quietly
       } else if (e.error !== "aborted") {
-        alert("Voice input error: " + e.error);
+        toast.error("Voice input error: " + e.error);
       }
     };
 
@@ -599,19 +617,28 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
     return () => document.removeEventListener('click', handleClickOutside);
   }, [feedbackMenuOpen]);
 
+  // Auto-resize textarea
+  const resizeTextarea = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 150) + 'px';
+  }, []);
+
   // 🔥 MAIN SEND LOGIC - With Streaming Support
-  const handleSend = async (e) => {
-    e.preventDefault();
-    if ((!input.trim() && !pendingFile) || isLoading) return;
+  const handleSend = async (e, overrideText = null, skipCache = false) => {
+    if (e) e.preventDefault();
+    const sendText = overrideText || input.trim();
+    if ((!sendText && !pendingFile) || isLoading) return;
 
     setIsLoading(true);
-    let finalMessage = input.trim();
+    let finalMessage = sendText;
 
     try {
         const token = localStorage.getItem("token");
 
-        // 1. Upload File (if exists)
-        if (pendingFile) {
+        // 1. Upload File (if exists, only for non-override sends)
+        if (pendingFile && !overrideText) {
             const formData = new FormData();
             formData.append("file", pendingFile);
 
@@ -625,24 +652,26 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 const data = await uploadRes.json();
                 const fullUrl = data.url.startsWith("http") ? data.url : `${API_BASE}${data.url}`;
 
-                // Create Markdown Link: [filename](url)
                 const fileMarkdown = `[${data.filename}](${fullUrl})`;
 
-                // Append to message
                 if (finalMessage) {
                     finalMessage = `${fileMarkdown}\n${finalMessage}`;
                 } else {
                     finalMessage = fileMarkdown;
                 }
             } else {
-                alert("File upload failed. Sending text only.");
+                toast.error("File upload failed. Sending text only.");
             }
         }
 
         // 2. Optimistic UI Update
         addMessage(finalMessage, "user");
-        setInput("");
-        setPendingFile(null);
+        if (!overrideText) {
+            setInput("");
+            setPendingFile(null);
+            // Reset textarea height
+            if (inputRef.current) inputRef.current.style.height = 'auto';
+        }
 
         // 3. Add placeholder bot message for streaming
         const botMessageIndex = messages.length + 1; // Index after user message
@@ -658,7 +687,8 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
             },
             body: JSON.stringify({
                 query: finalMessage,
-                session_id: sessionId || "default"
+                session_id: sessionId || "default",
+                skip_cache: skipCache
             }),
         });
 
@@ -776,15 +806,115 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
     }
   };
 
+  // Regenerate last response
+  const handleRegenerate = () => {
+    const lastUserMsg = [...messages].reverse().find(m => m.sender === "user");
+    if (!lastUserMsg) return;
+    // Remove last bot message
+    setMessages(prev => {
+      const copy = [...prev];
+      if (copy.length > 0 && copy[copy.length - 1].sender === "bot") {
+        copy.pop();
+      }
+      return copy;
+    });
+    setTimeout(() => handleSend(null, lastUserMsg.text, true), 50);
+  };
+
+  // Drag and drop handlers
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      setIsDragging(false);
+    }
+  };
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      setPendingFile(e.dataTransfer.files[0]);
+    }
+  };
+
+  // Message animation variants
+  const messageVariants = {
+    hidden: { opacity: 0, y: 20 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: [0.34, 1.56, 0.64, 1] } },
+  };
+
+  // Code block renderer for ReactMarkdown
+  const codeRenderer = ({ node, className, children, ...props }) => {
+    const match = /language-(\w+)/.exec(className || '');
+    const codeString = String(children).replace(/\n$/, '');
+    const isBlock = match || codeString.includes('\n');
+
+    if (isBlock) {
+      const language = match ? match[1] : 'text';
+      return (
+        <div className="code-block-wrapper">
+          <div className="code-block-header">
+            <span className="code-lang">{language}</span>
+            <button
+              className="code-copy-btn"
+              onClick={() => {
+                navigator.clipboard.writeText(codeString);
+                toast.success("Copied to clipboard");
+              }}
+            >
+              Copy
+            </button>
+          </div>
+          <SyntaxHighlighter
+            style={oneDark}
+            language={language}
+            PreTag="div"
+            customStyle={{ margin: 0, borderRadius: '0 0 8px 8px', fontSize: '0.85rem' }}
+          >
+            {codeString}
+          </SyntaxHighlighter>
+        </div>
+      );
+    }
+    return <code className={className} {...props}>{children}</code>;
+  };
+
   return (
-    <div className="chat-main">
+    <div
+      className={`chat-main ${isDragging ? 'drag-active' : ''}`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {/* Hidden audio element for TTS playback */}
       <audio ref={audioRef} style={{ display: 'none' }} />
 
+      {/* Drag overlay */}
+      {isDragging && (
+        <div className="drag-overlay">
+          <div className="drag-overlay-content">
+            <FaPaperclip size={32} />
+            <span>Drop file here</span>
+          </div>
+        </div>
+      )}
+
       <div className="chat-messages">
+        <AnimatePresence initial={false}>
         {messages.length === 0 ? (
-          <div className="welcome-container">
-            <img src="/msu_logo.png" alt="MSU Logo" className="welcome-logo" />
+          <motion.div
+            className="welcome-container"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, ease: [0.34, 1.56, 0.64, 1] }}
+          >
+            <img src="/msu_logo.webp" alt="MSU Logo" className="welcome-logo" />
             <h1 className="welcome-title">Morgan State CS Navigator</h1>
             <p className="welcome-subtitle">How can I assist with your academic journey today?</p>
             <div className="suggestions">
@@ -802,27 +932,32 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 ))
               )}
             </div>
-          </div>
+          </motion.div>
         ) : (
           messages.map((msg, i) => (
-            <div key={i} className={`message ${msg.sender}`}>
+            <motion.div
+              key={i}
+              className={`message ${msg.sender}`}
+              variants={messageVariants}
+              initial="hidden"
+              animate="visible"
+            >
               <img
-                src={msg.sender === "user" ? userProfilePicture : "/bot_avatar.jpg"}
+                src={msg.sender === "user" ? userProfilePicture : "/bot_avatar.webp"}
                 alt={msg.sender}
                 className="avatar-img"
-                onError={(e) => { if (msg.sender === "user") e.target.src = "/user_icon.jpg"; }}
+                onError={(e) => { if (msg.sender === "user") e.target.src = "/user_icon.webp"; }}
               />
               <div className="message-content">
                 <div className="message-bubble-wrapper">
                   <div className="message-bubble">
 
-                    {/* 🔥 UPDATED: Use ReactMarkdown for Bullets, Bold, & File Cards */}
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{
-                          // Custom Renderer for Links to handle File Cards
+                          code: codeRenderer,
                           a: ({node, href, children, ...props}) => {
-                              const isFile = href.includes("uploads/chat_files") || href.includes("uploads/profile_pictures");
+                              const isFile = href && (href.includes("uploads/chat_files") || href.includes("uploads/profile_pictures"));
 
                               if (isFile) {
                                   return (
@@ -927,14 +1062,27 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 </div>
                 <div className="timestamp">{msg.time}</div>
               </div>
-            </div>
+            </motion.div>
           ))
         )}
-        
+        </AnimatePresence>
+
+        {/* Regenerate button - after last bot message */}
+        {messages.length > 0 &&
+          messages[messages.length - 1]?.sender === "bot" &&
+          !messages[messages.length - 1]?.isStreaming &&
+          !isLoading && (
+          <div className="regenerate-container">
+            <button className="regenerate-btn" onClick={handleRegenerate}>
+              Regenerate response
+            </button>
+          </div>
+        )}
+
         {/* Thinking Indicator - ChatGPT/Claude style with shimmer */}
         {isLoading && !messages.some(m => m.isStreaming) && (
           <div className="message bot">
-            <img src="/bot_avatar.jpg" alt="Bot" className="avatar-img" />
+            <img src="/bot_avatar.webp" alt="Bot" className="avatar-img" />
             <div className="message-content">
               <div className="message-bubble thinking-bubble">
                 <div className="thinking-status">
@@ -1051,6 +1199,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 type="file"
                 ref={fileInputRef}
                 style={{ display: 'none' }}
+                accept=".png,.jpg,.jpeg,.gif,.pdf,.txt,.doc,.docx"
                 onChange={handleFileSelect}
             />
 
@@ -1064,12 +1213,19 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 <FaMicrophone size={18} />
             </button>
 
-            <input
-                type="text"
+            <textarea
+                rows={1}
                 ref={inputRef}
                 className="chat-input-field"
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                maxLength={2000}
+                onChange={(e) => { setInput(e.target.value.slice(0, 2000)); resizeTextarea(); }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend(e);
+                  }
+                }}
                 placeholder={isVoiceMode ? (voiceStatus === "listening" ? "Listening..." : voiceStatus === "speaking" ? "Speaking..." : "Speak now...") : pendingFile ? "Add a message..." : "Type your message..."}
                 disabled={isLoading || isVoiceMode}
             />

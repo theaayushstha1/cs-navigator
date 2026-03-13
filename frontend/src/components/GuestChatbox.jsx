@@ -7,12 +7,12 @@ import "./GuestChatbox.css";
 
 // Default suggestions for guests
 const GUEST_SUGGESTIONS = [
-  "What CS courses are available?",
-  "What are the prerequisites for COSC 311?",
-  "Who is the chair of Computer Science?",
-  "What internship opportunities are available?",
-  "What are the degree requirements?",
-  "What research areas exist in CS?"
+  "What degrees does the CS department offer?",
+  "What are the prerequisites for COSC 220 Data Structures?",
+  "Who are the faculty in the CS department?",
+  "How many credits do I need to graduate with a B.S. in CS?",
+  "What's the 4+1 accelerated B.S./M.S. program?",
+  "Where can I find tutoring and academic support?"
 ];
 
 import { getApiBase } from "../lib/apiBase";
@@ -226,7 +226,7 @@ export default function GuestChatbox() {
       <div className="guest-chat-messages">
         {messages.length === 0 ? (
           <div className="guest-welcome-container">
-            <img src="/msu_logo.png" alt="MSU Logo" className="guest-welcome-logo" />
+            <img src="/msu_logo.webp" alt="MSU Logo" className="guest-welcome-logo" />
             <h1 className="guest-welcome-title">Morgan State CS Navigator</h1>
             <p className="guest-welcome-subtitle">How can I assist with your academic journey today?</p>
             <div className="guest-suggestions">
@@ -246,7 +246,7 @@ export default function GuestChatbox() {
           messages.map((msg, i) => (
             <div key={i} className={`guest-message ${msg.sender}`}>
               <img
-                src={msg.sender === "user" ? "/user_icon.jpg" : "/bot_avatar.jpg"}
+                src={msg.sender === "user" ? "/user_icon.webp" : "/bot_avatar.webp"}
                 alt={msg.sender}
                 className="guest-avatar-img"
                 onError={(e) => {
@@ -272,7 +272,7 @@ export default function GuestChatbox() {
         {isLoading && (
           <div className="guest-message bot">
             <img
-              src="/bot_avatar.jpg"
+              src="/bot_avatar.webp"
               alt="Bot"
               className="guest-avatar-img"
               onError={(e) => {

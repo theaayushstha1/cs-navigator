@@ -14,7 +14,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 print(f"[DIR] BASE_DIR: {BASE_DIR}")
 print(f"[DIR] PROJECT_ROOT: {PROJECT_ROOT}")
-print(f" CONNECTING TO DATABASE: {DATABASE_URL}")
+print(f" CONNECTING TO DATABASE: {'***' if DATABASE_URL else 'NOT SET'}")
 
 if not DATABASE_URL:
     # Fallback to SQLite if DATABASE_URL is not set

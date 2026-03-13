@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import { Toaster } from "sonner";
 
 import NavBar         from "./components/NavBar";
 import ChatSidebar    from "./components/ChatSidebar";
@@ -9,6 +10,7 @@ import ProfilePage    from "./components/ProfilePage";
 import AdminDashboard from "./components/AdminDashboard";
 import Forbidden      from "./components/Forbidden";
 import LandingPage    from "./components/LandingPage";
+import CommandPalette from "./components/CommandPalette";
 
 import SignUp from "./SignUp";
 import Login  from "./Login";
@@ -127,6 +129,7 @@ export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem("token"));
   const [role, setRole]   = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [cmdkOpen, setCmdkOpen] = useState(false);
 
   // Dark mode state
   const [darkMode, setDarkMode] = useState(
@@ -157,6 +160,18 @@ export default function App() {
     const shouldCollapse = sidebarCollapsed || !token;
     document.body.classList.toggle('sidebar-collapsed', shouldCollapse);
   }, [sidebarCollapsed, token]);
+
+  // Cmd+K listener
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setCmdkOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   // chat‐session state
   const [sessions, setSessions] = useState(() => {
@@ -346,9 +361,19 @@ export default function App() {
 
   return (
     <>
-      <NavBar 
-        role={role} 
-        onLogout={handleLogout} 
+      <Toaster position="top-center" richColors />
+      <CommandPalette
+        open={cmdkOpen}
+        onOpenChange={setCmdkOpen}
+        onNewChat={handleNew}
+        onToggleTheme={toggleTheme}
+        onNavigate={navigate}
+        role={role}
+        darkMode={darkMode}
+      />
+      <NavBar
+        role={role}
+        onLogout={handleLogout}
         onToggleSidebar={toggleSidebar}
       />
 

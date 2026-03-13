@@ -9,7 +9,7 @@ import { getApiBase } from "../lib/apiBase";
 const API_BASE = getApiBase();
 export default function NavBar({ role, onToggleSidebar }) {
   const [scrolled, setScrolled] = useState(false);
-  const [profilePicture, setProfilePicture] = useState("/user_icon.jpg");
+  const [profilePicture, setProfilePicture] = useState("/user_icon.webp");
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -39,13 +39,13 @@ export default function NavBar({ role, onToggleSidebar }) {
         const data = await response.json();
 
         // 🔥 FIXED: Handle base64 data URLs, full URLs, and relative paths
-        let pictureUrl = data.profilePicture || "/user_icon.jpg";
+        let pictureUrl = data.profilePicture || "/user_icon.webp";
         if (pictureUrl) {
           if (pictureUrl.startsWith('data:')) {
             // Base64 data URL - use directly
           } else if (pictureUrl.startsWith('http')) {
             // Full URL - use directly
-          } else if (pictureUrl.startsWith('/user_icon')) {
+          } else if (pictureUrl.startsWith('/user_icon.webp')) {
             // Default icon - use directly
           } else {
             // Relative path - prepend API base
@@ -86,7 +86,7 @@ export default function NavBar({ role, onToggleSidebar }) {
               aria-label="Toggle sidebar"
             >
               <img 
-                src="/msu_logo.png" 
+                src="/msu_logo.webp" 
                 alt="Morgan State University" 
                 className="nav-logo-image"
               />
@@ -98,7 +98,7 @@ export default function NavBar({ role, onToggleSidebar }) {
           
           {!isAuthed && (
             <img 
-              src="/msu_logo.png" 
+              src="/msu_logo.webp" 
               alt="Morgan State University" 
               className="nav-logo" 
               title="Return to Home" // 🔥 NEW: Hover Text
