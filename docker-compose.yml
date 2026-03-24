@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    image: sakina593/chatbot-backend:latest
+    platform: linux/amd64
+    container_name: ec2-user-backend-1
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    volumes:
+      - ./backend/uploads:/app/backend/uploads
+    restart: always
+    networks:
+      - app-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_BASE_URL=
+    image: sakina593/chatbot-frontend:latest
+    platform: linux/amd64
+    container_name: ec2-user-frontend-1
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: always
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
