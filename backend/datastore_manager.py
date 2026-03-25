@@ -36,7 +36,7 @@ GCS_PREFIX = "v4_split/"
 # In-memory content cache for fast search (avoids re-downloading from GCS)
 _content_cache = {}  # {blob_name: (content_text, timestamp)}
 _content_cache_lock = threading.Lock()
-_CONTENT_CACHE_TTL = 600  # 10 minutes
+_CONTENT_CACHE_TTL = 300  # 5 minutes
 
 
 def _get_cached_contents() -> dict:
@@ -284,6 +284,7 @@ def update_document(doc_uri: str, content: bytes, content_type: str = "text/plai
 
 def sync_datastore() -> dict:
     """Re-import all documents from GCS bucket into the datastore."""
+    invalidate_content_cache()
     gcs_uri = f"gs://{GCS_BUCKET_NAME}/{GCS_PREFIX}"
     try:
         operation = _import_gcs_documents_bulk(gcs_uri)
