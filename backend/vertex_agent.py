@@ -42,22 +42,27 @@ def _compute_context_hash(context: str) -> str:
 
 
 def _create_session(user_id: str, state: Optional[dict] = None) -> str:
-    """Create a new ADK session for the user, optionally with initial state."""
-    try:
-        body = {"state": state} if state else {}
-        resp = requests.post(
-            f"{ADK_BASE_URL}/apps/{ADK_APP_NAME}/users/{user_id}/sessions",
-            headers={"Content-Type": "application/json"},
-            json=body,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        session_id = resp.json().get("id")
-        if session_id:
-            print(f"   ADK session created: {session_id} for user {user_id}")
-            return session_id
-    except Exception as e:
-        print(f"   Failed to create ADK session: {e}")
+    """Create a new ADK session for the user, optionally with initial state.
+    Retries once on timeout to handle Cloud Run cold starts on the ADK service."""
+    import time as _time
+    body = {"state": state} if state else {}
+    for attempt in range(2):
+        try:
+            resp = requests.post(
+                f"{ADK_BASE_URL}/apps/{ADK_APP_NAME}/users/{user_id}/sessions",
+                headers={"Content-Type": "application/json"},
+                json=body,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            session_id = resp.json().get("id")
+            if session_id:
+                print(f"   ADK session created: {session_id} for user {user_id} (attempt {attempt+1})")
+                return session_id
+        except Exception as e:
+            print(f"   ADK session attempt {attempt+1} failed: {e}")
+            if attempt == 0:
+                _time.sleep(2)
     return ""
 
 
@@ -204,7 +209,7 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
 def check_agent_health() -> dict:
     """Check if the ADK agent server is healthy."""
     try:
-        resp = requests.get(f"{ADK_BASE_URL}/list-apps", timeout=5)
+        resp = requests.get(f"{ADK_BASE_URL}/list-apps", timeout=15)
         if resp.status_code == 200:
             apps = resp.json()
             has_navigator = any(
