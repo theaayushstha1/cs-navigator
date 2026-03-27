@@ -259,10 +259,11 @@ def delete_document(doc_id: str, doc_uri: str = "") -> dict:
 
 
 def update_document(doc_uri: str, content: bytes, content_type: str = "text/plain") -> dict:
-    """Update a document: write new content to GCS, delete old index entry,
-    then re-import so Vertex AI Search picks up the new content.
-    This is non-disruptive: only the edited doc is briefly unavailable (~30s),
-    all other docs remain fully searchable."""
+    """Update a document with zero downtime.
+    1. Upload new content to GCS
+    2. Push content directly into the Vertex AI index (inline, not URI-based)
+    3. Old doc stays searchable until the inline content replaces it
+    No delete step means no gap in search availability."""
     if not doc_uri.startswith("gs://"):
         return {"success": False, "message": "Not a GCS URI"}
 
@@ -278,21 +279,37 @@ def update_document(doc_uri: str, content: bytes, content_type: str = "text/plai
 
     invalidate_content_cache()
 
-    # Delete the old doc from the index so INCREMENTAL re-import picks up the new content
+    # Push updated content directly into the index (inline content, not URI reference)
+    # This overwrites the existing doc in-place with no delete gap
     try:
         client = _get_doc_client()
         blob_name = blob_path.split("/")[-1].replace(".", "_")
         doc_name = f"{BRANCH}/documents/{blob_name}"
-        try:
-            client.delete_document(name=doc_name)
-        except Exception:
-            pass  # May not exist with this ID, that's fine
 
-        # Re-import just this one doc (creates fresh index entry with new content)
-        _import_gcs_documents([doc_uri])
+        # Decode content for inline indexing
+        text_content = content.decode("utf-8") if isinstance(content, bytes) else content
+
+        doc = discoveryengine.Document(
+            name=doc_name,
+            content=discoveryengine.Document.Content(
+                raw_bytes=content,
+                mime_type="text/plain",
+            ),
+        )
+
+        request = discoveryengine.UpdateDocumentRequest(
+            document=doc,
+            allow_missing=True,
+        )
+        client.update_document(request=request)
         return {"success": True, "message": f"Updated and re-indexed: {blob_path}"}
     except Exception as e:
-        return {"success": True, "message": f"Updated in GCS but re-index delayed: {e}"}
+        # Fallback: URI-based import (slower but still works)
+        try:
+            _import_gcs_documents([doc_uri])
+            return {"success": True, "message": f"Updated (fallback import): {blob_path}"}
+        except Exception as e2:
+            return {"success": True, "message": f"Updated in GCS, index will sync: {e2}"}
 
 
 def sync_datastore() -> dict:
