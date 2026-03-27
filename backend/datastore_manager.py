@@ -344,7 +344,7 @@ def _import_gcs_documents_bulk(gcs_prefix: str):
             input_uris=[f"{gcs_prefix}*"],
             data_schema="content",
         ),
-        reconciliation_mode=discoveryengine.ImportDocumentsRequest.ReconciliationMode.INCREMENTAL,
+        reconciliation_mode=discoveryengine.ImportDocumentsRequest.ReconciliationMode.FULL,
     )
 
     operation = client.import_documents(request=request)
