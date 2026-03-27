@@ -259,7 +259,9 @@ def delete_document(doc_id: str, doc_uri: str = "") -> dict:
 
 
 def update_document(doc_uri: str, content: bytes, content_type: str = "text/plain") -> dict:
-    """Update an existing document's content in GCS and re-import."""
+    """Update an existing document's content in GCS and trigger full re-index.
+    Uses bulk import (INCREMENTAL reconciliation) to force Vertex AI Search
+    to re-crawl the updated file content, not just update metadata."""
     if not doc_uri.startswith("gs://"):
         return {"success": False, "message": "Not a GCS URI"}
 
@@ -273,13 +275,14 @@ def update_document(doc_uri: str, content: bytes, content_type: str = "text/plai
     except Exception as e:
         return {"success": False, "message": f"Failed to update in GCS: {e}"}
 
-    # Re-import to update datastore index
+    # Trigger bulk re-import so Vertex AI Search re-crawls the updated content
     invalidate_content_cache()
     try:
-        _import_gcs_documents([doc_uri])
-        return {"success": True, "message": f"Updated and re-imported: {blob_path}"}
+        gcs_prefix = f"gs://{GCS_BUCKET_NAME}/{GCS_PREFIX}"
+        _import_gcs_documents_bulk(gcs_prefix)
+        return {"success": True, "message": f"Updated and re-indexing: {blob_path}. Index will refresh in 1-2 minutes."}
     except Exception as e:
-        return {"success": True, "message": f"Updated in GCS but re-import failed (will sync eventually): {e}"}
+        return {"success": True, "message": f"Updated in GCS but re-index failed (will sync eventually): {e}"}
 
 
 def sync_datastore() -> dict:
