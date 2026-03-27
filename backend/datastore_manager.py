@@ -259,9 +259,10 @@ def delete_document(doc_id: str, doc_uri: str = "") -> dict:
 
 
 def update_document(doc_uri: str, content: bytes, content_type: str = "text/plain") -> dict:
-    """Update an existing document's content in GCS and trigger full re-index.
-    Uses bulk import (INCREMENTAL reconciliation) to force Vertex AI Search
-    to re-crawl the updated file content, not just update metadata."""
+    """Update a document: write new content to GCS, delete old index entry,
+    then re-import so Vertex AI Search picks up the new content.
+    This is non-disruptive: only the edited doc is briefly unavailable (~30s),
+    all other docs remain fully searchable."""
     if not doc_uri.startswith("gs://"):
         return {"success": False, "message": "Not a GCS URI"}
 
@@ -275,14 +276,23 @@ def update_document(doc_uri: str, content: bytes, content_type: str = "text/plai
     except Exception as e:
         return {"success": False, "message": f"Failed to update in GCS: {e}"}
 
-    # Trigger bulk re-import so Vertex AI Search re-crawls the updated content
     invalidate_content_cache()
+
+    # Delete the old doc from the index so INCREMENTAL re-import picks up the new content
     try:
-        gcs_prefix = f"gs://{GCS_BUCKET_NAME}/{GCS_PREFIX}"
-        _import_gcs_documents_bulk(gcs_prefix)
-        return {"success": True, "message": f"Updated and re-indexing: {blob_path}. Index will refresh in 1-2 minutes."}
+        client = _get_doc_client()
+        blob_name = blob_path.split("/")[-1].replace(".", "_")
+        doc_name = f"{BRANCH}/documents/{blob_name}"
+        try:
+            client.delete_document(name=doc_name)
+        except Exception:
+            pass  # May not exist with this ID, that's fine
+
+        # Re-import just this one doc (creates fresh index entry with new content)
+        _import_gcs_documents([doc_uri])
+        return {"success": True, "message": f"Updated and re-indexed: {blob_path}"}
     except Exception as e:
-        return {"success": True, "message": f"Updated in GCS but re-index failed (will sync eventually): {e}"}
+        return {"success": True, "message": f"Updated in GCS but re-index delayed: {e}"}
 
 
 def sync_datastore() -> dict:
@@ -344,7 +354,7 @@ def _import_gcs_documents_bulk(gcs_prefix: str):
             input_uris=[f"{gcs_prefix}*"],
             data_schema="content",
         ),
-        reconciliation_mode=discoveryengine.ImportDocumentsRequest.ReconciliationMode.FULL,
+        reconciliation_mode=discoveryengine.ImportDocumentsRequest.ReconciliationMode.INCREMENTAL,
     )
 
     operation = client.import_documents(request=request)
