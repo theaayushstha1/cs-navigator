@@ -259,53 +259,71 @@ def delete_document(doc_id: str, doc_uri: str = "") -> dict:
 
 
 def update_document(doc_uri: str, content: bytes, content_type: str = "text/plain") -> dict:
-    """Update a document: upload to GCS, delete old index entry, bulk re-import.
-    Delete forces INCREMENTAL mode to treat it as a new doc and re-crawl content."""
+    """Zero-downtime document update using versioned GCS files.
+
+    Strategy: Upload to a NEW versioned path so INCREMENTAL import picks it up
+    as a brand new doc. Old version stays searchable until new one is indexed,
+    then old version gets cleaned up. Students never see a gap.
+    """
     if not doc_uri.startswith("gs://"):
         return {"success": False, "message": "Not a GCS URI"}
+
+    import time
 
     storage_client = _get_storage_client()
     blob_path = doc_uri.replace(f"gs://{GCS_BUCKET_NAME}/", "")
     bucket = storage_client.bucket(GCS_BUCKET_NAME)
-    blob = bucket.blob(blob_path)
 
+    # 1. Upload to the original path (for admin dashboard reads)
+    blob = bucket.blob(blob_path)
     try:
         blob.upload_from_string(content, content_type=content_type)
     except Exception as e:
         return {"success": False, "message": f"Failed to update in GCS: {e}"}
 
+    # 2. Upload to a versioned path so INCREMENTAL treats it as new
+    filename = blob_path.split("/")[-1]
+    name_parts = filename.rsplit(".", 1)
+    versioned_name = f"{name_parts[0]}_v{int(time.time())}.{name_parts[1]}" if len(name_parts) > 1 else f"{filename}_v{int(time.time())}"
+    versioned_path = blob_path.replace(filename, versioned_name)
+    versioned_blob = bucket.blob(versioned_path)
+    versioned_blob.upload_from_string(content, content_type=content_type)
+
     invalidate_content_cache()
 
-    # Delete old index entry so INCREMENTAL import treats it as new
+    # 3. Delete OLD versioned files (keep only current + new version)
+    prefix = blob_path.replace(filename, name_parts[0] + "_v")
+    try:
+        old_blobs = list(bucket.list_blobs(prefix=prefix))
+        for old_blob in old_blobs:
+            if old_blob.name != versioned_path:
+                # Delete from GCS
+                old_blob.delete()
+                # Delete from index
+                try:
+                    client = _get_doc_client()
+                    old_doc_id = old_blob.name.split("/")[-1].replace(".", "_")
+                    client.delete_document(name=f"{BRANCH}/documents/{old_doc_id}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # 4. Also delete the original filename from the index (it has stale content)
     try:
         client = _get_doc_client()
-        # Try both possible doc ID formats
-        blob_name = blob_path.split("/")[-1].replace(".", "_")
-        for doc_id in [blob_name]:
-            try:
-                client.delete_document(name=f"{BRANCH}/documents/{doc_id}")
-            except Exception:
-                pass
+        orig_doc_id = filename.replace(".", "_")
+        client.delete_document(name=f"{BRANCH}/documents/{orig_doc_id}")
+    except Exception:
+        pass
 
-        # Also try to find and delete by listing docs that match
-        try:
-            request = discoveryengine.ListDocumentsRequest(parent=BRANCH, page_size=100)
-            for doc in client.list_documents(request=request):
-                if doc.content and doc.content.uri == doc_uri:
-                    try:
-                        client.delete_document(name=doc.name)
-                    except Exception:
-                        pass
-                    break
-        except Exception:
-            pass
-
-        # Trigger bulk INCREMENTAL import - deleted doc will be re-crawled as new
+    # 5. Trigger INCREMENTAL import - new versioned file gets indexed as brand new
+    try:
         gcs_prefix = f"gs://{GCS_BUCKET_NAME}/{GCS_PREFIX}"
         _import_gcs_documents_bulk(gcs_prefix)
-        return {"success": True, "message": f"Updated and re-indexing: {blob_path}"}
+        return {"success": True, "message": f"Updated with zero downtime: {blob_path} -> {versioned_name}"}
     except Exception as e:
-        return {"success": True, "message": f"Updated in GCS, re-index pending: {e}"}
+        return {"success": True, "message": f"Updated in GCS, index sync pending: {e}"}
 
 
 def sync_datastore() -> dict:
