@@ -347,14 +347,16 @@ export default function AdminDashboard() {
 
   const handleCloudKbSearch = (value) => {
     setKbSearch(value);
-    if (value.length >= 2) {
-      setFindText(value);
-    } else {
-      setFindText("");
-    }
-    // Debounce the API search
+    // Debounce both highlighting and API search to prevent cursor jumping
     if (cloudKbSearchTimer.current) clearTimeout(cloudKbSearchTimer.current);
-    cloudKbSearchTimer.current = setTimeout(() => searchCloudKb(value), 300);
+    cloudKbSearchTimer.current = setTimeout(() => {
+      if (value.length >= 2) {
+        setFindText(value);
+      } else {
+        setFindText("");
+      }
+      searchCloudKb(value);
+    }, 300);
   };
 
   const handleCloudKbUpload = async (e) => {
@@ -825,16 +827,15 @@ export default function AdminDashboard() {
   }, [findText, cloudKbContent, cloudKbEditContent, cloudKbEditing]);
 
   // Auto-scroll to first match when opening Find & Replace from search
+  // Only auto-scroll to first match when Find & Replace panel is first opened,
+  // NOT on every keystroke in the search box
   useEffect(() => {
     const content = cloudKbEditing ? cloudKbEditContent : cloudKbContent;
     if (showFindReplace && findText && content && textareaRef.current) {
-      const timer = setTimeout(() => {
-        setCurrentMatchIndex(1);
-        scrollToMatch(0);
-      }, 200);
-      return () => clearTimeout(timer);
+      setCurrentMatchIndex(1);
+      // Don't auto-scroll - let user navigate with next/prev buttons
     }
-  }, [showFindReplace, cloudKbContent, cloudKbEditContent, cloudKbEditing]);
+  }, [showFindReplace]);
 
   // Get the active content for find/replace (cloud KB editing or viewing)
   const getActiveContent = () => cloudKbEditing ? cloudKbEditContent : cloudKbContent;
@@ -849,15 +850,18 @@ export default function AdminDashboard() {
       const marks = container.querySelectorAll("mark.highlight-match");
       if (marks.length > 0) {
         const idx = Math.max(0, Math.min(matchIdx, marks.length - 1));
-        // Remove active class from all, add to current
         marks.forEach(m => m.classList.remove("active-match"));
         marks[idx].classList.add("active-match");
-        marks[idx].scrollIntoView({ behavior: "smooth", block: "center" });
+        // Scroll the container, not the viewport
+        const containerRect = container.getBoundingClientRect();
+        const markRect = marks[idx].getBoundingClientRect();
+        const scrollTarget = container.scrollTop + (markRect.top - containerRect.top) - container.clientHeight / 3;
+        container.scrollTo({ top: Math.max(0, scrollTarget), behavior: "smooth" });
       }
       return;
     }
 
-    // For edit mode: use textarea selection + scroll
+    // For edit mode: scroll textarea to match without stealing focus
     const content = cloudKbEditContent;
     const text = content.toLowerCase();
     const searchTerm = findText.toLowerCase();
@@ -867,9 +871,7 @@ export default function AdminDashboard() {
       if (pos === -1) break;
     }
     if (pos !== -1) {
-      container.focus();
-      container.setSelectionRange(pos, pos + findText.length);
-      // Scroll textarea to selection
+      // Scroll textarea to the match position without focusing it
       const textBefore = content.substring(0, pos);
       const lines = textBefore.split("\n").length - 1;
       const lineH = parseFloat(getComputedStyle(container).lineHeight) || 20;
