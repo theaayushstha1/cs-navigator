@@ -1,78 +1,39 @@
 """
-Vertex AI Search Datastore Manager
-====================================
-Manages documents in the Google Cloud Vertex AI Search datastore.
-Supports listing, uploading, deleting, and previewing documents.
-Uses GCS as staging for uploads, then triggers datastore import.
+Vertex AI Search Structured Datastore Manager
+===============================================
+Manages documents in a structured Vertex AI Search datastore.
+Documents are stored directly in the index as JSON (struct_data).
+No GCS intermediary, no file crawling, instant updates.
 """
 
 import os
-import io
+import re
 import time
 import threading
-from typing import Optional
-from google.cloud import storage
+import logging
 from google.cloud import discoveryengine_v1 as discoveryengine
 from google.api_core.client_options import ClientOptions
+from google.protobuf.struct_pb2 import Struct
 
-# Configuration from environment
+log = logging.getLogger(__name__)
+
+# Configuration
 GCP_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "csnavigator-vertex-ai")
-GCS_BUCKET_NAME = os.getenv("GCS_KB_BUCKET", "csnavigator-unified-kb")
 DATASTORE_ID = os.getenv(
     "VERTEX_AI_DATASTORE_ID",
-    "projects/csnavigator-vertex-ai/locations/us/collections/default_collection/dataStores/csnavigator-unified-kb-v4"
+    "projects/csnavigator-vertex-ai/locations/us/collections/default_collection/dataStores/csnavigator-structured-kb-v6"
 )
 
-# Extract location from datastore ID (e.g., "us" from ".../locations/us/...")
 _ds_parts = DATASTORE_ID.split("/")
 LOCATION = _ds_parts[_ds_parts.index("locations") + 1] if "locations" in _ds_parts else "us"
-
-# Regional endpoint for Discovery Engine
 API_ENDPOINT = f"{LOCATION}-discoveryengine.googleapis.com"
-
 BRANCH = f"{DATASTORE_ID}/branches/default_branch"
-GCS_PREFIX = "v4_split/"
 
-# In-memory content cache for fast search (avoids re-downloading from GCS)
-_content_cache = {}  # {blob_name: (content_text, timestamp)}
+# In-memory content cache for fast admin search
+_content_cache = {}  # {doc_id: {"content": str, "title": str, ...}}
 _content_cache_lock = threading.Lock()
 _CONTENT_CACHE_TTL = 300  # 5 minutes
-
-
-def _get_cached_contents() -> dict:
-    """Get all KB document contents, using in-memory cache when fresh."""
-    now = time.time()
-    with _content_cache_lock:
-        # Check if cache is still fresh
-        if _content_cache and all(now - ts < _CONTENT_CACHE_TTL for _, ts in _content_cache.values()):
-            return {k: v[0] for k, v in _content_cache.items()}
-
-    # Cache miss or stale: re-download all docs
-    storage_client = _get_storage_client()
-    bucket = storage_client.bucket(GCS_BUCKET_NAME)
-    blobs = list(bucket.list_blobs(prefix=GCS_PREFIX))
-
-    new_cache = {}
-    for blob in blobs:
-        if not blob.name.endswith(('.txt', '.json', '.csv', '.html')):
-            continue
-        try:
-            content = blob.download_as_text(encoding="utf-8")
-            new_cache[blob.name] = (content, now)
-        except Exception:
-            continue
-
-    with _content_cache_lock:
-        _content_cache.clear()
-        _content_cache.update(new_cache)
-
-    return {k: v[0] for k, v in new_cache.items()}
-
-
-def invalidate_content_cache():
-    """Clear the content cache (call after uploads/edits/deletes)."""
-    with _content_cache_lock:
-        _content_cache.clear()
+_cache_timestamp = 0
 
 
 def _get_doc_client():
@@ -80,112 +41,104 @@ def _get_doc_client():
     return discoveryengine.DocumentServiceClient(client_options=options)
 
 
-def _get_storage_client():
-    return storage.Client(project=GCP_PROJECT)
+def invalidate_content_cache():
+    """Clear the content cache (call after updates/deletes)."""
+    global _cache_timestamp
+    with _content_cache_lock:
+        _content_cache.clear()
+        _cache_timestamp = 0
+
+
+def _get_cached_contents() -> dict:
+    """Get all document contents from structured datastore, cached in memory."""
+    global _cache_timestamp
+    now = time.time()
+
+    with _content_cache_lock:
+        if _content_cache and now - _cache_timestamp < _CONTENT_CACHE_TTL:
+            return dict(_content_cache)
+
+    # Cache miss: fetch all docs from the structured datastore
+    client = _get_doc_client()
+    new_cache = {}
+    try:
+        request = discoveryengine.ListDocumentsRequest(parent=BRANCH, page_size=200)
+        for doc in client.list_documents(request=request):
+            doc_id = doc.name.split("/")[-1]
+            data = dict(doc.struct_data) if doc.struct_data else {}
+            new_cache[doc_id] = data
+    except Exception as e:
+        log.warning(f"Failed to fetch docs for cache: {e}")
+        return {}
+
+    with _content_cache_lock:
+        _content_cache.clear()
+        _content_cache.update(new_cache)
+        _cache_timestamp = now
+
+    return dict(new_cache)
 
 
 def list_datastore_documents() -> list[dict]:
-    """List all documents in the Vertex AI datastore with GCS metadata.
-    Runs GCS and Discovery Engine API calls in parallel for speed."""
-    import time
-    from concurrent.futures import ThreadPoolExecutor
-
+    """List all documents in the structured datastore."""
     start = time.time()
     client = _get_doc_client()
-    storage_client = _get_storage_client()
-    bucket = storage_client.bucket(GCS_BUCKET_NAME)
-
-    # Run both API calls in parallel
-    def fetch_gcs_metadata():
-        meta = {}
-        try:
-            for blob in bucket.list_blobs():
-                meta[blob.name] = {
-                    "size": blob.size or 0,
-                    "modified": blob.updated.isoformat() if blob.updated else "",
-                }
-        except Exception:
-            pass
-        return meta
-
-    def fetch_datastore_docs():
-        request = discoveryengine.ListDocumentsRequest(parent=BRANCH, page_size=100)
-        return list(client.list_documents(request=request))
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        gcs_future = executor.submit(fetch_gcs_metadata)
-        docs_future = executor.submit(fetch_datastore_docs)
-        gcs_metadata = gcs_future.result()
-        raw_docs = docs_future.result()
 
     docs = []
-    for doc in raw_docs:
-        doc_id = doc.name.split("/")[-1]
-        uri = doc.content.uri if doc.content and doc.content.uri else ""
-        filename = uri.split("/")[-1] if uri else doc_id
-
-        size = 0
-        modified = ""
-        if uri and uri.startswith("gs://"):
-            blob_path = uri.replace(f"gs://{GCS_BUCKET_NAME}/", "")
-            meta = gcs_metadata.get(blob_path, {})
-            size = meta.get("size", 0)
-            modified = meta.get("modified", "")
-
-        docs.append({
-            "id": doc_id,
-            "filename": filename,
-            "uri": uri,
-            "size": size,
-            "modified": modified,
-        })
+    try:
+        request = discoveryengine.ListDocumentsRequest(parent=BRANCH, page_size=200)
+        for doc in client.list_documents(request=request):
+            doc_id = doc.name.split("/")[-1]
+            data = dict(doc.struct_data) if doc.struct_data else {}
+            content = data.get("content", "")
+            docs.append({
+                "id": doc_id,
+                "filename": data.get("source_file", f"{doc_id}.json"),
+                "uri": f"structured://{doc_id}",
+                "size": len(content.encode("utf-8")) if content else 0,
+                "modified": "",
+                "title": data.get("title", doc_id),
+                "category": data.get("category", ""),
+            })
+    except Exception as e:
+        log.error(f"Failed to list documents: {e}")
 
     result = sorted(docs, key=lambda d: d["filename"])
-    print(f"[PERF] list_datastore_documents: {time.time()-start:.1f}s ({len(result)} docs)")
+    log.info(f"list_datastore_documents: {time.time()-start:.1f}s ({len(result)} docs)")
     return result
 
 
-def get_document_content(doc_uri: str, max_chars: int = 50000) -> str:
-    """Read the content of a document from GCS."""
-    if not doc_uri.startswith("gs://"):
-        return "Cannot read: not a GCS URI"
-
-    storage_client = _get_storage_client()
-    blob_path = doc_uri.replace(f"gs://{GCS_BUCKET_NAME}/", "")
-    bucket = storage_client.bucket(GCS_BUCKET_NAME)
-    blob = bucket.blob(blob_path)
+def get_document_content(doc_id: str, max_chars: int = 50000) -> str:
+    """Read document content directly from the structured datastore."""
+    client = _get_doc_client()
+    doc_name = f"{BRANCH}/documents/{doc_id}"
 
     try:
-        content = blob.download_as_text(encoding="utf-8")
+        doc = client.get_document(name=doc_name)
+        data = dict(doc.struct_data) if doc.struct_data else {}
+        content = data.get("content", "")
         return content[:max_chars]
     except Exception as e:
-        return f"Error reading file: {e}"
+        return f"Error reading document: {e}"
 
 
 def search_documents(query: str) -> list[dict]:
-    """Fast word-boundary search across KB documents using in-memory cache.
-    Uses regex word boundaries so 'office' won't match 'officer' or 'unofficial'.
-    First search downloads from GCS (~3s), subsequent searches are instant (<50ms)."""
-    import re
-    cached_contents = _get_cached_contents()
-
+    """Search across all KB documents using in-memory cache."""
+    cached = _get_cached_contents()
     results = []
     query_lower = query.lower().strip()
     if not query_lower:
         return results
 
-    # Build word-boundary regex for accurate matching
     escaped = re.escape(query_lower)
     pattern = re.compile(r'\b' + escaped + r'\b', re.IGNORECASE)
 
-    for blob_name, content in cached_contents.items():
+    for doc_id, data in cached.items():
+        content = data.get("content", "")
         matches = pattern.findall(content)
-        match_count = len(matches)
-
-        if match_count == 0:
+        if not matches:
             continue
 
-        # Get context snippet around first match
         m = pattern.search(content)
         snippet = ""
         if m:
@@ -199,10 +152,10 @@ def search_documents(query: str) -> list[dict]:
                 snippet = snippet + "..."
 
         results.append({
-            "filename": blob_name.split("/")[-1],
-            "blob_path": blob_name,
-            "uri": f"gs://{GCS_BUCKET_NAME}/{blob_name}",
-            "match_count": match_count,
+            "filename": data.get("source_file", f"{doc_id}.json"),
+            "blob_path": doc_id,
+            "uri": f"structured://{doc_id}",
+            "match_count": len(matches),
             "snippet": snippet,
             "size": len(content),
         })
@@ -211,192 +164,92 @@ def search_documents(query: str) -> list[dict]:
 
 
 def upload_document(filename: str, content: bytes, content_type: str = "text/plain") -> dict:
-    """
-    Upload a document to GCS and import it into the datastore.
-    Returns status dict with success/error info.
-    """
-    storage_client = _get_storage_client()
-    bucket = storage_client.bucket(GCS_BUCKET_NAME)
+    """Create a new document in the structured datastore."""
+    base = filename.rsplit(".", 1)[0] if "." in filename else filename
+    doc_id = re.sub(r'[^a-zA-Z0-9_-]', '_', base)
 
-    # Upload to GCS
-    blob_path = f"{GCS_PREFIX}{filename}"
-    blob = bucket.blob(blob_path)
-    blob.upload_from_string(content, content_type=content_type)
-    gcs_uri = f"gs://{GCS_BUCKET_NAME}/{blob_path}"
+    # Determine category from filename
+    category = "general"
+    for cat in ["academic", "career", "financial"]:
+        if doc_id.startswith(cat):
+            category = cat
+            break
 
-    # Import into datastore
-    invalidate_content_cache()
+    text_content = content.decode("utf-8") if isinstance(content, bytes) else content
+
+    struct = Struct()
+    struct.update({
+        "title": " ".join(base.split("_")).title(),
+        "category": category,
+        "subcategory": doc_id.replace(f"{category}_", ""),
+        "content": text_content,
+        "source_file": filename,
+    })
+
+    client = _get_doc_client()
+    doc = discoveryengine.Document(
+        name=f"{BRANCH}/documents/{doc_id}",
+        struct_data=struct,
+    )
+
     try:
-        _import_gcs_documents([gcs_uri])
-        return {"success": True, "uri": gcs_uri, "message": f"Uploaded and imported: {filename}"}
+        request = discoveryengine.UpdateDocumentRequest(document=doc, allow_missing=True)
+        client.update_document(request=request)
+        invalidate_content_cache()
+        return {"success": True, "uri": f"structured://{doc_id}", "message": f"Created: {doc_id}"}
     except Exception as e:
-        return {"success": False, "uri": gcs_uri, "message": f"Uploaded to GCS but import failed: {e}"}
+        return {"success": False, "uri": "", "message": f"Failed to create document: {e}"}
 
 
 def delete_document(doc_id: str, doc_uri: str = "") -> dict:
-    """Delete a document from the datastore and optionally from GCS."""
+    """Delete a document from the structured datastore."""
     client = _get_doc_client()
     doc_name = f"{BRANCH}/documents/{doc_id}"
 
     try:
         client.delete_document(name=doc_name)
+        invalidate_content_cache()
+        return {"success": True, "message": f"Document {doc_id} deleted"}
     except Exception as e:
-        return {"success": False, "message": f"Failed to delete from datastore: {e}"}
-
-    # Also delete from GCS if URI provided
-    if doc_uri and doc_uri.startswith("gs://"):
-        try:
-            storage_client = _get_storage_client()
-            blob_path = doc_uri.replace(f"gs://{GCS_BUCKET_NAME}/", "")
-            bucket = storage_client.bucket(GCS_BUCKET_NAME)
-            blob = bucket.blob(blob_path)
-            blob.delete()
-        except Exception:
-            pass  # GCS delete is best-effort
-
-    invalidate_content_cache()
-    return {"success": True, "message": f"Document {doc_id} deleted"}
+        return {"success": False, "message": f"Failed to delete: {e}"}
 
 
-def update_document(doc_uri: str, content: bytes, content_type: str = "text/plain") -> dict:
-    """Zero-downtime document update using versioned GCS files.
-
-    1. Upload to original path (admin dashboard reads this)
-    2. Upload to a new versioned path (search index reads this)
-    3. Delete ALL old entries from index (original + old versions)
-    4. Delete old versioned files from GCS
-    5. Trigger INCREMENTAL import (indexes the new versioned file)
-    """
-    if not doc_uri.startswith("gs://"):
-        return {"success": False, "message": "Not a GCS URI"}
-
-    import time, re, logging
-    log = logging.getLogger(__name__)
-
-    storage_client = _get_storage_client()
-    blob_path = doc_uri.replace(f"gs://{GCS_BUCKET_NAME}/", "")
-    bucket = storage_client.bucket(GCS_BUCKET_NAME)
-    filename = blob_path.split("/")[-1]
-    folder = blob_path.replace(filename, "")
-
-    # Extract the TRUE base name (strip any existing _v{timestamp} suffix)
-    base_name = re.sub(r'_v\d+', '', filename.rsplit(".", 1)[0])
-    ext = f".{filename.rsplit('.', 1)[1]}" if "." in filename else ""
-
-    # New versioned filename using the clean base name
-    versioned_name = f"{base_name}_v{int(time.time())}{ext}"
-    versioned_path = f"{folder}{versioned_name}"
-
-    # 1. Upload to original path (for admin dashboard)
-    try:
-        bucket.blob(blob_path).upload_from_string(content, content_type=content_type)
-    except Exception as e:
-        return {"success": False, "message": f"Failed to update in GCS: {e}"}
-
-    # 2. Upload versioned copy (for search index)
-    bucket.blob(versioned_path).upload_from_string(content, content_type=content_type)
-
-    invalidate_content_cache()
-
-    # 3. Delete ALL old index entries for this document (original + any old versions)
+def update_document(doc_id: str, content: bytes, content_type: str = "text/plain") -> dict:
+    """Update a document's content in the structured datastore.
+    Instant. No GCS, no versioning, no crawling."""
     client = _get_doc_client()
-    try:
-        request = discoveryengine.ListDocumentsRequest(parent=BRANCH, page_size=200)
-        for doc in client.list_documents(request=request):
-            if not doc.content or not doc.content.uri:
-                continue
-            doc_fname = doc.content.uri.split("/")[-1]
-            # Strip version suffix to get the base name of this index entry
-            doc_base = re.sub(r'_v\d+', '', doc_fname.rsplit(".", 1)[0])
-            # If same base name but NOT our new version, delete it
-            if doc_base == base_name and doc_fname != versioned_name:
-                try:
-                    client.delete_document(name=doc.name)
-                    log.info(f"Deleted old index entry: {doc_fname}")
-                except Exception as e:
-                    log.warning(f"Failed to delete index entry {doc_fname}: {e}")
-    except Exception as e:
-        log.warning(f"Index cleanup error: {e}")
+    doc_name = f"{BRANCH}/documents/{doc_id}"
 
-    # 4. Delete old versioned files from GCS (keep only the new one + original)
+    text_content = content.decode("utf-8") if isinstance(content, bytes) else content
+
+    # Get existing doc to preserve metadata
     try:
-        for blob in bucket.list_blobs(prefix=f"{folder}{base_name}_v"):
-            if blob.name != versioned_path:
-                blob.delete()
-                log.info(f"Deleted old GCS file: {blob.name}")
+        existing = client.get_document(name=doc_name)
+        data = dict(existing.struct_data) if existing.struct_data else {}
     except Exception:
-        pass
+        data = {}
 
-    # 5. Trigger INCREMENTAL import
+    # Update content, keep other fields
+    data["content"] = text_content
+
+    struct = Struct()
+    struct.update(data)
+
+    doc = discoveryengine.Document(
+        name=doc_name,
+        struct_data=struct,
+    )
+
     try:
-        gcs_prefix = f"gs://{GCS_BUCKET_NAME}/{GCS_PREFIX}"
-        _import_gcs_documents_bulk(gcs_prefix)
-        return {"success": True, "message": f"Updated: {base_name}{ext} (indexed as {versioned_name})"}
+        request = discoveryengine.UpdateDocumentRequest(document=doc, allow_missing=True)
+        client.update_document(request=request)
+        invalidate_content_cache()
+        return {"success": True, "message": f"Updated: {doc_id} (instant)"}
     except Exception as e:
-        return {"success": True, "message": f"Updated in GCS, index sync pending: {e}"}
+        return {"success": False, "message": f"Failed to update: {e}"}
 
 
 def sync_datastore() -> dict:
-    """Re-import all documents from GCS bucket into the datastore."""
+    """Re-sync: just invalidate cache. No import needed for structured datastores."""
     invalidate_content_cache()
-    gcs_uri = f"gs://{GCS_BUCKET_NAME}/{GCS_PREFIX}"
-    try:
-        operation = _import_gcs_documents_bulk(gcs_uri)
-        return {"success": True, "message": "Sync started. Documents will be re-indexed shortly.", "operation": str(operation)}
-    except Exception as e:
-        return {"success": False, "message": f"Sync failed: {e}"}
-
-
-def _import_gcs_documents(gcs_uris: list[str]):
-    """Import specific GCS documents into the datastore."""
-    options = ClientOptions(api_endpoint=API_ENDPOINT)
-    client = discoveryengine.DocumentServiceClient(client_options=options)
-
-    for uri in gcs_uris:
-        blob_name = uri.split("/")[-1].replace(".", "_")
-        doc_name = f"{BRANCH}/documents/{blob_name}"
-
-        doc = discoveryengine.Document(
-            name=doc_name,
-            content=discoveryengine.Document.Content(
-                uri=uri,
-                mime_type="text/plain",
-            ),
-        )
-
-        try:
-            # Try to update existing document first
-            request = discoveryengine.UpdateDocumentRequest(
-                document=doc,
-                allow_missing=True,  # Creates if doesn't exist
-            )
-            client.update_document(request=request)
-        except Exception as e:
-            # Fallback: create new document
-            try:
-                request = discoveryengine.CreateDocumentRequest(
-                    parent=BRANCH,
-                    document=doc,
-                    document_id=blob_name,
-                )
-                client.create_document(request=request)
-            except Exception as e2:
-                raise RuntimeError(f"Failed to import {uri}: {e2}")
-
-
-def _import_gcs_documents_bulk(gcs_prefix: str):
-    """Bulk import all documents from a GCS prefix."""
-    options = ClientOptions(api_endpoint=API_ENDPOINT)
-    client = discoveryengine.DocumentServiceClient(client_options=options)
-
-    request = discoveryengine.ImportDocumentsRequest(
-        parent=BRANCH,
-        gcs_source=discoveryengine.GcsSource(
-            input_uris=[f"{gcs_prefix}*"],
-            data_schema="content",
-        ),
-        reconciliation_mode=discoveryengine.ImportDocumentsRequest.ReconciliationMode.INCREMENTAL,
-    )
-
-    operation = client.import_documents(request=request)
-    return operation
+    return {"success": True, "message": "Cache cleared. Structured datastore is always in sync."}

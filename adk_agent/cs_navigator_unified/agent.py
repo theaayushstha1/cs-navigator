@@ -54,7 +54,7 @@ DS_PREFIX = f'projects/{PROJECT_ID}/locations/us/collections/default_collection/
 # Unified datastore containing all KB docs (academic, career, financial, general)
 UNIFIED_KB_ID = os.getenv(
     'UNIFIED_DATASTORE_ID',
-    f'{DS_PREFIX}/csnavigator-unified-kb-v4',
+    f'{DS_PREFIX}/csnavigator-structured-kb-v6',
 )
 
 # Model: 2.0-flash is the sweet spot (fast, no thinking overhead, good accuracy)

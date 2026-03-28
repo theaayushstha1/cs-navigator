@@ -3241,9 +3241,6 @@ async def list_cloud_kb_docs(user: dict = Depends(get_current_user), refresh: bo
             print(f"[CACHE] Cloud KB docs from cache ({len(docs)} docs)")
         else:
             docs = await asyncio.to_thread(list_datastore_documents)
-            # Hide versioned files (_v{timestamp}) from admin - they're internal to the index
-            import re as _re
-            docs = [d for d in docs if not _re.search(r'_v\d+\.', d.get("filename", ""))]
             _cloud_kb_cache["docs"] = docs
             _cloud_kb_cache["ts"] = _t.time()
         return {"documents": docs, "total": len(docs)}
@@ -3252,13 +3249,11 @@ async def list_cloud_kb_docs(user: dict = Depends(get_current_user), refresh: bo
 
 @app.get("/api/admin/cloud-kb/documents/{doc_id}/content")
 async def read_cloud_kb_doc(doc_id: str, uri: str = "", user: dict = Depends(get_current_user)):
-    """Read content of a document from the cloud KB"""
+    """Read content of a document from the structured datastore"""
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-    if not uri:
-        raise HTTPException(status_code=400, detail="URI parameter required")
     try:
-        content = get_document_content(uri)
+        content = get_document_content(doc_id)
         return {"content": content, "doc_id": doc_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read document: {e}")
@@ -3299,12 +3294,11 @@ async def update_cloud_kb_doc(
         raise HTTPException(status_code=403, detail="Admin access required")
 
     body = await request.json()
-    uri = body.get("uri", "")
     content = body.get("content", "")
-    if not uri or not content:
-        raise HTTPException(status_code=400, detail="URI and content required")
+    if not content:
+        raise HTTPException(status_code=400, detail="Content required")
 
-    result = update_document(uri, content.encode("utf-8"))
+    result = update_document(doc_id, content.encode("utf-8"))
     if not result["success"]:
         raise HTTPException(status_code=500, detail=result["message"])
     # Auto-clear cache so chatbot uses fresh data
@@ -3387,10 +3381,7 @@ async def search_cloud_kb_docs(q: str, user: dict = Depends(get_current_user)):
     if not q or len(q) < 2:
         return {"results": []}
     try:
-        import re as _re
         results = search_cloud_kb(q)
-        # Hide versioned files from admin search results
-        results = [r for r in results if not _re.search(r'_v\d+\.', r.get("filename", ""))]
         return {"results": results, "query": q, "total": len(results)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {e}")
