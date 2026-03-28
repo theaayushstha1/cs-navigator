@@ -291,29 +291,33 @@ def update_document(doc_uri: str, content: bytes, content_type: str = "text/plai
 
     invalidate_content_cache()
 
-    # 3. Delete OLD versioned files (keep only current + new version)
+    # 3. Delete ALL old versions from GCS and index
+    client = _get_doc_client()
+
+    # 3a. Delete old versioned files from GCS
     prefix = blob_path.replace(filename, name_parts[0] + "_v")
     try:
         old_blobs = list(bucket.list_blobs(prefix=prefix))
         for old_blob in old_blobs:
             if old_blob.name != versioned_path:
-                # Delete from GCS
                 old_blob.delete()
-                # Delete from index
-                try:
-                    client = _get_doc_client()
-                    old_doc_id = old_blob.name.split("/")[-1].replace(".", "_")
-                    client.delete_document(name=f"{BRANCH}/documents/{old_doc_id}")
-                except Exception:
-                    pass
     except Exception:
         pass
 
-    # 4. Also delete the original filename from the index (it has stale content)
+    # 3b. Delete ALL index entries that point to old URIs (original + old versions)
+    #     Scans the full doc list since IDs can be hashes, not predictable names
     try:
-        client = _get_doc_client()
-        orig_doc_id = filename.replace(".", "_")
-        client.delete_document(name=f"{BRANCH}/documents/{orig_doc_id}")
+        base_name = name_parts[0]  # e.g. "academic_faculty"
+        request = discoveryengine.ListDocumentsRequest(parent=BRANCH, page_size=200)
+        for doc in client.list_documents(request=request):
+            if doc.content and doc.content.uri:
+                doc_filename = doc.content.uri.split("/")[-1]
+                # Match original file or any old version, but NOT the new version
+                if doc_filename.startswith(base_name) and doc_filename != versioned_name:
+                    try:
+                        client.delete_document(name=doc.name)
+                    except Exception:
+                        pass
     except Exception:
         pass
 
