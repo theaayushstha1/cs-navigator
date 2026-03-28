@@ -259,11 +259,8 @@ def delete_document(doc_id: str, doc_uri: str = "") -> dict:
 
 
 def update_document(doc_uri: str, content: bytes, content_type: str = "text/plain") -> dict:
-    """Update a document with minimal downtime (~1s gap).
-    1. Upload new content to GCS
-    2. Delete old doc from Vertex AI index
-    3. Immediately re-import with fresh content from GCS
-    The delete+create happens in sequence so the gap is <1 second."""
+    """Update a document: upload to GCS, delete old index entry, bulk re-import.
+    Delete forces INCREMENTAL mode to treat it as a new doc and re-crawl content."""
     if not doc_uri.startswith("gs://"):
         return {"success": False, "message": "Not a GCS URI"}
 
@@ -279,21 +276,34 @@ def update_document(doc_uri: str, content: bytes, content_type: str = "text/plai
 
     invalidate_content_cache()
 
-    # Delete old index entry then immediately re-create with new content
+    # Delete old index entry so INCREMENTAL import treats it as new
     try:
         client = _get_doc_client()
+        # Try both possible doc ID formats
         blob_name = blob_path.split("/")[-1].replace(".", "_")
-        doc_name = f"{BRANCH}/documents/{blob_name}"
+        for doc_id in [blob_name]:
+            try:
+                client.delete_document(name=f"{BRANCH}/documents/{doc_id}")
+            except Exception:
+                pass
 
-        # Delete old entry (ignore errors if it doesn't exist)
+        # Also try to find and delete by listing docs that match
         try:
-            client.delete_document(name=doc_name)
+            request = discoveryengine.ListDocumentsRequest(parent=BRANCH, page_size=100)
+            for doc in client.list_documents(request=request):
+                if doc.content and doc.content.uri == doc_uri:
+                    try:
+                        client.delete_document(name=doc.name)
+                    except Exception:
+                        pass
+                    break
         except Exception:
             pass
 
-        # Immediately re-import from GCS (picks up the new content we just uploaded)
-        _import_gcs_documents([doc_uri])
-        return {"success": True, "message": f"Updated and re-indexed: {blob_path}"}
+        # Trigger bulk INCREMENTAL import - deleted doc will be re-crawled as new
+        gcs_prefix = f"gs://{GCS_BUCKET_NAME}/{GCS_PREFIX}"
+        _import_gcs_documents_bulk(gcs_prefix)
+        return {"success": True, "message": f"Updated and re-indexing: {blob_path}"}
     except Exception as e:
         return {"success": True, "message": f"Updated in GCS, re-index pending: {e}"}
 
