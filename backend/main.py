@@ -3241,6 +3241,9 @@ async def list_cloud_kb_docs(user: dict = Depends(get_current_user), refresh: bo
             print(f"[CACHE] Cloud KB docs from cache ({len(docs)} docs)")
         else:
             docs = await asyncio.to_thread(list_datastore_documents)
+            # Hide versioned files (_v{timestamp}) from admin - they're internal to the index
+            import re as _re
+            docs = [d for d in docs if not _re.search(r'_v\d+\.', d.get("filename", ""))]
             _cloud_kb_cache["docs"] = docs
             _cloud_kb_cache["ts"] = _t.time()
         return {"documents": docs, "total": len(docs)}
@@ -3384,7 +3387,10 @@ async def search_cloud_kb_docs(q: str, user: dict = Depends(get_current_user)):
     if not q or len(q) < 2:
         return {"results": []}
     try:
+        import re as _re
         results = search_cloud_kb(q)
+        # Hide versioned files from admin search results
+        results = [r for r in results if not _re.search(r'_v\d+\.', r.get("filename", ""))]
         return {"results": results, "query": q, "total": len(results)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {e}")
