@@ -261,71 +261,77 @@ def delete_document(doc_id: str, doc_uri: str = "") -> dict:
 def update_document(doc_uri: str, content: bytes, content_type: str = "text/plain") -> dict:
     """Zero-downtime document update using versioned GCS files.
 
-    Strategy: Upload to a NEW versioned path so INCREMENTAL import picks it up
-    as a brand new doc. Old version stays searchable until new one is indexed,
-    then old version gets cleaned up. Students never see a gap.
+    1. Upload to original path (admin dashboard reads this)
+    2. Upload to a new versioned path (search index reads this)
+    3. Delete ALL old entries from index (original + old versions)
+    4. Delete old versioned files from GCS
+    5. Trigger INCREMENTAL import (indexes the new versioned file)
     """
     if not doc_uri.startswith("gs://"):
         return {"success": False, "message": "Not a GCS URI"}
 
-    import time
+    import time, re, logging
+    log = logging.getLogger(__name__)
 
     storage_client = _get_storage_client()
     blob_path = doc_uri.replace(f"gs://{GCS_BUCKET_NAME}/", "")
     bucket = storage_client.bucket(GCS_BUCKET_NAME)
+    filename = blob_path.split("/")[-1]
+    folder = blob_path.replace(filename, "")
 
-    # 1. Upload to the original path (for admin dashboard reads)
-    blob = bucket.blob(blob_path)
+    # Extract the TRUE base name (strip any existing _v{timestamp} suffix)
+    base_name = re.sub(r'_v\d+', '', filename.rsplit(".", 1)[0])
+    ext = f".{filename.rsplit('.', 1)[1]}" if "." in filename else ""
+
+    # New versioned filename using the clean base name
+    versioned_name = f"{base_name}_v{int(time.time())}{ext}"
+    versioned_path = f"{folder}{versioned_name}"
+
+    # 1. Upload to original path (for admin dashboard)
     try:
-        blob.upload_from_string(content, content_type=content_type)
+        bucket.blob(blob_path).upload_from_string(content, content_type=content_type)
     except Exception as e:
         return {"success": False, "message": f"Failed to update in GCS: {e}"}
 
-    # 2. Upload to a versioned path so INCREMENTAL treats it as new
-    filename = blob_path.split("/")[-1]
-    name_parts = filename.rsplit(".", 1)
-    versioned_name = f"{name_parts[0]}_v{int(time.time())}.{name_parts[1]}" if len(name_parts) > 1 else f"{filename}_v{int(time.time())}"
-    versioned_path = blob_path.replace(filename, versioned_name)
-    versioned_blob = bucket.blob(versioned_path)
-    versioned_blob.upload_from_string(content, content_type=content_type)
+    # 2. Upload versioned copy (for search index)
+    bucket.blob(versioned_path).upload_from_string(content, content_type=content_type)
 
     invalidate_content_cache()
 
-    # 3. Delete ALL old versions from GCS and index
+    # 3. Delete ALL old index entries for this document (original + any old versions)
     client = _get_doc_client()
-
-    # 3a. Delete old versioned files from GCS
-    prefix = blob_path.replace(filename, name_parts[0] + "_v")
     try:
-        old_blobs = list(bucket.list_blobs(prefix=prefix))
-        for old_blob in old_blobs:
-            if old_blob.name != versioned_path:
-                old_blob.delete()
-    except Exception:
-        pass
-
-    # 3b. Delete ALL index entries that point to old URIs (original + old versions)
-    #     Scans the full doc list since IDs can be hashes, not predictable names
-    try:
-        base_name = name_parts[0]  # e.g. "academic_faculty"
         request = discoveryengine.ListDocumentsRequest(parent=BRANCH, page_size=200)
         for doc in client.list_documents(request=request):
-            if doc.content and doc.content.uri:
-                doc_filename = doc.content.uri.split("/")[-1]
-                # Match original file or any old version, but NOT the new version
-                if doc_filename.startswith(base_name) and doc_filename != versioned_name:
-                    try:
-                        client.delete_document(name=doc.name)
-                    except Exception:
-                        pass
+            if not doc.content or not doc.content.uri:
+                continue
+            doc_fname = doc.content.uri.split("/")[-1]
+            # Strip version suffix to get the base name of this index entry
+            doc_base = re.sub(r'_v\d+', '', doc_fname.rsplit(".", 1)[0])
+            # If same base name but NOT our new version, delete it
+            if doc_base == base_name and doc_fname != versioned_name:
+                try:
+                    client.delete_document(name=doc.name)
+                    log.info(f"Deleted old index entry: {doc_fname}")
+                except Exception as e:
+                    log.warning(f"Failed to delete index entry {doc_fname}: {e}")
+    except Exception as e:
+        log.warning(f"Index cleanup error: {e}")
+
+    # 4. Delete old versioned files from GCS (keep only the new one + original)
+    try:
+        for blob in bucket.list_blobs(prefix=f"{folder}{base_name}_v"):
+            if blob.name != versioned_path:
+                blob.delete()
+                log.info(f"Deleted old GCS file: {blob.name}")
     except Exception:
         pass
 
-    # 5. Trigger INCREMENTAL import - new versioned file gets indexed as brand new
+    # 5. Trigger INCREMENTAL import
     try:
         gcs_prefix = f"gs://{GCS_BUCKET_NAME}/{GCS_PREFIX}"
         _import_gcs_documents_bulk(gcs_prefix)
-        return {"success": True, "message": f"Updated with zero downtime: {blob_path} -> {versioned_name}"}
+        return {"success": True, "message": f"Updated: {base_name}{ext} (indexed as {versioned_name})"}
     except Exception as e:
         return {"success": True, "message": f"Updated in GCS, index sync pending: {e}"}
 
