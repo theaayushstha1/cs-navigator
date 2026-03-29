@@ -2467,6 +2467,10 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     if req.skip_cache:
         print(f"[CACHE] SKIP (regenerate) for query: {user_q[:50]}...")
         cached_response = None
+        # Force new ADK session so agent re-queries the search index fresh
+        import time as _time
+        context_hash = f"regen_{int(_time.time())}"
+        reset_session(str(user_id))
     else:
         cached_response = query_cache.get(user_q, context_hash)
 
@@ -3301,9 +3305,17 @@ async def update_cloud_kb_doc(
     result = update_document(doc_id, content.encode("utf-8"))
     if not result["success"]:
         raise HTTPException(status_code=500, detail=result["message"])
-    # Auto-clear cache so chatbot uses fresh data
+    # Clear ALL caches + reset ALL ADK sessions so chatbot uses fresh data
     cleared = query_cache.clear()
+    # Reset all ADK sessions so no agent reuses stale context
+    try:
+        from vertex_agent import _session_cache
+        session_count = len(_session_cache)
+        _session_cache.clear()
+    except Exception:
+        session_count = 0
     result["cache_cleared"] = cleared
+    result["sessions_reset"] = session_count
     return result
 
 @app.delete("/api/admin/cloud-kb/documents/{doc_id}")

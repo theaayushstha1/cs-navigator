@@ -95,6 +95,30 @@ export default function AdminDashboard() {
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [highlightTerm, setHighlightTerm] = useState("");
 
+  // Format doc ID into a clean readable title
+  // "academic_11_course_prerequisites" -> "Course Prerequisites"
+  // "financial_aid_fafsa_requirements" -> "FAFSA Requirements"
+  const formatDocName = (id) => {
+    if (!id) return "";
+    // Remove category prefix and numeric prefixes
+    let clean = id
+      .replace(/^(academic|career|financial|general)_/, "")
+      .replace(/^\d+_/, "");
+    // Convert underscores to spaces and title case
+    return clean
+      .split("_")
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+  };
+
+  // Get category badge color
+  const getCategoryColor = (id) => {
+    if (id.startsWith("academic")) return { bg: "#e8f5e9", color: "#2e7d32", label: "Academic" };
+    if (id.startsWith("career")) return { bg: "#e3f2fd", color: "#1565c0", label: "Career" };
+    if (id.startsWith("financial")) return { bg: "#fff3e0", color: "#e65100", label: "Financial" };
+    return { bg: "#f3e5f5", color: "#6a1b9a", label: "General" };
+  };
+
   // Find & Replace State
   const [findText, setFindText] = useState("");
   const [replaceText, setReplaceText] = useState("");
@@ -315,7 +339,7 @@ export default function AdminDashboard() {
     setCloudKbEditing(false);
     setCloudKbContent("Loading...");
     try {
-      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/documents/${doc.id}/content?uri=${encodeURIComponent(doc.uri)}`, {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/documents/${doc.id}/content`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
@@ -413,10 +437,10 @@ export default function AdminDashboard() {
       const res = await fetch(`${API_BASE}/api/admin/cloud-kb/documents/${cloudKbSelected.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ uri: cloudKbSelected.uri, content: cloudKbEditContent })
+        body: JSON.stringify({ content: cloudKbEditContent })
       });
       if (res.ok) {
-        toast.success("Document updated", { description: `${cloudKbSelected.filename} saved. Cache auto-cleared.` });
+        toast.success("Document updated", { description: `${formatDocName(cloudKbSelected.filename)} saved. Instantly indexed.` });
         setCloudKbContent(cloudKbEditContent);
         setCloudKbEditing(false);
         loadCloudKbDocs();
@@ -1548,7 +1572,7 @@ export default function AdminDashboard() {
                           setShowFindReplace(true);
                         }}
                       >
-                        <span className="kb-filename">{result.filename}</span>
+                        <span className="kb-filename">{formatDocName(result.filename)}</span>
                         <span className="match-badge" style={{ background: "#e8f0fe", color: "#1a73e8", borderRadius: "10px", padding: "1px 8px", fontSize: "11px", fontWeight: 600 }}>
                           {result.match_count} {result.match_count === 1 ? "match" : "matches"}
                         </span>
@@ -1564,7 +1588,18 @@ export default function AdminDashboard() {
                     className={`kb-file-item ${cloudKbSelected?.id === doc.id ? "active" : ""}`}
                     onClick={() => loadCloudKbContent(doc)}
                   >
-                    <span className="kb-filename">{doc.filename}</span>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "2px", flex: 1, minWidth: 0 }}>
+                      <span className="kb-filename">{formatDocName(doc.filename)}</span>
+                      <span style={{
+                        fontSize: "10px",
+                        padding: "1px 6px",
+                        borderRadius: "8px",
+                        width: "fit-content",
+                        background: getCategoryColor(doc.id).bg,
+                        color: getCategoryColor(doc.id).color,
+                        fontWeight: 600
+                      }}>{getCategoryColor(doc.id).label}</span>
+                    </div>
                     <span className="kb-filesize">{doc.size > 0 ? formatBytes(doc.size) : ""}</span>
                   </div>
                 ))
@@ -1576,7 +1611,17 @@ export default function AdminDashboard() {
               {cloudKbSelected ? (
                 <>
                   <div className="kb-editor-header">
-                    <h3>{cloudKbSelected.filename}</h3>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <h3 style={{ margin: 0 }}>{formatDocName(cloudKbSelected.filename)}</h3>
+                      <span style={{
+                        fontSize: "11px",
+                        padding: "2px 8px",
+                        borderRadius: "10px",
+                        background: getCategoryColor(cloudKbSelected.id).bg,
+                        color: getCategoryColor(cloudKbSelected.id).color,
+                        fontWeight: 600
+                      }}>{getCategoryColor(cloudKbSelected.id).label}</span>
+                    </div>
                     <div className="kb-editor-actions">
                       <button
                         className={`kb-icon-btn ${showFindReplace ? "active" : ""}`}

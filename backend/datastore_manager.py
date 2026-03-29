@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 GCP_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "csnavigator-vertex-ai")
 DATASTORE_ID = os.getenv(
     "VERTEX_AI_DATASTORE_ID",
-    "projects/csnavigator-vertex-ai/locations/us/collections/default_collection/dataStores/csnavigator-structured-kb-v6"
+    "projects/csnavigator-vertex-ai/locations/us/collections/default_collection/dataStores/csnavigator-kb-v7"
 )
 
 _ds_parts = DATASTORE_ID.split("/")
@@ -58,7 +58,7 @@ def _get_cached_contents() -> dict:
         if _content_cache and now - _cache_timestamp < _CONTENT_CACHE_TTL:
             return dict(_content_cache)
 
-    # Cache miss: fetch all docs from the structured datastore
+    # Cache miss: fetch all docs from the datastore
     client = _get_doc_client()
     new_cache = {}
     try:
@@ -66,6 +66,9 @@ def _get_cached_contents() -> dict:
         for doc in client.list_documents(request=request):
             doc_id = doc.name.split("/")[-1]
             data = dict(doc.struct_data) if doc.struct_data else {}
+            # Content lives in raw_bytes, not struct_data
+            if doc.content and doc.content.raw_bytes:
+                data["content"] = doc.content.raw_bytes.decode("utf-8")
             new_cache[doc_id] = data
     except Exception as e:
         log.warning(f"Failed to fetch docs for cache: {e}")
@@ -90,10 +93,10 @@ def list_datastore_documents() -> list[dict]:
         for doc in client.list_documents(request=request):
             doc_id = doc.name.split("/")[-1]
             data = dict(doc.struct_data) if doc.struct_data else {}
-            content = data.get("content", "")
+            content = doc.content.raw_bytes.decode("utf-8") if doc.content and doc.content.raw_bytes else ""
             docs.append({
                 "id": doc_id,
-                "filename": data.get("source_file", f"{doc_id}.json"),
+                "filename": doc_id,
                 "uri": f"structured://{doc_id}",
                 "size": len(content.encode("utf-8")) if content else 0,
                 "modified": "",
@@ -109,53 +112,87 @@ def list_datastore_documents() -> list[dict]:
 
 
 def get_document_content(doc_id: str, max_chars: int = 50000) -> str:
-    """Read document content directly from the structured datastore."""
+    """Read document content from the datastore."""
     client = _get_doc_client()
     doc_name = f"{BRANCH}/documents/{doc_id}"
 
     try:
         doc = client.get_document(name=doc_name)
+        # Content stored in raw_bytes (for search indexing)
+        if doc.content and doc.content.raw_bytes:
+            content = doc.content.raw_bytes.decode("utf-8")
+            return content[:max_chars]
+        # Fallback: check struct_data.content
         data = dict(doc.struct_data) if doc.struct_data else {}
-        content = data.get("content", "")
-        return content[:max_chars]
+        return data.get("content", "")[:max_chars]
     except Exception as e:
         return f"Error reading document: {e}"
 
 
 def search_documents(query: str) -> list[dict]:
-    """Search across all KB documents using in-memory cache."""
+    """Advanced search across all KB documents.
+    Supports: partial matches, multi-word queries, case-insensitive.
+    Searches both content and metadata (title, category)."""
     cached = _get_cached_contents()
     results = []
     query_lower = query.lower().strip()
     if not query_lower:
         return results
 
-    escaped = re.escape(query_lower)
-    pattern = re.compile(r'\b' + escaped + r'\b', re.IGNORECASE)
+    # Split query into individual terms for multi-word matching
+    terms = query_lower.split()
+    escaped_full = re.escape(query_lower)
 
     for doc_id, data in cached.items():
         content = data.get("content", "")
-        matches = pattern.findall(content)
-        if not matches:
+        title = data.get("title", "")
+        category = data.get("category", "")
+        searchable = f"{title}\n{category}\n{content}"
+
+        # Count actual occurrences (for display) and relevance score (for sorting)
+        full_pattern = re.compile(escaped_full, re.IGNORECASE)
+        actual_count = len(full_pattern.findall(searchable))
+
+        # For multi-word queries, also check individual terms
+        if actual_count == 0 and len(terms) > 1:
+            for term in terms:
+                actual_count += len(re.findall(re.escape(term), searchable, re.IGNORECASE))
+
+        if actual_count == 0:
             continue
 
-        m = pattern.search(content)
+        # Get snippet around first match
         snippet = ""
-        if m:
-            idx = m.start()
+        match = re.search(re.escape(terms[0]), searchable, re.IGNORECASE)
+        if match:
+            idx = match.start()
+            # Skip title/category prefix to show content context
+            content_offset = len(title) + len(category) + 2
+            if idx < content_offset:
+                idx = content_offset
+                match = re.search(re.escape(terms[0]), content, re.IGNORECASE)
+                if match:
+                    idx = match.start()
+                else:
+                    idx = 0
+                snippet_src = content
+            else:
+                idx -= content_offset
+                snippet_src = content
+
             start = max(0, idx - 80)
-            end = min(len(content), idx + len(query) + 80)
-            snippet = content[start:end].strip()
+            end = min(len(snippet_src), idx + len(terms[0]) + 80)
+            snippet = snippet_src[start:end].strip()
             if start > 0:
                 snippet = "..." + snippet
-            if end < len(content):
+            if end < len(snippet_src):
                 snippet = snippet + "..."
 
         results.append({
-            "filename": data.get("source_file", f"{doc_id}.json"),
+            "filename": doc_id,
             "blob_path": doc_id,
             "uri": f"structured://{doc_id}",
-            "match_count": len(matches),
+            "match_count": actual_count,
             "snippet": snippet,
             "size": len(content),
         })
@@ -229,15 +266,20 @@ def update_document(doc_id: str, content: bytes, content_type: str = "text/plain
     except Exception:
         data = {}
 
-    # Update content, keep other fields
-    data["content"] = text_content
+    # Remove content from struct_data (it goes in content.raw_bytes for search)
+    data.pop("content", None)
 
     struct = Struct()
     struct.update(data)
 
+    # Use raw_bytes for searchable content + struct_data for metadata
     doc = discoveryengine.Document(
         name=doc_name,
         struct_data=struct,
+        content=discoveryengine.Document.Content(
+            raw_bytes=text_content.encode("utf-8") if isinstance(text_content, str) else text_content,
+            mime_type="text/plain",
+        ),
     )
 
     try:
