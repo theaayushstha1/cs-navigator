@@ -119,6 +119,15 @@ export default function AdminDashboard() {
     return { bg: "#f3e5f5", color: "#6a1b9a", label: "General" };
   };
 
+  // Research Agent State
+  const [researchStats, setResearchStats] = useState({ total_failed: 0, pending_suggestions: 0, approved: 0, pushed: 0 });
+  const [suggestions, setSuggestions] = useState([]);
+  const [researchRunning, setResearchRunning] = useState(false);
+  const [suggestionFilter, setSuggestionFilter] = useState("pending");
+  const [failedQueries, setFailedQueries] = useState([]);
+  const [showFailedQueries, setShowFailedQueries] = useState(false);
+  const [expandedSuggestion, setExpandedSuggestion] = useState(null);
+
   // Find & Replace State
   const [findText, setFindText] = useState("");
   const [replaceText, setReplaceText] = useState("");
@@ -648,6 +657,62 @@ export default function AdminDashboard() {
     setVoiceSupported(!!SpeechRecognition);
   }, []);
 
+  // Research Agent Functions
+  const loadResearchStats = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/research/stats`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) setResearchStats(await res.json());
+    } catch (err) { console.error("Failed to load research stats:", err); }
+  };
+
+  const loadSuggestions = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/research/suggestions?status=${suggestionFilter}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) { const data = await res.json(); setSuggestions(data.suggestions || []); }
+    } catch (err) { console.error("Failed to load suggestions:", err); }
+  };
+
+  const loadFailedQueries = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/research/failed-queries`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) { const data = await res.json(); setFailedQueries(data.queries || []); }
+    } catch (err) { console.error("Failed to load failed queries:", err); }
+  };
+
+  const handleRunResearch = async () => {
+    setResearchRunning(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/research/run`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success("Research complete", { description: `Clustered ${data.clustered} queries, researched ${data.researched} topics` });
+        loadResearchStats(); loadSuggestions();
+      } else { toast.error("Research failed"); }
+    } catch (err) { toast.error("Research error: " + err.message); }
+    finally { setResearchRunning(false); }
+  };
+
+  const handleSuggestionAction = async (id, action, extra = {}) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/research/suggestions/${id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action, ...extra })
+      });
+      if (res.ok) { toast.success(`Suggestion ${action}ed`); loadSuggestions(); loadResearchStats(); }
+    } catch (err) { toast.error("Action failed: " + err.message); }
+  };
+
+  const handlePushSuggestion = async (id) => {
+    if (!window.confirm("Push this suggestion to the live knowledge base?")) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/research/suggestions/${id}/push`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) { toast.success("Pushed to KB!"); loadSuggestions(); loadResearchStats(); }
+      else { const data = await res.json(); toast.error(data.detail || "Push failed"); }
+    } catch (err) { toast.error("Push error: " + err.message); }
+  };
+
   useEffect(() => {
     loadCourses();
     loadTickets();
@@ -661,6 +726,7 @@ export default function AdminDashboard() {
     if (activeTab === "system") { loadHealth(); loadCacheStats(); }
     if (activeTab === "knowledge") loadKbFiles();
     if (activeTab === "feedback") loadFeedbackStats();
+    if (activeTab === "research") { loadResearchStats(); loadSuggestions(); }
     if (activeTab === "cloud-kb") { loadCloudKbDocs(); loadCloudKbStats(); }
     // Preload cloud KB docs in background on first render so Datastore tab is instant
     if (activeTab !== "cloud-kb" && cloudKbDocs.length === 0) {
@@ -1053,6 +1119,10 @@ export default function AdminDashboard() {
           <FaSmile size={16} /><span>Feedback</span>
           {feedbackStats.reports > 0 && <span className="ticket-badge">{feedbackStats.reports}</span>}
         </button>
+        <button className={`admin-tab ${activeTab === "research" ? "active" : ""}`} onClick={() => setActiveTab("research")}>
+          <FaSearch size={16} /><span>Research</span>
+          {researchStats.pending_suggestions > 0 && <span className="ticket-badge">{researchStats.pending_suggestions}</span>}
+        </button>
         <button className={`admin-tab ${activeTab === "courses" ? "active" : ""}`} onClick={() => setActiveTab("courses")}>
           <FaCog size={16} /><span>Curriculum</span>
         </button>
@@ -1278,6 +1348,132 @@ export default function AdminDashboard() {
                   ))}
                 </tbody>
               </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* =================== RESEARCH TAB =================== */}
+      {activeTab === "research" && (
+        <div className="tab-content">
+          <h2 style={{ marginBottom: "8px" }}>Auto-Research Agent</h2>
+          <p style={{ color: "var(--text-secondary)", marginBottom: "20px" }}>
+            Tracks questions the chatbot can't answer, researches answers from morgan.edu, and suggests KB updates.
+          </p>
+
+          {/* Stats */}
+          <div className="stats-grid" style={{ marginBottom: "20px" }}>
+            <div className="stat-card"><div className="stat-number">{researchStats.total_failed || 0}</div><div className="stat-label">Failed Queries</div></div>
+            <div className="stat-card"><div className="stat-number">{researchStats.pending_suggestions || 0}</div><div className="stat-label">Pending Review</div></div>
+            <div className="stat-card"><div className="stat-number">{researchStats.approved || 0}</div><div className="stat-label">Approved</div></div>
+            <div className="stat-card"><div className="stat-number">{researchStats.pushed || 0}</div><div className="stat-label">Pushed to KB</div></div>
+          </div>
+
+          {/* Actions */}
+          <div style={{ display: "flex", gap: "10px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
+            <button className="btn-primary" onClick={handleRunResearch} disabled={researchRunning} style={{ padding: "8px 20px" }}>
+              {researchRunning ? "Researching..." : "Run Research Now"}
+            </button>
+            <select value={suggestionFilter} onChange={(e) => { setSuggestionFilter(e.target.value); setTimeout(() => loadSuggestions(), 50); }} style={{ padding: "8px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", background: "var(--bg-body)", color: "var(--text-main)" }}>
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="rejected">Rejected</option>
+              <option value="pushed">Pushed to KB</option>
+              <option value="all">All</option>
+            </select>
+            <button onClick={() => { loadSuggestions(); loadResearchStats(); }} style={{ padding: "8px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", background: "transparent", color: "var(--text-main)", cursor: "pointer" }}>
+              Refresh
+            </button>
+            <button onClick={() => { setShowFailedQueries(!showFailedQueries); if (!showFailedQueries) loadFailedQueries(); }} style={{ padding: "8px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", marginLeft: "auto" }}>
+              {showFailedQueries ? "Hide" : "Show"} Failed Queries ({researchStats.total_failed || 0})
+            </button>
+          </div>
+
+          {/* Failed Queries (collapsible) */}
+          {showFailedQueries && (
+            <div style={{ marginBottom: "20px", background: "var(--bg-elevated)", borderRadius: "12px", padding: "16px", maxHeight: "300px", overflow: "auto" }}>
+              <h4 style={{ marginBottom: "10px" }}>Recent Failed Queries</h4>
+              {failedQueries.length === 0 ? <p style={{ color: "var(--text-secondary)" }}>No failed queries yet. Students haven't asked anything the bot couldn't answer.</p> :
+                failedQueries.map(q => (
+                  <div key={q.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--border-color)" }}>
+                    <div style={{ fontWeight: 500 }}>{q.user_query}</div>
+                    <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                      {q.status} | {new Date(q.created_at).toLocaleDateString()}
+                    </div>
+                  </div>
+                ))
+              }
+            </div>
+          )}
+
+          {/* Suggestions */}
+          <div>
+            <h3 style={{ marginBottom: "12px" }}>
+              KB Suggestions ({suggestions.length})
+            </h3>
+            {suggestions.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "40px", color: "var(--text-secondary)" }}>
+                {suggestionFilter === "pending" ? "No pending suggestions. Run research to generate some." : `No ${suggestionFilter} suggestions.`}
+              </div>
+            ) : (
+              suggestions.map(s => (
+                <div key={s.id} style={{ background: "var(--bg-elevated)", borderRadius: "12px", padding: "16px", marginBottom: "12px", border: "1px solid var(--border-color)" }}>
+                  {/* Header */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <h4 style={{ margin: 0 }}>{s.topic}</h4>
+                      <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "10px", background: s.confidence === "high" ? "#e8f5e9" : s.confidence === "medium" ? "#fff3e0" : "#ffebee", color: s.confidence === "high" ? "#2e7d32" : s.confidence === "medium" ? "#e65100" : "#c62828", fontWeight: 600 }}>
+                        {s.confidence} confidence
+                      </span>
+                      <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "10px", background: "#e3f2fd", color: "#1565c0", fontWeight: 600 }}>
+                        {s.query_count} student{s.query_count !== 1 ? "s" : ""} asked
+                      </span>
+                    </div>
+                    <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>{new Date(s.created_at).toLocaleDateString()}</span>
+                  </div>
+
+                  {/* Representative query */}
+                  <div style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "8px", fontStyle: "italic" }}>
+                    "{s.representative_query}"
+                  </div>
+
+                  {/* Researched answer (collapsible) */}
+                  <div style={{ marginBottom: "8px" }}>
+                    <button onClick={() => setExpandedSuggestion(expandedSuggestion === s.id ? null : s.id)} style={{ fontSize: "13px", color: "var(--accent-blue)", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                      {expandedSuggestion === s.id ? "Hide" : "Show"} researched answer
+                    </button>
+                    {expandedSuggestion === s.id && (
+                      <div style={{ marginTop: "8px", padding: "12px", background: "var(--bg-body)", borderRadius: "8px", fontSize: "13px", whiteSpace: "pre-wrap", maxHeight: "300px", overflow: "auto" }}>
+                        {s.researched_answer}
+                        {s.sources && s.sources.length > 0 && (
+                          <div style={{ marginTop: "10px", paddingTop: "8px", borderTop: "1px solid var(--border-color)" }}>
+                            <strong>Sources:</strong>
+                            {s.sources.map((url, i) => <div key={i}><a href={url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "12px", color: "var(--accent-blue)" }}>{url}</a></div>)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Target doc */}
+                  <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "10px" }}>
+                    Target KB doc: <strong>{s.suggested_doc_id || "new document"}</strong>
+                  </div>
+
+                  {/* Actions */}
+                  {s.status === "pending" && (
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button onClick={() => handleSuggestionAction(s.id, "approve")} style={{ padding: "6px 16px", borderRadius: "8px", border: "none", background: "#4caf50", color: "white", cursor: "pointer", fontWeight: 500 }}>Approve</button>
+                      <button onClick={() => handleSuggestionAction(s.id, "reject")} style={{ padding: "6px 16px", borderRadius: "8px", border: "1px solid #ef5350", background: "transparent", color: "#ef5350", cursor: "pointer" }}>Reject</button>
+                    </div>
+                  )}
+                  {s.status === "approved" && (
+                    <button onClick={() => handlePushSuggestion(s.id)} style={{ padding: "6px 16px", borderRadius: "8px", border: "none", background: "var(--accent-blue)", color: "white", cursor: "pointer", fontWeight: 500 }}>Push to KB</button>
+                  )}
+                  {s.status === "pushed" && <span style={{ color: "#4caf50", fontWeight: 500 }}>Pushed to KB</span>}
+                  {s.status === "rejected" && <span style={{ color: "#ef5350" }}>Rejected</span>}
+                </div>
+              ))
             )}
           </div>
         </div>

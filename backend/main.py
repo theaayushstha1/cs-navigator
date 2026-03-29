@@ -93,7 +93,7 @@ except ImportError:
 
 # Local Imports (Auth & DB) - These must run AFTER load_dotenv
 from db import SessionLocal, engine, Base
-from models import User, DegreeWorksData, BannerStudentData, SupportTicket
+from models import User, DegreeWorksData, BannerStudentData, SupportTicket, FailedQuery, KBSuggestion
 from security import hash_password, verify_password, create_access_token
 from jose import JWTError, jwt
 
@@ -2566,6 +2566,13 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
         except Exception as e:
             print(f"[ERROR] Failed to save streamed chat history: {e}")
 
+        # Track failed queries for auto-research agent
+        try:
+            from research_agent import detect_and_log_failed_query
+            detect_and_log_failed_query(user_q, full_response, user_id)
+        except Exception:
+            pass
+
     return StreamingResponse(
         generate_sse(),
         media_type="text/event-stream",
@@ -3212,10 +3219,8 @@ async def trigger_ingestion(user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Admin access required")
 
     try:
-        # Import and run ingestion
-        from ingestion import ingest_data
-        await ingest_data()
-        return {"message": "Ingestion completed successfully", "timestamp": datetime.now(timezone.utc).isoformat()}
+        # Legacy Pinecone ingestion removed. Using Vertex AI structured datastore now.
+        return {"message": "Ingestion not needed. Using Vertex AI structured datastore (instant updates via admin dashboard)."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
 
@@ -3577,6 +3582,149 @@ async def get_all_feedback(type: str = None, user: dict = Depends(get_current_us
             for f in items
         ]
     }
+
+
+# ==============================================================================
+# AUTO-RESEARCH AGENT ENDPOINTS
+# ==============================================================================
+
+from research_agent import run_research_batch, get_research_stats
+from models import FailedQuery, KBSuggestion
+
+@app.post("/api/admin/research/run")
+async def trigger_research(user: dict = Depends(get_current_user)):
+    """Manually trigger a research batch (admin only)."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    result = await asyncio.to_thread(run_research_batch)
+    return result
+
+@app.get("/api/admin/research/stats")
+async def research_stats_endpoint(user: dict = Depends(get_current_user)):
+    """Get research agent stats for dashboard."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return get_research_stats()
+
+@app.get("/api/admin/research/suggestions")
+async def list_suggestions(status: str = "pending", user: dict = Depends(get_current_user)):
+    """List KB suggestions from the research agent."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    with SessionLocal() as db:
+        query = db.query(KBSuggestion)
+        if status != "all":
+            query = query.filter(KBSuggestion.status == status)
+        suggestions = query.order_by(KBSuggestion.created_at.desc()).limit(100).all()
+        return {"suggestions": [{
+            "id": s.id, "cluster_id": s.cluster_id, "topic": s.topic,
+            "representative_query": s.representative_query, "query_count": s.query_count,
+            "researched_answer": s.researched_answer,
+            "sources": json.loads(s.sources) if s.sources else [],
+            "confidence": s.confidence, "suggested_doc_id": s.suggested_doc_id,
+            "suggested_content": s.suggested_content, "status": s.status,
+            "admin_notes": s.admin_notes,
+            "created_at": s.created_at.isoformat() if s.created_at else "",
+        } for s in suggestions]}
+
+@app.put("/api/admin/research/suggestions/{suggestion_id}")
+async def review_suggestion(suggestion_id: int, request: Request, user: dict = Depends(get_current_user)):
+    """Approve, reject, or edit a KB suggestion."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    body = await request.json()
+    action = body.get("action")
+
+    with SessionLocal() as db:
+        suggestion = db.query(KBSuggestion).filter(KBSuggestion.id == suggestion_id).first()
+        if not suggestion:
+            raise HTTPException(status_code=404, detail="Suggestion not found")
+
+        if action == "approve":
+            suggestion.status = "approved"
+            suggestion.reviewed_by = user.get("user_id")
+            suggestion.reviewed_at = datetime.now(timezone.utc)
+        elif action == "reject":
+            suggestion.status = "rejected"
+            suggestion.admin_notes = body.get("notes", "")
+            suggestion.reviewed_by = user.get("user_id")
+            suggestion.reviewed_at = datetime.now(timezone.utc)
+        elif action == "edit":
+            if "content" in body:
+                suggestion.suggested_content = body["content"]
+            if "doc_id" in body:
+                suggestion.suggested_doc_id = body["doc_id"]
+            if "notes" in body:
+                suggestion.admin_notes = body["notes"]
+
+        db.commit()
+    return {"success": True}
+
+@app.post("/api/admin/research/suggestions/{suggestion_id}/push")
+async def push_suggestion(suggestion_id: int, user: dict = Depends(get_current_user)):
+    """Push an approved suggestion to the live KB datastore."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    with SessionLocal() as db:
+        suggestion = db.query(KBSuggestion).filter(
+            KBSuggestion.id == suggestion_id,
+            KBSuggestion.status == "approved"
+        ).first()
+        if not suggestion:
+            raise HTTPException(status_code=404, detail="Approved suggestion not found")
+
+        doc_id = suggestion.suggested_doc_id
+        content = suggestion.suggested_content
+        if not doc_id or not content:
+            raise HTTPException(status_code=400, detail="Missing doc_id or content")
+
+        # Check if doc exists -> append; otherwise -> create
+        existing = get_document_content(doc_id)
+        if existing and not existing.startswith("Error"):
+            merged = existing.rstrip() + "\n\n" + content
+            result = update_document(doc_id, merged.encode("utf-8"))
+        else:
+            result = upload_document(f"{doc_id}.txt", content.encode("utf-8"))
+
+        if result["success"]:
+            suggestion.status = "pushed"
+            db.commit()
+            query_cache.clear()
+            try:
+                from vertex_agent import _session_cache
+                _session_cache.clear()
+            except Exception:
+                pass
+            return {"success": True, "message": f"Pushed to KB as {doc_id}"}
+        else:
+            raise HTTPException(status_code=500, detail=result["message"])
+
+@app.get("/api/admin/research/failed-queries")
+async def list_failed_queries(status: str = "all", user: dict = Depends(get_current_user)):
+    """List raw failed queries for transparency."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    with SessionLocal() as db:
+        query = db.query(FailedQuery)
+        if status != "all":
+            query = query.filter(FailedQuery.status == status)
+        queries = query.order_by(FailedQuery.created_at.desc()).limit(200).all()
+        return {"queries": [{
+            "id": q.id, "user_query": q.user_query, "bot_response": q.bot_response[:200],
+            "cluster_id": q.cluster_id, "status": q.status,
+            "created_at": q.created_at.isoformat() if q.created_at else "",
+        } for q in queries]}
+
+@app.post("/api/internal/research/run")
+async def internal_research_trigger(request: Request):
+    """Triggered by Cloud Scheduler daily at 2am. Auth via shared secret."""
+    secret = request.headers.get("X-Research-Secret", "")
+    expected = os.getenv("RESEARCH_SECRET", "")
+    if not expected or secret != expected:
+        raise HTTPException(status_code=403, detail="Invalid research secret")
+    result = await asyncio.to_thread(run_research_batch)
+    return result
 
 
 # ==============================================================================
