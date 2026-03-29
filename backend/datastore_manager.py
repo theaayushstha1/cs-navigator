@@ -219,14 +219,16 @@ def upload_document(filename: str, content: bytes, content_type: str = "text/pla
         "title": " ".join(base.split("_")).title(),
         "category": category,
         "subcategory": doc_id.replace(f"{category}_", ""),
-        "content": text_content,
-        "source_file": filename,
     })
 
     client = _get_doc_client()
     doc = discoveryengine.Document(
         name=f"{BRANCH}/documents/{doc_id}",
         struct_data=struct,
+        content=discoveryengine.Document.Content(
+            raw_bytes=content if isinstance(content, bytes) else content.encode("utf-8"),
+            mime_type="text/plain",
+        ),
     )
 
     try:

@@ -1103,31 +1103,31 @@ export default function AdminDashboard() {
       {/* Tab Navigation */}
       <div className="admin-tabs">
         <button className={`admin-tab ${activeTab === "overview" ? "active" : ""}`} onClick={() => setActiveTab("overview")}>
-          <FaTachometerAlt size={16} /><span>Overview</span>
+          <FaTachometerAlt size={14} /><span>Home</span>
         </button>
         <button className={`admin-tab ${activeTab === "cloud-kb" ? "active" : ""}`} onClick={() => setActiveTab("cloud-kb")}>
-          <FaDatabase size={16} /><span>Datastore</span>
+          <FaDatabase size={14} /><span>Database</span>
         </button>
         <button className={`admin-tab ${activeTab === "users" ? "active" : ""}`} onClick={() => setActiveTab("users")}>
-          <FaUsers size={16} /><span>Users</span>
+          <FaUsers size={14} /><span>Users</span>
         </button>
         <button className={`admin-tab ${activeTab === "tickets" ? "active" : ""}`} onClick={() => setActiveTab("tickets")}>
-          <FaTicketAlt size={16} /><span>Tickets</span>
+          <FaTicketAlt size={14} /><span>Tickets</span>
           {ticketStats.open > 0 && <span className="ticket-badge">{ticketStats.open}</span>}
         </button>
         <button className={`admin-tab ${activeTab === "feedback" ? "active" : ""}`} onClick={() => setActiveTab("feedback")}>
-          <FaSmile size={16} /><span>Feedback</span>
+          <FaSmile size={14} /><span>Reviews</span>
           {feedbackStats.reports > 0 && <span className="ticket-badge">{feedbackStats.reports}</span>}
         </button>
         <button className={`admin-tab ${activeTab === "research" ? "active" : ""}`} onClick={() => setActiveTab("research")}>
-          <FaSearch size={16} /><span>Research</span>
+          <FaSearch size={14} /><span>Research</span>
           {researchStats.pending_suggestions > 0 && <span className="ticket-badge">{researchStats.pending_suggestions}</span>}
         </button>
         <button className={`admin-tab ${activeTab === "courses" ? "active" : ""}`} onClick={() => setActiveTab("courses")}>
-          <FaCog size={16} /><span>Curriculum</span>
+          <FaCog size={14} /><span>Courses</span>
         </button>
         <button className={`admin-tab ${activeTab === "system" ? "active" : ""}`} onClick={() => setActiveTab("system")}>
-          <FaServer size={16} /><span>System</span>
+          <FaServer size={14} /><span>System</span>
         </button>
       </div>
 
@@ -1460,15 +1460,42 @@ export default function AdminDashboard() {
                     Target KB doc: <strong>{s.suggested_doc_id || "new document"}</strong>
                   </div>
 
+                  {/* Content Preview (editable before push) */}
+                  {(s.status === "pending" || s.status === "approved") && (
+                    <div style={{ marginBottom: "10px" }}>
+                      <div style={{ fontSize: "12px", fontWeight: 600, marginBottom: "4px", color: "var(--text-secondary)" }}>
+                        Content to be pushed to KB (editable):
+                      </div>
+                      <textarea
+                        defaultValue={s.suggested_content}
+                        id={`suggestion-content-${s.id}`}
+                        style={{
+                          width: "100%", minHeight: "120px", padding: "10px", borderRadius: "8px",
+                          border: "1px solid var(--border-color)", background: "var(--bg-body)",
+                          color: "var(--text-main)", fontSize: "13px", fontFamily: "monospace",
+                          resize: "vertical"
+                        }}
+                      />
+                    </div>
+                  )}
+
                   {/* Actions */}
                   {s.status === "pending" && (
                     <div style={{ display: "flex", gap: "8px" }}>
-                      <button onClick={() => handleSuggestionAction(s.id, "approve")} style={{ padding: "6px 16px", borderRadius: "8px", border: "none", background: "#4caf50", color: "white", cursor: "pointer", fontWeight: 500 }}>Approve</button>
+                      <button onClick={() => {
+                        const content = document.getElementById(`suggestion-content-${s.id}`)?.value;
+                        if (content) handleSuggestionAction(s.id, "edit", { content });
+                        handleSuggestionAction(s.id, "approve");
+                      }} style={{ padding: "6px 16px", borderRadius: "8px", border: "none", background: "#4caf50", color: "white", cursor: "pointer", fontWeight: 500 }}>Approve</button>
                       <button onClick={() => handleSuggestionAction(s.id, "reject")} style={{ padding: "6px 16px", borderRadius: "8px", border: "1px solid #ef5350", background: "transparent", color: "#ef5350", cursor: "pointer" }}>Reject</button>
                     </div>
                   )}
                   {s.status === "approved" && (
-                    <button onClick={() => handlePushSuggestion(s.id)} style={{ padding: "6px 16px", borderRadius: "8px", border: "none", background: "var(--accent-blue)", color: "white", cursor: "pointer", fontWeight: 500 }}>Push to KB</button>
+                    <button onClick={() => {
+                      const content = document.getElementById(`suggestion-content-${s.id}`)?.value;
+                      if (content) handleSuggestionAction(s.id, "edit", { content });
+                      setTimeout(() => handlePushSuggestion(s.id), 300);
+                    }} style={{ padding: "6px 16px", borderRadius: "8px", border: "none", background: "var(--accent-blue)", color: "white", cursor: "pointer", fontWeight: 500 }}>Push to KB</button>
                   )}
                   {s.status === "pushed" && <span style={{ color: "#4caf50", fontWeight: 500 }}>Pushed to KB</span>}
                   {s.status === "rejected" && <span style={{ color: "#ef5350" }}>Rejected</span>}

@@ -3526,6 +3526,47 @@ async def update_ticket(ticket_id: int, request: Request, user: dict = Depends(g
 # FEEDBACK ENDPOINTS
 # ==============================================================================
 
+@app.post("/api/feedback")
+async def submit_feedback(request: Request, user: dict = Depends(get_current_user)):
+    """Submit feedback on a bot response (helpful/not_helpful/report)."""
+    body = await request.json()
+    message_text = body.get("message_text", "")
+    feedback_type = body.get("feedback_type", "")
+    report_details = body.get("report_details", "")
+    session_id = body.get("session_id", "default")
+
+    if feedback_type not in ("helpful", "not_helpful", "report"):
+        raise HTTPException(status_code=400, detail="Invalid feedback type")
+
+    with SessionLocal() as db:
+        fb = Feedback(
+            user_id=user.get("user_id"),
+            session_id=session_id,
+            message_text=message_text[:2000],
+            feedback_type=feedback_type,
+            report_details=report_details[:1000] if report_details else None,
+        )
+        db.add(fb)
+        db.commit()
+
+    # If "not_helpful", find the original query from chat history and log as failed query
+    # This feeds into the auto-research pipeline so the bot learns from bad answers
+    if feedback_type in ("not_helpful", "report") and message_text:
+        try:
+            from research_agent import detect_and_log_failed_query
+            # Find the user query that led to this bot response
+            with SessionLocal() as db:
+                chat = db.query(ChatHistory).filter(
+                    ChatHistory.user_id == user.get("user_id"),
+                    ChatHistory.bot_response.contains(message_text[:100])
+                ).order_by(ChatHistory.timestamp.desc()).first()
+                if chat:
+                    detect_and_log_failed_query(chat.user_query, chat.bot_response, user.get("user_id"))
+        except Exception:
+            pass
+
+    return {"success": True}
+
 @app.get("/api/feedback/stats")
 async def get_feedback_stats(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get feedback statistics"""

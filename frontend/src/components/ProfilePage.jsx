@@ -27,6 +27,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
   const navigate = useNavigate();
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [pendingResearch, setPendingResearch] = useState(0);
   const [message, setMessage] = useState({ type: "", text: "" });
   
   const [profile, setProfile] = useState({
@@ -72,6 +73,14 @@ export default function ProfilePage({ userEmail, onLogout }) {
   useEffect(() => {
     fetchProfile();
     fetchDegreeWorksData();
+    // Fetch pending research suggestions count for admin badge
+    const token = localStorage.getItem("token");
+    if (token) {
+      fetch(`${API_BASE}/api/admin/research/stats`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d) setPendingResearch(d.pending_suggestions || 0); })
+        .catch(() => {});
+    }
   }, []);
 
   const fetchProfile = async () => {
@@ -773,9 +782,22 @@ export default function ProfilePage({ userEmail, onLogout }) {
             </div>
             <div className="admin-access-content">
               <p>You have administrator privileges. Access the admin dashboard to manage tickets and curriculum.</p>
-              <button className="admin-access-btn" onClick={() => navigate("/admin")}>
-                <FaCog /> Open Admin Dashboard
-              </button>
+              <div style={{ position: "relative", display: "inline-block", width: "100%" }}>
+                <button className="admin-access-btn" onClick={() => navigate("/admin")}>
+                  <FaCog /> Open Admin Dashboard
+                </button>
+                {pendingResearch > 0 && (
+                  <span style={{
+                    position: "absolute", top: "-8px", right: "-4px",
+                    background: "#ef4444", color: "white", borderRadius: "50%",
+                    width: "22px", height: "22px", display: "flex", alignItems: "center",
+                    justifyContent: "center", fontSize: "11px", fontWeight: 700,
+                    boxShadow: "0 2px 6px rgba(239,68,68,0.4)", border: "2px solid var(--bg-card)"
+                  }}>
+                    {pendingResearch}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         )}
