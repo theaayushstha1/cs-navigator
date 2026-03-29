@@ -77,19 +77,22 @@ def detect_and_log_failed_query(user_query: str, bot_response: str, user_id: int
 
 CLUSTER_SIMILARITY_THRESHOLD = 0.82
 
-def _embed_text(text: str) -> np.ndarray | None:
-    """Generate embedding using text-embedding-004 (same model as semantic cache)."""
-    try:
-        from google.cloud import aiplatform
-        from vertexai.language_models import TextEmbeddingModel
+_genai_client = None
 
-        model = TextEmbeddingModel.from_pretrained("text-embedding-004")
-        embeddings = model.get_embeddings(
-            [text],
-            output_dimensionality=256,
-            task_type="CLUSTERING",
+def _embed_text(text: str) -> np.ndarray | None:
+    """Generate embedding using text-embedding-004 (same approach as semantic cache)."""
+    global _genai_client
+    try:
+        if _genai_client is None:
+            from google import genai
+            _genai_client = genai.Client(vertexai=True)
+
+        result = _genai_client.models.embed_content(
+            model="text-embedding-004",
+            contents=text,
+            config={"output_dimensionality": 256},
         )
-        return np.array(embeddings[0].values, dtype=np.float32)
+        return np.array(result.embeddings[0].values, dtype=np.float32)
     except Exception as e:
         log.warning(f"[RESEARCH] Embedding failed: {e}")
         return None
