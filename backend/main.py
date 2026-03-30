@@ -12,7 +12,7 @@ import asyncio
 import shutil #  NEW: For file operations
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 #  FIXED IMPORTS: Use 'pypdf' which you installed, not 'PyPDF2'
 import pypdf 
@@ -213,7 +213,24 @@ def init_db():
             except Exception as e:
                 print(f"[ERROR] Failed to add morgan_connected_at column: {e}")
 
-        # 5. Check if degreeworks_data table exists
+        # 5. Add email auth columns if missing
+        for col, col_type in [
+            ("email_verified", "BOOLEAN DEFAULT TRUE"),
+            ("verification_token", "VARCHAR(255)"),
+            ("reset_token", "VARCHAR(255)"),
+            ("reset_token_expires", "DATETIME"),
+        ]:
+            try:
+                conn.execute(text(f"SELECT {col} FROM users LIMIT 1"))
+            except (OperationalError, ProgrammingError):
+                try:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {col_type}"))
+                    conn.commit()
+                    print(f"[OK] Added '{col}' column to users")
+                except Exception:
+                    pass
+
+        # 6. Check if degreeworks_data table exists
         try:
             conn.execute(text("SELECT id FROM degreeworks_data LIMIT 1"))
             print("[OK] degreeworks_data table exists")
@@ -730,28 +747,118 @@ def load_json_documents(paths: List[str]) -> List[Dict[str,Any]]:
 # ==============================================================================
 
 # --- Auth ---
+ALLOWED_EMAIL_DOMAINS = ["morgan.edu"]
+
 @app.post("/api/register", status_code=status.HTTP_201_CREATED)
 def register(req: RegisterRequest, db: Session = Depends(get_db)):
-    # Validate email and password
     import re
+    from email_service import generate_token, send_verification_email
+
     if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', req.email):
         raise HTTPException(status_code=400, detail="Invalid email format")
+
+    # Only allow Morgan State email
+    email_domain = req.email.split("@")[-1].lower()
+    if email_domain not in ALLOWED_EMAIL_DOMAINS:
+        raise HTTPException(status_code=400, detail="Only @morgan.edu email addresses are allowed.")
+
     if len(req.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     if db.query(User).filter(User.email == req.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
+
     hashed = hash_password(req.password)
-    student = User(email=req.email, password_hash=hashed, role="student")
+    token = generate_token()
+    student = User(email=req.email, password_hash=hashed, role="student", email_verified=False, verification_token=token)
     db.add(student)
     db.commit()
     db.refresh(student)
-    return {"message": "Account created", "user_id": student.id}
+
+    send_verification_email(req.email, token)
+    return {"message": "Account created! Check your Morgan State email to verify.", "user_id": student.id}
+
+
+@app.get("/api/verify-email")
+def verify_email(token: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.verification_token == token).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification link")
+    user.email_verified = True
+    user.verification_token = None
+    db.commit()
+    return {"message": "Email verified! You can now log in."}
+
+
+@app.post("/api/resend-verification")
+async def resend_verification(request: Request, db: Session = Depends(get_db)):
+    from email_service import generate_token, send_verification_email
+    body = await request.json()
+    email = body.get("email", "")
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        return {"message": "If an account exists, a verification email has been sent."}
+    if user.email_verified:
+        return {"message": "Email already verified."}
+    token = generate_token()
+    user.verification_token = token
+    db.commit()
+    send_verification_email(email, token)
+    return {"message": "Verification email sent. Check your inbox."}
+
+
+@app.post("/api/forgot-password")
+async def forgot_password(request: Request, db: Session = Depends(get_db)):
+    from email_service import generate_token, send_password_reset_email
+    body = await request.json()
+    email = body.get("email", "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email required")
+
+    user = db.query(User).filter(User.email == email).first()
+    if user:
+        token = generate_token()
+        user.reset_token = token
+        user.reset_token_expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        db.commit()
+        send_password_reset_email(email, token)
+
+    return {"message": "If an account exists with that email, a password reset link has been sent."}
+
+
+@app.post("/api/reset-password")
+async def reset_password(request: Request, db: Session = Depends(get_db)):
+    body = await request.json()
+    token = body.get("token", "")
+    new_password = body.get("password", "")
+    if not token or not new_password:
+        raise HTTPException(status_code=400, detail="Token and new password required")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    user = db.query(User).filter(User.reset_token == token).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+    if user.reset_token_expires and user.reset_token_expires < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Reset link has expired. Request a new one.")
+
+    user.password_hash = hash_password(new_password)
+    user.reset_token = None
+    user.reset_token_expires = None
+    user.email_verified = True
+    db.commit()
+    return {"message": "Password reset successfully. You can now log in."}
+
 
 @app.post("/api/login")
 def login(req: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == req.email).first()
     if not user or not verify_password(req.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Require email verification (skip for admins and existing test accounts)
+    if not getattr(user, 'email_verified', True) and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Please verify your email first. Check your inbox for the verification link.")
+
     token = create_access_token({
         "user_id": user.id,
         "role": user.role,

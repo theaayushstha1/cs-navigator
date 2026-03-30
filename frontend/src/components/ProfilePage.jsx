@@ -901,13 +901,28 @@ export default function ProfilePage({ userEmail, onLogout }) {
                     Last synced: {canvasSyncTime ? new Date(canvasSyncTime).toLocaleDateString() : "Recently"}
                   </p>
                 </div>
-                <button onClick={() => setShowCanvasModal(true)} style={{
-                  marginLeft: "auto", padding: "6px 14px", borderRadius: "8px",
-                  border: "1px solid var(--border-color)", background: "transparent",
-                  color: "var(--text-secondary)", cursor: "pointer", fontSize: "0.85rem"
-                }}>
-                  <FaSync style={{ marginRight: "4px" }} /> Re-sync
-                </button>
+                <div style={{ marginLeft: "auto", display: "flex", gap: "6px" }}>
+                  <button onClick={() => setShowCanvasModal(true)} style={{
+                    padding: "6px 14px", borderRadius: "8px",
+                    border: "1px solid var(--border-color)", background: "transparent",
+                    color: "var(--text-secondary)", cursor: "pointer", fontSize: "0.85rem"
+                  }}>
+                    <FaSync style={{ marginRight: "4px" }} /> Re-sync
+                  </button>
+                  <button onClick={async () => {
+                    if (!window.confirm("Disconnect Canvas? Your synced data will be removed.")) return;
+                    const token = localStorage.getItem("token");
+                    await fetch(`${API_BASE}/api/canvas/disconnect`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+                    setCanvasConnected(false);
+                    setCanvasSyncTime(null);
+                  }} style={{
+                    padding: "6px 14px", borderRadius: "8px",
+                    border: "1px solid rgba(234,67,53,0.3)", background: "transparent",
+                    color: "#EA4335", cursor: "pointer", fontSize: "0.85rem"
+                  }}>
+                    Disconnect
+                  </button>
+                </div>
               </div>
             ) : (
               <>

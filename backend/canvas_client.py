@@ -119,17 +119,46 @@ async def fetch_canvas_data(client: httpx.AsyncClient, progress_callback=None) -
             await progress_callback("Fetching your courses...")
         resp = await client.get(f"{CANVAS_API}/courses", params={
             "enrollment_state": "active",
-            "include[]": ["total_scores", "current_grading_period_scores"],
+            "enrollment_type": "student",
+            "include[]": ["total_scores", "current_grading_period_scores", "term"],
             "per_page": 50,
+            "state[]": "available",
         })
         if resp.status_code == 200:
             courses = resp.json()
+
+            # Determine current semester from course codes (e.g., "Spring 2026")
+            # Pick the most recent semester string found in course codes
+            import re as _re
+            from datetime import datetime as _dt
+            now = _dt.now()
+            current_year = now.year
+            semesters_found = {}
             for c in courses:
+                code = c.get("course_code", "")
+                match = _re.search(r'(Spring|Summer|Fall)\s*(\d{4})', code, _re.IGNORECASE)
+                if match:
+                    sem, year = match.group(1).title(), int(match.group(2))
+                    sem_order = {"Spring": 0, "Summer": 1, "Fall": 2}
+                    key = f"{sem} {year}"
+                    semesters_found[key] = year * 10 + sem_order.get(sem, 0)
+
+            # Current semester = the one with highest sort value
+            current_sem = max(semesters_found, key=semesters_found.get) if semesters_found else None
+            log.info(f"[CANVAS] Detected current semester: {current_sem} (from {len(semesters_found)} semesters)")
+
+            for c in courses:
+                code = c.get("course_code", "")
+                # Only include courses from current semester
+                if current_sem and current_sem not in code:
+                    continue
+
                 course_data = {
                     "id": c.get("id"),
                     "name": c.get("name"),
                     "code": c.get("course_code"),
                     "term": c.get("enrollment_term_id"),
+                    "term_name": current_sem,
                 }
                 data["courses"].append(course_data)
 
