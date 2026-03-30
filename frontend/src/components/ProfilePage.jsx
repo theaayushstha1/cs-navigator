@@ -18,6 +18,8 @@ import { FaBook } from "@react-icons/all-files/fa/FaBook";
 import { FaExternalLinkAlt } from "@react-icons/all-files/fa/FaExternalLinkAlt";
 import { FaCog } from "@react-icons/all-files/fa/FaCog";
 import { FaShieldAlt } from "@react-icons/all-files/fa/FaShieldAlt";
+import { FaClock } from "@react-icons/all-files/fa/FaClock";
+import { FaExclamationTriangle } from "@react-icons/all-files/fa/FaExclamationTriangle";
 import "./ProfilePage.css";
 
 import { getApiBase } from "../lib/apiBase";
@@ -28,6 +30,16 @@ export default function ProfilePage({ userEmail, onLogout }) {
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [pendingResearch, setPendingResearch] = useState(0);
+
+  // Canvas State
+  const [showCanvasModal, setShowCanvasModal] = useState(false);
+  const [canvasConnected, setCanvasConnected] = useState(false);
+  const [canvasSyncTime, setCanvasSyncTime] = useState(null);
+  const [canvasCreds, setCanvasCreds] = useState({ username: "", password: "" });
+  const [canvasSyncing, setCanvasSyncing] = useState(false);
+  const [canvasProgress, setCanvasProgress] = useState([]);
+  const [canvasSummary, setCanvasSummary] = useState(null);
+  const [canvasError, setCanvasError] = useState("");
   const [message, setMessage] = useState({ type: "", text: "" });
   
   const [profile, setProfile] = useState({
@@ -73,8 +85,20 @@ export default function ProfilePage({ userEmail, onLogout }) {
   useEffect(() => {
     fetchProfile();
     fetchDegreeWorksData();
-    // Fetch pending research suggestions count for admin badge
+    // Fetch Canvas connection status
     const token = localStorage.getItem("token");
+    if (token) {
+      fetch(`${API_BASE}/api/canvas`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          if (d && d.connected) {
+            setCanvasConnected(true);
+            setCanvasSyncTime(d.updated_at);
+          }
+        })
+        .catch(() => {});
+    }
+    // Fetch pending research suggestions count for admin badge
     if (token) {
       fetch(`${API_BASE}/api/admin/research/stats`, { headers: { Authorization: `Bearer ${token}` } })
         .then(r => r.ok ? r.json() : null)
@@ -367,6 +391,66 @@ export default function ProfilePage({ userEmail, onLogout }) {
       setBannerSyncing(false);
       // Clear password from memory
       setBannerCreds(prev => ({ ...prev, password: "" }));
+    }
+  };
+
+  // Canvas Sync Handler
+  const handleCanvasSync = async () => {
+    if (!canvasCreds.username || !canvasCreds.password) {
+      setCanvasError("Please enter your MSU username and password.");
+      return;
+    }
+    setCanvasSyncing(true);
+    setCanvasProgress([]);
+    setCanvasSummary(null);
+    setCanvasError("");
+
+    try {
+      const token = localStorage.getItem("token");
+      const response = await fetch(`${API_BASE}/api/canvas/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ username: canvasCreds.username, password: canvasCreds.password }),
+      });
+
+      if (!response.ok && response.status === 429) {
+        setCanvasError("Rate limit exceeded. Maximum 3 syncs per hour.");
+        setCanvasSyncing(false);
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            if (event.type === "progress") {
+              setCanvasProgress(prev => [...prev, event.detail]);
+            } else if (event.type === "done") {
+              setCanvasSummary(event.summary);
+              setCanvasConnected(true);
+              setCanvasSyncTime(new Date().toISOString());
+            } else if (event.type === "error") {
+              setCanvasError(event.detail);
+            }
+          } catch (e) {}
+        }
+      }
+    } catch (error) {
+      setCanvasError("Connection failed: " + error.message);
+    } finally {
+      setCanvasSyncing(false);
+      setCanvasCreds(prev => ({ ...prev, password: "" }));
     }
   };
 
@@ -801,6 +885,45 @@ export default function ProfilePage({ userEmail, onLogout }) {
             </div>
           </div>
         )}
+
+        {/* Canvas Sync */}
+        <div className="profile-section">
+          <div className="section-header">
+            <h3><FaBook /> Canvas LMS</h3>
+          </div>
+          <div className="admin-access-content">
+            {canvasConnected ? (
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
+                <FaCheckCircle style={{ color: "#34a853", fontSize: "1.2rem" }} />
+                <div>
+                  <p style={{ margin: 0, fontWeight: 500 }}>Connected to Canvas</p>
+                  <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--text-secondary)" }}>
+                    Last synced: {canvasSyncTime ? new Date(canvasSyncTime).toLocaleDateString() : "Recently"}
+                  </p>
+                </div>
+                <button onClick={() => setShowCanvasModal(true)} style={{
+                  marginLeft: "auto", padding: "6px 14px", borderRadius: "8px",
+                  border: "1px solid var(--border-color)", background: "transparent",
+                  color: "var(--text-secondary)", cursor: "pointer", fontSize: "0.85rem"
+                }}>
+                  <FaSync style={{ marginRight: "4px" }} /> Re-sync
+                </button>
+              </div>
+            ) : (
+              <>
+                <p>Connect your Canvas account to see courses, assignments, grades, and deadlines in one place.</p>
+                <button className="connect-btn" onClick={() => setShowCanvasModal(true)} style={{
+                  display: "flex", alignItems: "center", gap: "8px", width: "100%",
+                  padding: "12px", borderRadius: "10px", border: "none",
+                  background: "#e65100", color: "white", fontWeight: 600,
+                  cursor: "pointer", justifyContent: "center", fontSize: "0.95rem"
+                }}>
+                  <FaSync /> Sync Canvas
+                </button>
+              </>
+            )}
+          </div>
+        </div>
 
         {/* Logout */}
         <div className="profile-section">
@@ -1270,6 +1393,123 @@ export default function ProfilePage({ userEmail, onLogout }) {
               }}>
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Canvas Sync Modal */}
+      {showCanvasModal && (
+        <div className="modal-overlay" onClick={() => !canvasSyncing && setShowCanvasModal(false)}>
+          <div className="modal-content degreeworks-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <FaBook className="modal-icon" />
+              <h2>Sync Canvas LMS</h2>
+              <p>Pull your courses, assignments, and grades</p>
+            </div>
+
+            <div className="modal-body">
+              {!canvasSyncing && !canvasSummary ? (
+                <>
+                  <p className="form-subtitle">
+                    Enter your Morgan State credentials to sync your Canvas data. Same credentials you use for DegreeWorks.
+                  </p>
+
+                  <div className="manual-form-grid">
+                    <div className="form-group">
+                      <label>MSU Username</label>
+                      <input
+                        type="text"
+                        placeholder="e.g., jsmith1"
+                        value={canvasCreds.username}
+                        onChange={(e) => setCanvasCreds({ ...canvasCreds, username: e.target.value })}
+                        autoComplete="username"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>MSU Password</label>
+                      <input
+                        type="password"
+                        placeholder="Your MSU password"
+                        value={canvasCreds.password}
+                        onChange={(e) => setCanvasCreds({ ...canvasCreds, password: e.target.value })}
+                        autoComplete="current-password"
+                        onKeyDown={(e) => e.key === "Enter" && handleCanvasSync()}
+                      />
+                    </div>
+                  </div>
+
+                  {canvasError && (
+                    <div className="message error" style={{ marginBottom: 12 }}>{canvasError}</div>
+                  )}
+
+                  <div className="security-note" style={{ marginBottom: 16 }}>
+                    <FaShieldAlt />
+                    <div>
+                      <strong>Your credentials are never stored</strong>
+                      <p>Used once to authenticate with Canvas, then immediately discarded. Read-only access only.</p>
+                    </div>
+                  </div>
+
+                  <button
+                    className="modal-primary-btn submit-manual"
+                    onClick={handleCanvasSync}
+                    disabled={!canvasCreds.username || !canvasCreds.password}
+                  >
+                    <FaSync /> Sync Canvas
+                  </button>
+                </>
+              ) : canvasSyncing ? (
+                <div className="banner-progress">
+                  <div className="progress-steps">
+                    {canvasProgress.map((step, i) => (
+                      <div key={i} className="progress-step completed">
+                        <FaCheckCircle className="step-check" />
+                        <span>{step}</span>
+                      </div>
+                    ))}
+                    <div className="progress-step active">
+                      <FaSync className="spinning" />
+                      <span>Working...</span>
+                    </div>
+                  </div>
+                </div>
+              ) : canvasSummary ? (
+                <div className="banner-success">
+                  <div className="success-header">
+                    <FaCheckCircle className="success-icon large" />
+                    <h4>Canvas Synced!</h4>
+                  </div>
+
+                  <div className="dw-stats-grid" style={{ marginTop: 16 }}>
+                    <div className="dw-stat-card">
+                      <FaBook className="stat-icon" />
+                      <div className="stat-value">{canvasSummary.courses_count}</div>
+                      <div className="stat-label">Courses</div>
+                    </div>
+                    <div className="dw-stat-card">
+                      <FaClock className="stat-icon" />
+                      <div className="stat-value">{canvasSummary.upcoming_count}</div>
+                      <div className="stat-label">Upcoming</div>
+                    </div>
+                    {canvasSummary.missing_count > 0 && (
+                      <div className="dw-stat-card">
+                        <FaExclamationTriangle className="stat-icon" style={{ color: "#e65100" }} />
+                        <div className="stat-value" style={{ color: "#e65100" }}>{canvasSummary.missing_count}</div>
+                        <div className="stat-label">Missing</div>
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    className="modal-primary-btn"
+                    style={{ marginTop: 16 }}
+                    onClick={() => { setShowCanvasModal(false); navigate("/my-classes"); }}
+                  >
+                    View My Classes
+                  </button>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

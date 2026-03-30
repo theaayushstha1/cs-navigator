@@ -93,7 +93,7 @@ except ImportError:
 
 # Local Imports (Auth & DB) - These must run AFTER load_dotenv
 from db import SessionLocal, engine, Base
-from models import User, DegreeWorksData, BannerStudentData, SupportTicket, FailedQuery, KBSuggestion
+from models import User, DegreeWorksData, BannerStudentData, SupportTicket, FailedQuery, KBSuggestion, CanvasStudentData
 from security import hash_password, verify_password, create_access_token
 from jose import JWTError, jwt
 
@@ -2101,6 +2101,157 @@ def extract_file_content(filepath: str) -> str:
     
     # Limit content to ~15k chars to fit context window
     return text[:15000]
+
+# ==============================================================================
+# Canvas LMS Integration Endpoints
+# ==============================================================================
+
+class CanvasSyncRequest(BaseModel):
+    username: str
+    password: str
+
+_canvas_sync_timestamps: dict[int, list] = {}
+
+@app.post("/api/canvas/sync")
+async def sync_canvas_data(
+    req: CanvasSyncRequest,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Sync student data from Canvas LMS via LDAP auth. Returns SSE stream."""
+    user_id = user["user_id"]
+
+    # Rate limit: max 3 syncs per hour
+    now_ts = datetime.now(timezone.utc).timestamp()
+    timestamps = _canvas_sync_timestamps.get(user_id, [])
+    timestamps = [t for t in timestamps if now_ts - t < 3600]
+    if len(timestamps) >= 3:
+        raise HTTPException(status_code=429, detail="Rate limit: max 3 Canvas syncs per hour")
+    timestamps.append(now_ts)
+    _canvas_sync_timestamps[user_id] = timestamps
+
+    async def generate_sse():
+        try:
+            from canvas_client import sync_canvas
+
+            progress_messages = []
+            async def progress_cb(msg):
+                progress_messages.append(msg)
+                yield f"data: {json.dumps({'type': 'progress', 'detail': msg})}\n\n"
+
+            # Run sync with progress streaming
+            gen = progress_cb  # We need a different pattern for SSE
+
+            yield f"data: {json.dumps({'type': 'progress', 'detail': 'Logging into Canvas...'})}\n\n"
+
+            from canvas_client import canvas_authenticate, fetch_canvas_data
+
+            try:
+                client = await canvas_authenticate(req.username, req.password)
+            except ValueError as e:
+                yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
+                return
+
+            yield f"data: {json.dumps({'type': 'progress', 'detail': 'Fetching courses...'})}\n\n"
+
+            try:
+                data = await fetch_canvas_data(client)
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'detail': f'Failed to fetch Canvas data: {str(e)[:200]}'})}\n\n"
+                await client.aclose()
+                return
+
+            await client.aclose()
+
+            yield f"data: {json.dumps({'type': 'progress', 'detail': 'Saving to database...'})}\n\n"
+
+            # Merge grades into courses
+            courses_with_grades = []
+            for c in data.get("courses", []):
+                grade_info = data.get("grades", {}).get(c["id"], {})
+                courses_with_grades.append({
+                    **c,
+                    "current_score": grade_info.get("current_score"),
+                    "current_grade": grade_info.get("current_grade"),
+                })
+
+            # Save to database
+            try:
+                existing = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user_id).first()
+                if existing:
+                    existing.canvas_user_id = data["profile"].get("canvas_id")
+                    existing.canvas_login_id = data["profile"].get("login_id")
+                    existing.courses = json.dumps(courses_with_grades)
+                    existing.upcoming_assignments = json.dumps(data.get("assignments", []))
+                    existing.missing_assignments = json.dumps(data.get("missing", []))
+                    existing.grades = json.dumps(data.get("grades", {}))
+                    existing.updated_at = datetime.now(timezone.utc)
+                else:
+                    canvas_record = CanvasStudentData(
+                        user_id=user_id,
+                        canvas_user_id=data["profile"].get("canvas_id"),
+                        canvas_login_id=data["profile"].get("login_id"),
+                        courses=json.dumps(courses_with_grades),
+                        upcoming_assignments=json.dumps(data.get("assignments", [])),
+                        missing_assignments=json.dumps(data.get("missing", [])),
+                        grades=json.dumps(data.get("grades", {})),
+                    )
+                    db.add(canvas_record)
+                db.commit()
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'detail': f'Database error: {str(e)[:200]}'})}\n\n"
+                return
+
+            # Build summary
+            summary = {
+                "courses_count": len(courses_with_grades),
+                "upcoming_count": len(data.get("assignments", [])),
+                "missing_count": len(data.get("missing", [])),
+                "courses": courses_with_grades,
+                "name": data["profile"].get("name"),
+                "login_id": data["profile"].get("login_id"),
+            }
+
+            yield f"data: {json.dumps({'type': 'done', 'summary': summary})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'detail': str(e)[:300]})}\n\n"
+
+    return StreamingResponse(
+        generate_sse(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+    )
+
+
+@app.get("/api/canvas")
+async def get_canvas_data(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get stored Canvas data for the current user."""
+    canvas = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user["user_id"]).first()
+    if not canvas:
+        return {"connected": False}
+
+    return {
+        "connected": True,
+        "canvas_login_id": canvas.canvas_login_id,
+        "courses": json.loads(canvas.courses) if canvas.courses else [],
+        "upcoming_assignments": json.loads(canvas.upcoming_assignments) if canvas.upcoming_assignments else [],
+        "missing_assignments": json.loads(canvas.missing_assignments) if canvas.missing_assignments else [],
+        "grades": json.loads(canvas.grades) if canvas.grades else {},
+        "synced_at": canvas.synced_at.isoformat() if canvas.synced_at else None,
+        "updated_at": canvas.updated_at.isoformat() if canvas.updated_at else None,
+    }
+
+
+@app.delete("/api/canvas/disconnect")
+async def disconnect_canvas(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Remove Canvas data for the current user."""
+    canvas = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user["user_id"]).first()
+    if canvas:
+        db.delete(canvas)
+        db.commit()
+    return {"success": True, "message": "Canvas disconnected"}
+
 
 # ==============================================================================
 # PARALLEL DB HELPERS (Thread-safe, each creates its own session)

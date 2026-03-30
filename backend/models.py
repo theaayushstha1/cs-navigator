@@ -101,6 +101,38 @@ class BannerStudentData(Base):
     user = relationship("User", backref="banner_data")
 
 
+class CanvasStudentData(Base):
+    """Stores Canvas LMS data: courses, assignments, grades, deadlines.
+    Synced via Canvas REST API using Morgan State LDAP credentials."""
+    __tablename__ = "canvas_student_data"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
+
+    # Canvas Profile
+    canvas_user_id = Column(Integer, nullable=True)
+    canvas_login_id = Column(String(100), nullable=True)
+
+    # Courses (JSON array)
+    courses = Column(Text, nullable=True)  # [{id, name, code, grade, score}]
+
+    # Assignments (JSON array)
+    upcoming_assignments = Column(Text, nullable=True)  # [{title, type, due_at, points, course_name, submitted}]
+
+    # Missing/overdue (JSON array)
+    missing_assignments = Column(Text, nullable=True)  # [{title, course_id, due_at, points}]
+
+    # Grades per course (JSON dict)
+    grades = Column(Text, nullable=True)  # {course_id: {current_score, current_grade}}
+
+    # Metadata
+    synced_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationship
+    user = relationship("User", backref="canvas_data")
+
+
 class SupportTicket(Base):
     """Support tickets submitted by users for bug reports and feedback"""
     __tablename__ = "support_tickets"

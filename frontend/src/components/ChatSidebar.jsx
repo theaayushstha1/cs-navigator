@@ -274,6 +274,13 @@ export default function ChatSidebar({
     navigate("/curriculum");
   };
 
+  const handleMyClassesClick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    closeContextMenu();
+    navigate("/my-classes");
+  };
+
   const handleProfileClick = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -360,10 +367,18 @@ export default function ChatSidebar({
           />
         </div>
 
-        <button 
-          className="sidebar-action-btn curriculum-link" 
+        <button
+          className="sidebar-action-btn curriculum-link"
+          onClick={handleMyClassesClick}
+          title="View your Canvas courses, assignments, and grades"
+        >
+          <FaBook size={16} />
+          <span>My Classes</span>
+        </button>
+        <button
+          className="sidebar-action-btn curriculum-link"
           onClick={handleCurriculumClick}
-          title="View Computer Science curriculum" // 🔥 NEW: Hover Text
+          title="View Computer Science curriculum"
         >
           <FaBook size={16} />
           <span>Curriculum</span>

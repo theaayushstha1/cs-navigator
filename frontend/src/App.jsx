@@ -6,6 +6,7 @@ import NavBar         from "./components/NavBar";
 import ChatSidebar    from "./components/ChatSidebar";
 import Chatbox        from "./components/Chatbox";
 import CurriculumPage from "./components/CurriculumPage";
+import MyClassesPage from "./components/MyClassesPage";
 import ProfilePage    from "./components/ProfilePage";
 import AdminDashboard from "./components/AdminDashboard";
 import Forbidden      from "./components/Forbidden";
@@ -429,6 +430,31 @@ export default function App() {
                 darkMode={darkMode}
                 onToggleTheme={toggleTheme}
               />
+            </RequireAuth>
+          }
+        />
+
+        {/* protected: my classes with sidebar */}
+        <Route
+          path="/my-classes"
+          element={
+            <RequireAuth>
+              <SidebarLayout
+                sessions={sessions}
+                activeId={activeId}
+                onNew={handleNew}
+                onSelect={handleSelect}
+                onDelete={handleDelete}
+                onLogout={handleLogout}
+                userEmail={userEmail}
+                onPin={handlePin}
+                onArchive={handleArchive}
+                onRename={handleRename}
+                darkMode={darkMode}
+                onToggleTheme={toggleTheme}
+              >
+                <MyClassesPage />
+              </SidebarLayout>
             </RequireAuth>
           }
         />
