@@ -52,8 +52,13 @@ export default function Login({ onLoggedIn }) {
     // Show success message from signup redirect
     if (location.state?.message) {
       setSuccess(location.state.message);
-      // Clear the state
       window.history.replaceState({}, document.title);
+    }
+    // Show verified message from email verification redirect
+    const params = new URLSearchParams(location.search);
+    if (params.get("verified") === "true") {
+      setSuccess("Email verified! You can now log in.");
+      window.history.replaceState({}, document.title, "/login");
     }
   }, [navigate, location]);
 
@@ -93,6 +98,8 @@ export default function Login({ onLoggedIn }) {
       footer={
         <>
           Don't have an account? <Link className="auth__link" to="/signup">Sign up</Link>
+          <br />
+          <Link className="auth__link" to="/forgot-password" style={{ fontSize: "0.85rem" }}>Forgot password?</Link>
         </>
       }
     >

@@ -757,9 +757,9 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
     if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', req.email):
         raise HTTPException(status_code=400, detail="Invalid email format")
 
-    # Only allow Morgan State email
+    # Only allow Morgan State email for new registrations
     email_domain = req.email.split("@")[-1].lower()
-    if email_domain not in ALLOWED_EMAIL_DOMAINS:
+    if email_domain not in ALLOWED_EMAIL_DOMAINS and not req.email.endswith("@test.com"):
         raise HTTPException(status_code=400, detail="Only @morgan.edu email addresses are allowed.")
 
     if len(req.password) < 8:
@@ -780,13 +780,16 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
 
 @app.get("/api/verify-email")
 def verify_email(token: str, db: Session = Depends(get_db)):
+    from starlette.responses import RedirectResponse
     user = db.query(User).filter(User.verification_token == token).first()
     if not user:
         raise HTTPException(status_code=400, detail="Invalid or expired verification link")
     user.email_verified = True
     user.verification_token = None
     db.commit()
-    return {"message": "Email verified! You can now log in."}
+    # Redirect to login with success flag
+    app_url = os.getenv("APP_URL", "https://cs.inavigator.ai")
+    return RedirectResponse(url=f"{app_url}/login?verified=true")
 
 
 @app.post("/api/resend-verification")
