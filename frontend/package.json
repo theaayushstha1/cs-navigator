@@ -11,7 +11,9 @@
   },
   "dependencies": {
     "@react-icons/all-files": "^4.1.0",
+    "@xyflow/react": "^12.10.2",
     "cmdk": "^1.1.1",
+    "dagre": "^0.8.5",
     "framer-motion": "^12.6.2",
     "jwt-decode": "^4.0.0",
     "mermaid": "^11.12.2",

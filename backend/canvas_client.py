@@ -23,6 +23,28 @@ CANVAS_BASE = "https://morganstate.instructure.com"
 CANVAS_LOGIN_URL = f"{CANVAS_BASE}/login/ldap"
 CANVAS_API = f"{CANVAS_BASE}/api/v1"
 AUTH_TIMEOUT = 30
+FETCH_TIMEOUT = 60
+
+
+async def _paginated_get(client: httpx.AsyncClient, url: str, params: dict = None) -> list:
+    """Follow Canvas Link header pagination to fetch all results."""
+    results = []
+    current_url = url
+    current_params = params or {}
+    while current_url:
+        resp = await client.get(current_url, params=current_params, timeout=FETCH_TIMEOUT)
+        if resp.status_code != 200:
+            break
+        results.extend(resp.json())
+        # Canvas pagination: Link header contains rel="next" URL
+        next_link = resp.headers.get("link", "")
+        current_url = None
+        current_params = {}  # params are baked into the next URL
+        for part in next_link.split(","):
+            if 'rel="next"' in part:
+                current_url = part.split("<")[1].split(">")[0].strip()
+                break
+    return results
 
 
 async def canvas_authenticate(username: str, password: str) -> httpx.AsyncClient:
@@ -97,6 +119,7 @@ async def fetch_canvas_data(client: httpx.AsyncClient, progress_callback=None) -
         "assignments": [],
         "missing": [],
         "grades": {},
+        "gradebook": {},
         "profile": {},
     }
 
@@ -181,6 +204,66 @@ async def fetch_canvas_data(client: httpx.AsyncClient, progress_callback=None) -
                                 }
                 except Exception:
                     pass
+
+                # Get full gradebook: assignment groups + all assignments with submissions
+                if progress_callback:
+                    await progress_callback(f"Fetching gradebook for {c.get('name', 'course')}...")
+                try:
+                    cid = c["id"]
+                    # Fetch assignment groups and assignments in parallel
+                    import asyncio as _asyncio
+                    groups_task = _paginated_get(
+                        client,
+                        f"{CANVAS_API}/courses/{cid}/assignment_groups",
+                        {"per_page": 50}
+                    )
+                    assignments_task = _paginated_get(
+                        client,
+                        f"{CANVAS_API}/courses/{cid}/assignments",
+                        {"per_page": 100, "include[]": "submission", "order_by": "due_at"}
+                    )
+                    ag_list, asn_list = await _asyncio.gather(groups_task, assignments_task)
+
+                    # Determine grading type from assignment group weights
+                    grading_type = "total_points"
+                    parsed_groups = []
+                    for ag in ag_list:
+                        weight = ag.get("group_weight", 0)
+                        if weight > 0:
+                            grading_type = "weighted"
+                        parsed_groups.append({
+                            "id": ag.get("id"),
+                            "name": ag.get("name", ""),
+                            "weight": weight,
+                        })
+
+                    # Parse assignments with submission data
+                    parsed_assignments = []
+                    for asn in asn_list:
+                        sub = asn.get("submission") or {}
+                        parsed_assignments.append({
+                            "id": asn.get("id"),
+                            "name": asn.get("name", ""),
+                            "due_at": asn.get("due_at"),
+                            "points_possible": asn.get("points_possible"),
+                            "assignment_group_id": asn.get("assignment_group_id"),
+                            "submission": {
+                                "score": sub.get("score"),
+                                "submitted_at": sub.get("submitted_at"),
+                                "late": sub.get("late", False),
+                                "missing": sub.get("missing", False),
+                                "workflow_state": sub.get("workflow_state", ""),
+                            }
+                        })
+
+                    data["gradebook"][cid] = {
+                        "grading_type": grading_type,
+                        "assignment_groups": parsed_groups,
+                        "assignments": parsed_assignments,
+                    }
+                except Exception as e:
+                    log.warning(f"[CANVAS] Could not fetch gradebook for course {c.get('id')}: {e}")
+                    # Skip gracefully - don't break sync for one restricted course
 
         # 3. Upcoming assignments (next 30 days)
         if progress_callback:

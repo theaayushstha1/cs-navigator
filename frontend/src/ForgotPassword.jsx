@@ -1,9 +1,16 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import AuthLayout from "./components/auth/AuthLayout";
 import { getApiBase } from "./lib/apiBase";
-import "./Login.css";
 
 const API_BASE = getApiBase();
+
+const EnvelopeIcon = (props) => (
+  <svg {...props} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+    <polyline points="22,6 12,13 2,6"/>
+  </svg>
+);
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState("");
@@ -21,10 +28,10 @@ export default function ForgotPassword() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),
       });
-      const data = await res.json();
       if (res.ok) {
         setSent(true);
       } else {
+        const data = await res.json();
         setError(data.detail || "Something went wrong");
       }
     } catch (err) {
@@ -35,60 +42,56 @@ export default function ForgotPassword() {
   };
 
   return (
-    <div className="login-page">
-      <div className="login-container">
-        <div className="login-card">
-          <h1 className="login-title" style={{ color: "var(--msu-blue)" }}>Reset Password</h1>
-          <p className="login-subtitle">
-            {sent ? "Check your email" : "Enter your email to receive a reset link"}
+    <AuthLayout
+      title="Reset Password"
+      subtitle="Enter your Morgan State email to receive a password reset link."
+      footer={
+        <>
+          Remember your password? <Link className="auth__link" to="/login">Log in</Link>
+        </>
+      }
+    >
+      {sent ? (
+        <div style={{ textAlign: "center", padding: "20px 0" }}>
+          <svg width="48" height="48" viewBox="0 0 48 48" fill="none" style={{ marginBottom: "12px" }}>
+            <circle cx="24" cy="24" r="24" fill="rgba(52,168,83,0.1)"/>
+            <path d="M15 24l6 6 12-12" stroke="#34A853" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem", lineHeight: 1.6 }}>
+            If an account exists for <strong>{email}</strong>, we've sent a password reset link.
           </p>
-
-          {sent ? (
-            <div style={{ textAlign: "center", padding: "20px 0" }}>
-              <div style={{ fontSize: "48px", marginBottom: "16px" }}>
-                <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-                  <circle cx="24" cy="24" r="24" fill="#e8f5e9"/>
-                  <path d="M15 24l6 6 12-12" stroke="#34A853" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-              </div>
-              <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem", lineHeight: 1.6 }}>
-                If an account exists for <strong>{email}</strong>, we've sent a password reset link. Check your inbox.
-              </p>
-              <Link to="/login" style={{ color: "var(--msu-blue)", fontWeight: 600, textDecoration: "none", display: "inline-block", marginTop: "16px" }}>
-                Back to Login
-              </Link>
-            </div>
-          ) : (
-            <form onSubmit={handleSubmit}>
-              {error && <div className="error-message">{error}</div>}
-
-              <div className="input-group">
-                <label>Email Address</label>
-                <div className="input-wrapper">
-                  <span className="input-icon">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4l6 4 6-4v8H2V4zm0-1h12a1 1 0 011 1v8a1 1 0 01-1 1H2a1 1 0 01-1-1V4a1 1 0 011-1z"/></svg>
-                  </span>
-                  <input
-                    type="email"
-                    placeholder="your-email@morgan.edu"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-
-              <button type="submit" className="login-btn" disabled={loading}>
-                {loading ? "Sending..." : "Send Reset Link"}
-              </button>
-
-              <p className="signup-link">
-                Remember your password? <Link to="/login">Log in</Link>
-              </p>
-            </form>
-          )}
+          <p style={{ color: "var(--text-secondary)", fontSize: "0.75rem", lineHeight: 1.5, marginTop: "12px", background: "var(--bg-secondary, #f5f5f5)", padding: "10px 14px", borderRadius: "8px" }}>
+            Morgan State emails may take up to 10 minutes due to institutional email security. Check your spam folder if you don't see it. Gmail and other providers should arrive instantly.
+          </p>
+          <Link className="auth__link" to="/login" style={{ marginTop: "12px", display: "inline-block" }}>
+            Back to Login
+          </Link>
         </div>
-      </div>
-    </div>
+      ) : (
+        <form onSubmit={handleSubmit}>
+          {error && <div className="auth__error">{error}</div>}
+
+          <div className="field">
+            <label htmlFor="reset-email">Email Address</label>
+            <div className="field__control">
+              <EnvelopeIcon className="field__icon" aria-hidden="true" />
+              <input
+                id="reset-email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@morgan.edu"
+                autoComplete="email"
+                required
+              />
+            </div>
+          </div>
+
+          <button type="submit" className="auth__submit" disabled={loading}>
+            {loading ? "Sending..." : "Send Reset Link"}
+          </button>
+        </form>
+      )}
+    </AuthLayout>
   );
 }

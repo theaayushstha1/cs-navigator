@@ -581,6 +581,73 @@ body.sidebar-collapsed .chat-input-container {
   }
 }
 
+/* Model toggle button */
+.model-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-secondary, #f0f2f5);
+  border: 1.5px solid var(--border-color, #ddd);
+  border-radius: 20px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  flex-shrink: 0;
+  min-width: 36px;
+  height: 30px;
+}
+
+.model-toggle-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--text-secondary, #666);
+  transition: color 0.25s ease;
+  user-select: none;
+}
+
+.model-toggle:hover:not(:disabled) {
+  border-color: var(--msu-blue);
+  background: rgba(66, 133, 244, 0.06);
+  transform: scale(1.05);
+}
+
+.model-toggle:hover:not(:disabled) .model-toggle-label {
+  color: var(--msu-blue);
+}
+
+.model-toggle.pro {
+  background: linear-gradient(135deg, rgba(66, 133, 244, 0.1), rgba(102, 51, 204, 0.1));
+  border-color: var(--msu-blue);
+}
+
+.model-toggle.pro .model-toggle-label {
+  background: linear-gradient(135deg, #4285f4, #6633cc);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.model-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+[data-theme="dark"] .model-toggle {
+  background: var(--bg-secondary, #2a2a2a);
+  border-color: var(--border-color, #444);
+}
+
+[data-theme="dark"] .model-toggle-label {
+  color: var(--text-secondary, #999);
+}
+
+[data-theme="dark"] .model-toggle.pro {
+  background: linear-gradient(135deg, rgba(66, 133, 244, 0.15), rgba(102, 51, 204, 0.15));
+  border-color: rgba(66, 133, 244, 0.5);
+}
+
 .action-btn-icon {
   background: transparent;
   border: none;

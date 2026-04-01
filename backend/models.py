@@ -129,6 +129,9 @@ class CanvasStudentData(Base):
     # Grades per course (JSON dict)
     grades = Column(Text, nullable=True)  # {course_id: {current_score, current_grade}}
 
+    # Full gradebook (JSON dict keyed by course_id)
+    gradebook = Column(Text, nullable=True)  # {course_id: {grading_type, assignment_groups, assignments}}
+
     # Metadata
     synced_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

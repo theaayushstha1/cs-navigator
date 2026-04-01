@@ -72,6 +72,9 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("idle"); // idle, listening, processing, speaking
 
+  // Model selector state
+  const [selectedModel, setSelectedModel] = useState("inav-1.0"); // "inav-1.0" (quick, default) or "inav-1.1" (pro)
+
   // 🔥 Feedback State
   const [feedbackMenuOpen, setFeedbackMenuOpen] = useState(null); // index of message with open menu
   const [feedbackGiven, setFeedbackGiven] = useState({}); // {messageIndex: 'helpful' | 'not_helpful' | 'reported'}
@@ -493,7 +496,8 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
         },
         body: JSON.stringify({
           query: transcript,
-          session_id: sessionId || "default"
+          session_id: sessionId || "default",
+          model: selectedModel
         })
       });
 
@@ -730,7 +734,8 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
             body: JSON.stringify({
                 query: finalMessage,
                 session_id: sessionId || "default",
-                skip_cache: skipCache
+                skip_cache: skipCache,
+                model: selectedModel
             }),
         });
 
@@ -818,8 +823,10 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
             const newMessages = [...prev];
             const lastMsg = newMessages[newMessages.length - 1];
             if (lastMsg.isStreaming) {
+                const cleanText = (lastMsg.text || "").replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/g, "").trim();
                 newMessages[newMessages.length - 1] = {
                     ...lastMsg,
+                    text: cleanText || "I'm sorry, I couldn't generate a response. Please try rephrasing your question.",
                     isStreaming: false
                 };
             }
@@ -1302,7 +1309,18 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 <BsArrowUpCircleFill size={24} />
             </button>
 
-            {/* 🔥 Live Voice Mode Button */}
+            {/* Model toggle */}
+            <button
+                type="button"
+                className={`model-toggle ${selectedModel === 'inav-1.1' ? 'pro' : ''}`}
+                onClick={() => setSelectedModel(prev => prev === 'inav-1.0' ? 'inav-1.1' : 'inav-1.0')}
+                disabled={isLoading}
+                title={selectedModel === 'inav-1.0' ? 'iNav 1.0 (Quick) — click for Pro' : 'iNav 1.1 (Pro) — click for Quick'}
+            >
+                <span className="model-toggle-label">{selectedModel === 'inav-1.0' ? '1.0' : '1.1'}</span>
+            </button>
+
+            {/* Live Voice Mode Button */}
             <button
                 type="button"
                 className={`live-mode-btn ${isVoiceMode ? 'active' : ''}`}

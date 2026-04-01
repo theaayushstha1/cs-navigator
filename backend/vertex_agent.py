@@ -66,8 +66,8 @@ def _create_session(user_id: str, state: Optional[dict] = None) -> str:
     return ""
 
 
-def _get_valid_session(user_id: str, context: str = "") -> Optional[str]:
-    """Return a cached session ID if it exists, hasn't expired, and context matches."""
+def _get_valid_session(user_id: str, context: str = "", model: str = "") -> Optional[str]:
+    """Return a cached session ID if it exists, hasn't expired, and context/model matches."""
     cached = _session_cache.get(user_id)
     if not cached:
         return None
@@ -85,76 +85,102 @@ def _get_valid_session(user_id: str, context: str = "") -> Optional[str]:
         _session_cache.pop(user_id, None)
         return None
 
+    if cached.get("model", "") != model:
+        print(f"   ADK session model changed ({cached.get('model', '')} -> {model}), creating new")
+        _session_cache.pop(user_id, None)
+        return None
+
     print(f"   ADK session reused: {cached['session_id']} (age={age:.0f}s)")
     return cached["session_id"]
 
 
-def _cache_session(user_id: str, session_id: str, context: str = ""):
+def _cache_session(user_id: str, session_id: str, context: str = "", model: str = ""):
     """Store a session in the reuse cache."""
     _session_cache[user_id] = {
         "session_id": session_id,
         "created_at": time_module.time(),
         "context_hash": _compute_context_hash(context),
+        "model": model,
     }
 
 
-def query_agent(query: str, user_id: str = "default", context: str = "") -> str:
+def query_agent(query: str, user_id: str = "default", context: str = "", model: str = "", canvas_context: str = "") -> str:
     """
     Send a query to the CS Navigator agent and return the final text response.
 
-    Reuses ADK sessions when the user's DegreeWorks context hasn't changed,
-    saving ~100-200ms per request (the session creation round-trip).
+    Reuses ADK sessions when the user's DegreeWorks context hasn't changed.
+    Canvas data is sent via state_delta (volatile, changes often).
 
     Args:
         query: The user's question
         user_id: Unique user identifier
-        context: DegreeWorks student data (injected into session state, not message)
-
-    Returns:
-        The agent's text response, or an error message
+        context: DegreeWorks student data (injected into session state, stable)
+        model: Model preference ("inav-1.0" or "inav-1.1")
+        canvas_context: Canvas LMS data (sent via state_delta, volatile)
     """
-    # Try to reuse an existing valid session
-    session_id = _get_valid_session(user_id, context)
+    # Session reuse: hash only DegreeWorks (stable), NOT Canvas (volatile)
+    session_id = _get_valid_session(user_id, context, model)
 
     if not session_id:
-        # Create new session with DegreeWorks in state
-        state = {"degreeworks": context} if context else None
-        session_id = _create_session(user_id, state=state)
+        state = {}
+        if context:
+            state["degreeworks"] = context
+        if canvas_context:
+            state["canvas"] = canvas_context
+        if model:
+            state["model_preference"] = model
+        session_id = _create_session(user_id, state=state if state else None)
         if not session_id:
             return "The AI agent is currently unavailable. Please try again in a moment."
-        _cache_session(user_id, session_id, context)
+        _cache_session(user_id, session_id, context, model)
 
-    return _run_query(query, user_id, session_id, context=context)
+    return _run_query(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context)
 
 
-def _run_query(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "") -> str:
+def _run_query(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = "") -> str:
     """Send a query to the ADK and parse the SSE response."""
     try:
+        payload = {
+            "app_name": ADK_APP_NAME,
+            "user_id": user_id,
+            "session_id": session_id,
+            "new_message": {
+                "role": "user",
+                "parts": [{"text": message}],
+            },
+        }
+        # Send volatile data via state_delta (Canvas changes often, model per-request)
+        state_delta = {}
+        if model:
+            state_delta["model_preference"] = model
+        if canvas_context:
+            state_delta["canvas"] = canvas_context
+        if state_delta:
+            payload["state_delta"] = state_delta
+
         resp = requests.post(
             f"{ADK_BASE_URL}/run_sse",
             headers={"Content-Type": "application/json"},
-            json={
-                "app_name": ADK_APP_NAME,
-                "user_id": user_id,
-                "session_id": session_id,
-                "new_message": {
-                    "role": "user",
-                    "parts": [{"text": message}],
-                },
-            },
+            json=payload,
             stream=True,
             timeout=120,
         )
 
-        # Handle "Session not found": recreate with DegreeWorks state and retry once
+        # Handle "Session not found": recreate with DegreeWorks + Canvas state and retry once
         if resp.status_code == 404 and not retried:
             print(f"   ADK session {session_id} not found, creating a new one...")
             _session_cache.pop(user_id, None)
-            state = {"degreeworks": context} if context else None
-            new_session_id = _create_session(user_id, state=state)
+            state = {}
+            if context:
+                state["degreeworks"] = context
+            if canvas_context:
+                state["canvas"] = canvas_context
+            if model:
+                state["model_preference"] = model
+            new_session_id = _create_session(user_id, state=state if state else None)
             if new_session_id:
-                _cache_session(user_id, new_session_id, context)
-                return _run_query(message, user_id, new_session_id, retried=True, context=context)
+                _cache_session(user_id, new_session_id, context, model)
+                return _run_query(message, user_id, new_session_id, retried=True, context=context, model=model, canvas_context=canvas_context)
             return "The AI agent is currently unavailable. Please try again in a moment."
 
         resp.raise_for_status()
@@ -231,57 +257,75 @@ def reset_session(user_id: str) -> None:
     _session_cache.pop(user_id, None)
 
 
-def query_agent_stream(query: str, user_id: str = "default", context: str = ""):
+def query_agent_stream(query: str, user_id: str = "default", context: str = "", model: str = "", canvas_context: str = ""):
     """
     Send a query to the CS Navigator agent and stream text chunks as they arrive.
 
-    Reuses ADK sessions when context matches. DegreeWorks via session state.
-
-    Yields:
-        dict with 'type' ('chunk', 'done', 'error') and 'content' (text chunk or error message)
+    Session reuse based on DegreeWorks (stable). Canvas sent via state_delta (volatile).
     """
-    # Try to reuse an existing valid session
-    session_id = _get_valid_session(user_id, context)
+    # Session reuse: hash only DegreeWorks (stable), NOT Canvas
+    session_id = _get_valid_session(user_id, context, model)
 
     if not session_id:
-        state = {"degreeworks": context} if context else None
-        session_id = _create_session(user_id, state=state)
+        state = {}
+        if context:
+            state["degreeworks"] = context
+        if canvas_context:
+            state["canvas"] = canvas_context
+        if model:
+            state["model_preference"] = model
+        session_id = _create_session(user_id, state=state if state else None)
         if not session_id:
             yield {"type": "error", "content": "The AI agent is currently unavailable. Please try again in a moment."}
             return
-        _cache_session(user_id, session_id, context)
+        _cache_session(user_id, session_id, context, model)
 
-    yield from _run_query_stream(query, user_id, session_id, context=context)
+    yield from _run_query_stream(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context)
 
 
-def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool = False, context: str = ""):
+def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = ""):
     """Stream query results from ADK, yielding text chunks as they arrive."""
     try:
+        payload = {
+            "app_name": ADK_APP_NAME,
+            "user_id": user_id,
+            "session_id": session_id,
+            "new_message": {
+                "role": "user",
+                "parts": [{"text": message}],
+            },
+        }
+        state_delta = {}
+        if model:
+            state_delta["model_preference"] = model
+        if canvas_context:
+            state_delta["canvas"] = canvas_context
+        if state_delta:
+            payload["state_delta"] = state_delta
+
         resp = requests.post(
             f"{ADK_BASE_URL}/run_sse",
             headers={"Content-Type": "application/json"},
-            json={
-                "app_name": ADK_APP_NAME,
-                "user_id": user_id,
-                "session_id": session_id,
-                "new_message": {
-                    "role": "user",
-                    "parts": [{"text": message}],
-                },
-            },
+            json=payload,
             stream=True,
             timeout=120,
         )
 
-        # Handle "Session not found": recreate with DegreeWorks state and retry once
+        # Handle "Session not found": recreate with DegreeWorks + Canvas state and retry once
         if resp.status_code == 404 and not retried:
             print(f"   ADK session {session_id} not found, creating a new one...")
             _session_cache.pop(user_id, None)
-            state = {"degreeworks": context} if context else None
-            new_session_id = _create_session(user_id, state=state)
+            state = {}
+            if context:
+                state["degreeworks"] = context
+            if canvas_context:
+                state["canvas"] = canvas_context
+            if model:
+                state["model_preference"] = model
+            new_session_id = _create_session(user_id, state=state if state else None)
             if new_session_id:
-                _cache_session(user_id, new_session_id, context)
-                yield from _run_query_stream(message, user_id, new_session_id, retried=True, context=context)
+                _cache_session(user_id, new_session_id, context, model)
+                yield from _run_query_stream(message, user_id, new_session_id, retried=True, context=context, model=model, canvas_context=canvas_context)
                 return
             yield {"type": "error", "content": "The AI agent is currently unavailable. Please try again in a moment."}
             return

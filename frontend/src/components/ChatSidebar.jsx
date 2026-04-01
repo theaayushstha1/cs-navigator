@@ -4,6 +4,8 @@ import { toast } from 'sonner';
 import { FaPlus } from "@react-icons/all-files/fa/FaPlus";
 import { FaSearch } from "@react-icons/all-files/fa/FaSearch";
 import { FaBook } from "@react-icons/all-files/fa/FaBook";
+import { FaChartLine } from "@react-icons/all-files/fa/FaChartLine";
+import { FaProjectDiagram } from "@react-icons/all-files/fa/FaProjectDiagram";
 import { FaTrash } from "@react-icons/all-files/fa/FaTrash";
 import { FaUser } from "@react-icons/all-files/fa/FaUser";
 import { FaSignOutAlt } from "@react-icons/all-files/fa/FaSignOutAlt";
@@ -382,6 +384,22 @@ export default function ChatSidebar({
         >
           <FaBook size={16} />
           <span>Curriculum</span>
+        </button>
+        <button
+          className="sidebar-action-btn curriculum-link"
+          onClick={(e) => { e.preventDefault(); navigate("/grade-analysis"); }}
+          title="Grade analysis and strategy"
+        >
+          <FaChartLine size={16} />
+          <span>Grade Surgeon</span>
+        </button>
+        <button
+          className="sidebar-action-btn curriculum-link"
+          onClick={(e) => { e.preventDefault(); navigate("/ripple-effect"); }}
+          title="Prerequisite dependency map"
+        >
+          <FaProjectDiagram size={16} />
+          <span>Ripple Effect</span>
         </button>
       </div>
 

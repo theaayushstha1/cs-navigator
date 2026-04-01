@@ -19,16 +19,18 @@ from sqlalchemy import func
 
 log = logging.getLogger(__name__)
 
-# Patterns that indicate the bot couldn't answer (KB miss)
+# Patterns that indicate the bot genuinely couldn't answer (KB miss).
+# IMPORTANT: These must NOT match normal responses that happen to include
+# contact info as a helpful footer. Only match when the bot is admitting
+# it doesn't have the answer.
 FAILED_RESPONSE_PATTERNS = re.compile(
-    r"based on the information I have access to|"
-    r"contact the CS department at|"
-    r"I (?:don't|do not) have (?:specific |enough )?information|"
-    r"I (?:couldn't|could not) find|"
+    r"I (?:don't|do not) have (?:specific |enough )?information (?:about|on|regarding)|"
+    r"I (?:couldn't|could not) find (?:any |specific )?(?:information|details|data) (?:about|on|regarding)|"
     r"not (?:available|found) in (?:my|the) knowledge base|"
-    r"I (?:don't|do not) have access to|"
-    r"I am unable to (?:determine|find|provide)|"
-    r"For more details, contact",
+    r"I (?:don't|do not) have access to (?:that|this|your)|"
+    r"I am unable to (?:determine|find|provide) (?:that|this|specific)|"
+    r"I'm sorry,? I (?:don't|do not) (?:have|know)|"
+    r"I couldn't generate a response",
     re.IGNORECASE
 )
 

@@ -57,11 +57,25 @@ UNIFIED_KB_ID = os.getenv(
     f'{DS_PREFIX}/csnavigator-kb-v7',
 )
 
-# Model: 2.0-flash is the sweet spot (fast, no thinking overhead, good accuracy)
-AGENT_MODEL = os.getenv('AGENT_MODEL', 'gemini-2.0-flash')
+# Default model (fallback when no preference set)
+AGENT_MODEL = os.getenv('AGENT_MODEL', 'gemini-2.5-flash')
+
+# Model selector: maps frontend choice to Gemini model ID
+MODEL_MAP = {
+    "inav-1.0": "gemini-2.0-flash",
+    "inav-1.1": "gemini-2.5-flash",
+}
 
 # Single search tool for the unified knowledge base
 unified_kb = VertexAiSearchTool(data_store_id=UNIFIED_KB_ID)
+
+
+def _select_model(callback_context, llm_request):
+    """Override model per-request based on session state 'model_preference'."""
+    pref = callback_context.state.get("model_preference", "")
+    if pref in MODEL_MAP:
+        llm_request.model = MODEL_MAP[pref]
+    return None
 
 
 # =============================================================================
@@ -122,8 +136,39 @@ def _greeting_fast_path(callback_context: CallbackContext) -> Optional[types.Con
 # =============================================================================
 # DYNAMIC INSTRUCTION (injects DegreeWorks data from session state)
 # =============================================================================
+def _get_semester_context():
+    """Calculate current and next semester dynamically based on today's date."""
+    from datetime import date
+    today = date.today()
+    month, year = today.month, today.year
+
+    # Spring: Jan-May, Summer: Jun-Jul, Fall: Aug-Dec
+    if month <= 5:
+        current = f"Spring {year}"
+        next_sem = f"Summer {year}"
+        next_next = f"Fall {year}"
+    elif month <= 7:
+        current = f"Summer {year}"
+        next_sem = f"Fall {year}"
+        next_next = f"Spring {year + 1}"
+    else:
+        current = f"Fall {year}"
+        next_sem = f"Spring {year + 1}"
+        next_next = f"Summer {year + 1}"
+
+    return (
+        f"\nTEMPORAL CONTEXT (auto-calculated, today is {today.strftime('%B %d, %Y')}):\n"
+        f"- Current semester: **{current}**\n"
+        f"- Next semester: **{next_sem}**\n"
+        f"- Following semester: **{next_next}**\n"
+        f"When students say 'next semester', 'what's offered next', or 'upcoming', "
+        f"they mean **{next_sem}**. Search for 'course schedule {next_sem}'.\n"
+        f"When they say 'this semester' or 'current', they mean **{current}**.\n"
+    )
+
+
 def _build_instruction(ctx):
-    """Build the full instruction, injecting DegreeWorks data if available."""
+    """Build the full instruction, injecting DegreeWorks data and temporal context."""
     dw_data = ctx.state.get("degreeworks", "")
     dw_section = ""
     if dw_data:
@@ -136,16 +181,26 @@ def _build_instruction(ctx):
             f"This is the student's own verified data. Use it to personalize every answer.\n"
             f"Reference their GPA, completed courses, in-progress courses, and remaining requirements.\n"
             f"Do NOT recommend courses they have already completed or are currently taking.\n\n"
-            f"CRITICAL: You have TWO data sources and you must use BOTH on EVERY query:\n"
-            f"  1. The student's DegreeWorks record above (personal academic data)\n"
-            f"  2. The knowledge base (university info, faculty details, policies, courses, resources)\n"
-            f"ALWAYS search the knowledge base even when answering DegreeWorks questions.\n"
-            f"DegreeWorks tells you WHAT (courses, GPA, advisor name). The KB tells you the details\n"
-            f"(emails, phone numbers, office hours, prerequisites, policies, deadlines, etc.).\n"
+            f"CRITICAL: You have MULTIPLE data sources and you must use ALL on EVERY query:\n"
+            f"  1. The student's DegreeWorks record (GPA, completed/remaining courses, advisor)\n"
+            f"  2. The student's Canvas LMS data if present (current grades, upcoming assignments, missing work, deadlines)\n"
+            f"  3. The knowledge base (university info, faculty details, policies, courses, resources)\n"
+            f"ALWAYS search the knowledge base even when answering personal data questions.\n"
+            f"DegreeWorks tells you degree progress. Canvas tells you current semester performance.\n"
+            f"The KB tells you the details (emails, phone numbers, office hours, prerequisites, policies).\n"
+            f"When a student asks about their grades, assignments, or deadlines, use the Canvas data.\n"
+            f"When they ask about degree progress or remaining courses, use DegreeWorks.\n"
             f"Never say 'I don't have that information' if it could be in the KB. Search first."
         )
 
-    return f"{BASE_INSTRUCTION}{dw_section}"
+    # Canvas data from separate state key (sent via state_delta, volatile)
+    canvas_data = ctx.state.get("canvas", "")
+    canvas_section = ""
+    if canvas_data:
+        canvas_section = f"\n{canvas_data}"
+
+    semester_ctx = _get_semester_context()
+    return f"{BASE_INSTRUCTION}{semester_ctx}{dw_section}{canvas_section}"
 
 
 # =============================================================================
@@ -184,7 +239,7 @@ You can help with ALL of these areas (search the KB for each):
 - **Course schedules** for Spring 2025, Summer 2025, Fall 2025, Spring 2026, and Fall 2026 including section numbers, instructors, day/time, room, and enrollment
 
 IMPORTANT: When students ask about course schedules, who teaches a course, when a course is offered, or class times:
-- Search for "course schedule [semester]" (e.g., "course schedule Spring 2026")
+- Search for "course schedule [semester]" (e.g., "course schedule Fall 2026")
 - Also try searching for the instructor name or course code directly
 - NEVER dump the entire schedule. Only show the specific courses/sections relevant to the question.
 - When asked "what does Dr. X teach", find ONLY that instructor's sections and list them concisely.
@@ -254,6 +309,7 @@ root_agent = LlmAgent(
     instruction=_build_instruction,
     tools=[unified_kb],
     before_agent_callback=_greeting_fast_path,
+    before_model_callback=_select_model,
     generate_content_config=types.GenerateContentConfig(
         temperature=0.1,
         max_output_tokens=1024,

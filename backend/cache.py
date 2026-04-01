@@ -611,12 +611,22 @@ query_cache = MultiTierCache()
 # HELPER FUNCTIONS (Backwards Compatible)
 # ============================================================================
 
-def get_context_hash(user_id: int = None, has_degreeworks: bool = False) -> str:
+def get_context_hash(user_id: int = None, has_degreeworks: bool = False, model: str = "", has_canvas: bool = False) -> str:
     """
     Generate a context hash for cache key differentiation.
+    Includes model and data sources so different contexts get separate cache entries.
     """
-    if has_degreeworks and user_id:
-        return hashlib.md5(f"user:{user_id}".encode()).hexdigest()[:8]
+    parts = []
+    if (has_degreeworks or has_canvas) and user_id:
+        parts.append(f"user:{user_id}")
+    if has_degreeworks:
+        parts.append("dw")
+    if has_canvas:
+        parts.append("canvas")
+    if model:
+        parts.append(f"m:{model}")
+    if parts:
+        return hashlib.md5(":".join(parts).encode()).hexdigest()[:8]
     return ""
 
 

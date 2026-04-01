@@ -8,6 +8,7 @@ import { FaSync } from "@react-icons/all-files/fa/FaSync";
 import { FaCalendarAlt } from "@react-icons/all-files/fa/FaCalendarAlt";
 import { FaChartLine } from "@react-icons/all-files/fa/FaChartLine";
 import { getApiBase } from "../lib/apiBase";
+import MomentumScore from "./MomentumScore";
 import "./MyClassesPage.css";
 
 const API_BASE = getApiBase();
@@ -142,6 +143,8 @@ export default function MyClassesPage() {
           </div>
         )}
       </div>
+
+      <MomentumScore />
 
       <nav className="mc-nav">
         {["overview", "assignments", "grades"].map(t => (

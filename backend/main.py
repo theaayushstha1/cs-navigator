@@ -24,8 +24,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse, HTMLResponse
+from pydantic import BaseModel, field_validator
 from collections import Counter
 import io
 from dotenv import load_dotenv
@@ -430,7 +430,7 @@ async def lifespan(app):
 
 app = FastAPI(title="CS Chatbot API", version="2.1.0", lifespan=lifespan)
 
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5175,http://127.0.0.1:3000,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:8000,https://inavigator.ai,https://csnavigator-frontend-750361124802.us-central1.run.app").split(",")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5175,http://127.0.0.1:3000,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:8000,https://inavigator.ai,https://cs.inavigator.ai,https://api.inavigator.ai,https://csnavigator-frontend-750361124802.us-central1.run.app").split(",")
 print(f"[CORS] Allowed origins: {ALLOWED_ORIGINS}")
 
 app.add_middleware(
@@ -521,10 +521,20 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+VALID_MODELS = {"", "inav-1.0", "inav-1.1"}
+
 class QueryRequest(BaseModel):
     query: str
-    session_id: str = "default" #  NEW: Accept session ID
-    skip_cache: bool = False     #  NEW: Bypass cache on regenerate
+    session_id: str = "default"
+    skip_cache: bool = False
+    model: str = ""              # "inav-1.0" (fast) or "inav-1.1" (pro)
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def validate_model(cls, v):
+        if v not in VALID_MODELS:
+            return ""
+        return v
 
 class GuestQueryRequest(BaseModel):
     query: str
@@ -743,6 +753,96 @@ def load_json_documents(paths: List[str]) -> List[Dict[str,Any]]:
     return docs
 
 # ==============================================================================
+# 7b. ROOT DASHBOARD - Show endpoints & recent logs
+# ==============================================================================
+import logging
+from collections import deque
+
+# In-memory log buffer (last 200 log lines)
+_log_buffer = deque(maxlen=200)
+
+class BufferHandler(logging.Handler):
+    def emit(self, record):
+        _log_buffer.append(self.format(record))
+
+_buf_handler = BufferHandler()
+_buf_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+logging.getLogger().addHandler(_buf_handler)
+logging.getLogger("uvicorn.access").addHandler(_buf_handler)
+logging.getLogger("uvicorn.error").addHandler(_buf_handler)
+
+def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    db: Session = Depends(get_db)
+) -> Optional[Dict[str, Any]]:
+    """Like get_current_user but returns None instead of 401/403 when unauthenticated."""
+    if not credentials:
+        return None
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[ALGORITHM])
+        user_email = payload.get("email")
+        if not user_email:
+            return None
+        user = db.query(User).filter(User.email == user_email).first()
+        if not user:
+            return None
+        return {"user_id": user.id, "email": user.email, "role": user.role}
+    except JWTError:
+        return None
+
+@app.get("/", response_class=HTMLResponse)
+def root_dashboard(request: Request, user: Optional[dict] = Depends(get_optional_user)):
+    """Dashboard showing all endpoints and recent logs. Admin only, dev/staging only."""
+    if not user or user.get("role") != "admin":
+        return HTMLResponse("<h1>CSNavigator API</h1><p>Running.</p>", status_code=200)
+    # Hide logs in production unless explicitly enabled
+    show_logs = os.getenv("SHOW_DASHBOARD_LOGS", "true").lower() == "true"
+    routes = []
+    for route in request.app.routes:
+        if hasattr(route, "methods"):
+            for method in sorted(route.methods):
+                if method == "HEAD":
+                    continue
+                routes.append({"method": method, "path": route.path})
+    routes.sort(key=lambda r: (r["path"], r["method"]))
+
+    import html as _html
+    logs_html = "\n".join(
+        f"<div class='log'>{_html.escape(line)}</div>" for line in reversed(_log_buffer)
+    ) or "<div class='log dim'>No logs captured yet.</div>"
+
+    rows = "\n".join(
+        f"<tr><td class='method {r['method'].lower()}'>{r['method']}</td><td>{r['path']}</td></tr>"
+        for r in routes
+    )
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>CSNavigator API</title>
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family: 'SF Mono', 'Fira Code', monospace; background:#0d1117; color:#c9d1d9; padding:2rem; }}
+  h1 {{ color:#58a6ff; margin-bottom:.5rem; font-size:1.4rem; }}
+  h2 {{ color:#8b949e; margin:1.5rem 0 .5rem; font-size:1rem; text-transform:uppercase; letter-spacing:.1em; }}
+  .info {{ color:#8b949e; font-size:.85rem; margin-bottom:1rem; }}
+  table {{ border-collapse:collapse; width:100%; max-width:700px; }}
+  td {{ padding:4px 12px; border-bottom:1px solid #21262d; font-size:.85rem; }}
+  .method {{ font-weight:bold; width:60px; }}
+  .get {{ color:#3fb950; }}  .post {{ color:#d29922; }}  .put {{ color:#58a6ff; }}  .delete {{ color:#f85149; }}
+  #logs {{ background:#161b22; border:1px solid #30363d; border-radius:6px; padding:1rem; max-height:500px; overflow-y:auto; margin-top:.5rem; }}
+  .log {{ font-size:.78rem; padding:2px 0; border-bottom:1px solid #21262d; white-space:pre-wrap; word-break:break-all; }}
+  .dim {{ color:#484f58; }}
+  .refresh {{ color:#58a6ff; text-decoration:none; font-size:.85rem; }}
+</style></head><body>
+  <h1>CSNavigator API v2.1.0</h1>
+  <div class="info">Backend is running. {len(routes)} endpoints registered.</div>
+
+  <h2>Endpoints</h2>
+  <table>{rows}</table>
+
+  {'<h2>Recent Logs <a class="refresh" href="/">refresh</a></h2><div id="logs">' + logs_html + '</div>' if show_logs else '<p class="dim">Logs hidden in production. Set SHOW_DASHBOARD_LOGS=true to enable.</p>'}
+</body></html>"""
+
+# ==============================================================================
 # 8. API ENDPOINTS
 # ==============================================================================
 
@@ -841,8 +941,10 @@ async def reset_password(request: Request, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.reset_token == token).first()
     if not user:
         raise HTTPException(status_code=400, detail="Invalid or expired reset link")
-    if user.reset_token_expires and user.reset_token_expires < datetime.now(timezone.utc):
-        raise HTTPException(status_code=400, detail="Reset link has expired. Request a new one.")
+    if user.reset_token_expires:
+        expires = user.reset_token_expires if user.reset_token_expires.tzinfo else user.reset_token_expires.replace(tzinfo=timezone.utc)
+        if expires < datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="Reset link has expired. Request a new one.")
 
     user.password_hash = hash_password(new_password)
     user.reset_token = None
@@ -2295,6 +2397,7 @@ async def sync_canvas_data(
                     existing.upcoming_assignments = json.dumps(data.get("assignments", []))
                     existing.missing_assignments = json.dumps(data.get("missing", []))
                     existing.grades = json.dumps(data.get("grades", {}))
+                    existing.gradebook = json.dumps(data.get("gradebook", {}))
                     existing.updated_at = datetime.now(timezone.utc)
                 else:
                     canvas_record = CanvasStudentData(
@@ -2305,6 +2408,7 @@ async def sync_canvas_data(
                         upcoming_assignments=json.dumps(data.get("assignments", [])),
                         missing_assignments=json.dumps(data.get("missing", [])),
                         grades=json.dumps(data.get("grades", {})),
+                        gradebook=json.dumps(data.get("gradebook", {})),
                     )
                     db.add(canvas_record)
                 db.commit()
@@ -2348,6 +2452,7 @@ async def get_canvas_data(user: dict = Depends(get_current_user), db: Session = 
         "upcoming_assignments": json.loads(canvas.upcoming_assignments) if canvas.upcoming_assignments else [],
         "missing_assignments": json.loads(canvas.missing_assignments) if canvas.missing_assignments else [],
         "grades": json.loads(canvas.grades) if canvas.grades else {},
+        "gradebook": json.loads(canvas.gradebook) if canvas.gradebook else {},
         "synced_at": canvas.synced_at.isoformat() if canvas.synced_at else None,
         "updated_at": canvas.updated_at.isoformat() if canvas.updated_at else None,
     }
@@ -2361,6 +2466,84 @@ async def disconnect_canvas(user: dict = Depends(get_current_user), db: Session 
         db.delete(canvas)
         db.commit()
     return {"success": True, "message": "Canvas disconnected"}
+
+
+# ==============================================================================
+# MOMENTUM SCORE - Academic Performance Index
+# ==============================================================================
+from services.canvas_analytics import compute_momentum_score
+
+@app.get("/api/momentum-score")
+async def momentum_score(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Compute academic momentum score from Canvas + DegreeWorks + Banner data."""
+    canvas = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user["user_id"]).first()
+    dw = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
+    banner = db.query(BannerStudentData).filter(BannerStudentData.user_id == user["user_id"]).first()
+
+    canvas_dict = {
+        "courses": canvas.courses,
+        "gradebook": canvas.gradebook,
+        "missing_assignments": canvas.missing_assignments,
+    } if canvas else None
+
+    dw_dict = {
+        "overall_gpa": dw.overall_gpa,
+        "total_credits_earned": dw.total_credits_earned,
+        "credits_required": dw.credits_required,
+        "classification": dw.classification,
+    } if dw else None
+
+    banner_dict = {
+        "cumulative_gpa": banner.cumulative_gpa,
+    } if banner else None
+
+    return compute_momentum_score(canvas_dict, dw_dict, banner_dict)
+
+
+# ==============================================================================
+# RIPPLE EFFECT - Prerequisite Dependency Graph
+# ==============================================================================
+from services.prereq_engine import build_prerequisite_graph
+
+@app.get("/api/ripple-effect")
+async def ripple_effect(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get prerequisite dependency graph with student status overlay."""
+    dw_dict = await asyncio.to_thread(_fetch_dw_sync, user["user_id"])
+    canvas_dict = await asyncio.to_thread(_fetch_canvas_sync, user["user_id"])
+    return build_prerequisite_graph(dw_dict, canvas_dict)
+
+
+# ==============================================================================
+# GRADE SURGEON - Canvas Grade Analysis
+# ==============================================================================
+from services.canvas_analytics import analyze_course_grade, get_all_courses_summary, parse_gradebook
+
+@app.get("/api/grade-analysis")
+async def grade_analysis_all(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get grade analysis summary for all courses."""
+    canvas = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user["user_id"]).first()
+    if not canvas or not canvas.gradebook:
+        raise HTTPException(404, "No gradebook data. Please sync Canvas first.")
+    gradebook = parse_gradebook(canvas.gradebook)
+    courses = json.loads(canvas.courses) if canvas.courses else []
+    return {
+        "courses": get_all_courses_summary(gradebook, courses),
+        "synced_at": canvas.synced_at.isoformat() if canvas.synced_at else None,
+        "updated_at": canvas.updated_at.isoformat() if canvas.updated_at else None,
+    }
+
+@app.get("/api/grade-analysis/{course_id}")
+async def grade_analysis_course(course_id: str, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get detailed grade analysis for a specific course."""
+    canvas = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user["user_id"]).first()
+    if not canvas or not canvas.gradebook:
+        raise HTTPException(404, "No gradebook data. Please sync Canvas first.")
+    gradebook = parse_gradebook(canvas.gradebook)
+    if course_id not in gradebook:
+        raise HTTPException(404, f"Course {course_id} not found in gradebook.")
+    courses = json.loads(canvas.courses) if canvas.courses else []
+    course_name = next((c.get("name", "") for c in courses if str(c.get("id", "")) == course_id), "Unknown")
+    return analyze_course_grade(gradebook[course_id], course_name)
 
 
 # ==============================================================================
@@ -2412,6 +2595,34 @@ def _fetch_dw_sync(user_id: int) -> Optional[dict]:
         db.close()
 
 
+def _fetch_canvas_sync(user_id: int) -> Optional[dict]:
+    """Fetch Canvas LMS data in a separate DB session for parallel execution."""
+    db = SessionLocal()
+    try:
+        canvas = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user_id).first()
+        if not canvas:
+            return None
+        return {
+            "courses": canvas.courses,
+            "upcoming_assignments": canvas.upcoming_assignments,
+            "missing_assignments": canvas.missing_assignments,
+            "grades": canvas.grades,
+            "gradebook": canvas.gradebook,
+            "synced_at": str(canvas.synced_at) if canvas.synced_at else None,
+            "updated_at": str(canvas.updated_at) if canvas.updated_at else None,
+        }
+    finally:
+        db.close()
+
+
+# Context builders extracted to services/context_builders.py
+from services.context_builders import (
+    sanitize_canvas_field as _sanitize_canvas_field,
+    format_short_date as _format_short_date,
+    build_canvas_context as _build_canvas_context,
+)
+
+
 def _fetch_history_sync(user_id: int, session_id: str, limit: int = 10) -> list:
     """Fetch chat history in a separate DB session for parallel execution."""
     db = SessionLocal()
@@ -2426,139 +2637,10 @@ def _fetch_history_sync(user_id: int, session_id: str, limit: int = 10) -> list:
         db.close()
 
 
-def _build_student_context(dw: dict) -> str:
-    """Build the DegreeWorks student context string from a dict of fields.
-    Shared between /chat, /chat/stream to avoid duplication."""
-    ctx = "\n" + "="*60 + "\n"
-    ctx += "THIS STUDENT'S DEGREEWORKS ACADEMIC RECORD:\n"
-    ctx += "="*60 + "\n\n"
-
-    ctx += "STUDENT PROFILE:\n"
-    for label, key in [
-        ("Name", "student_name"), ("Student ID", "student_id"),
-        ("Classification", "classification"), ("Degree Program", "degree_program"),
-        ("Overall GPA", "overall_gpa"), ("Major GPA", "major_gpa"),
-        ("Credits Earned", "total_credits_earned"), ("Credits Required", "credits_required"),
-        ("Credits Remaining", "credits_remaining"), ("Academic Advisor", "advisor"),
-        ("Catalog Year", "catalog_year"),
-    ]:
-        val = dw.get(key)
-        if val:
-            ctx += f"- {label}: {val}\n"
-    ctx += "\n"
-
-    # Completed courses
-    if dw.get("courses_completed"):
-        try:
-            completed = json.loads(dw["courses_completed"]) if isinstance(dw["courses_completed"], str) else dw["courses_completed"]
-            if completed:
-                ctx += "ALREADY COMPLETED COURSES (DO NOT RECOMMEND THESE):\n"
-                for c in completed:
-                    ctx += f"  - {c.get('code', '')} {c.get('name', '')} (Grade: {c.get('grade', '')})\n"
-                ctx += "\n"
-        except: pass
-
-    # In-progress courses
-    if dw.get("courses_in_progress"):
-        try:
-            in_progress = json.loads(dw["courses_in_progress"]) if isinstance(dw["courses_in_progress"], str) else dw["courses_in_progress"]
-            if in_progress:
-                ctx += "CURRENTLY ENROLLED (DO NOT RECOMMEND THESE EITHER):\n"
-                for c in in_progress:
-                    ctx += f"  - {c.get('code', '')} {c.get('name', '')}\n"
-                ctx += "\n"
-        except: pass
-
-    # Remaining requirements
-    if dw.get("courses_remaining"):
-        try:
-            remaining = json.loads(dw["courses_remaining"]) if isinstance(dw["courses_remaining"], str) else dw["courses_remaining"]
-            if remaining:
-                ctx += "STILL NEEDS TO COMPLETE (PRIORITIZE THESE FOR RECOMMENDATIONS):\n"
-                for c in remaining[:10]:
-                    req = c.get('requirement', c.get('code', ''))
-                    ctx += f"  - {req}\n"
-                ctx += "\n"
-        except: pass
-
-    ctx += "INSTRUCTION: Do NOT recommend courses from the completed or enrolled lists above. Search the knowledge base for available courses.\n"
-
-    # Banner data (registration, grades, schedule)
-    banner = dw.get("banner")
-    if banner:
-        # Current Registration (schedule)
-        if banner.get("registered_courses"):
-            try:
-                courses = json.loads(banner["registered_courses"]) if isinstance(banner["registered_courses"], str) else banner["registered_courses"]
-                if courses:
-                    term = banner.get("current_term", "Current Term")
-                    ctx += f"\nCURRENT REGISTRATION ({term}):\n"
-                    for c in courses:
-                        subj = c.get("subject", "")
-                        num = c.get("number", "")
-                        title = c.get("title", "")
-                        credits = c.get("credits", "")
-                        instructor = c.get("instructor", "")
-                        times = c.get("times", "")
-                        location = c.get("location", "")
-                        parts = [f"{subj} {num} {title}".strip()]
-                        if credits: parts.append(f"{credits}cr")
-                        if times: parts.append(times)
-                        if location: parts.append(location)
-                        if instructor: parts.append(instructor)
-                        ctx += f"  - {', '.join(parts)}\n"
-                    total = banner.get("total_registered_credits")
-                    if total:
-                        ctx += f"  Total: {total} credits\n"
-                    ctx += "\n"
-            except: pass
-
-        # Grade History (recent terms)
-        if banner.get("grade_history"):
-            try:
-                history = json.loads(banner["grade_history"]) if isinstance(banner["grade_history"], str) else banner["grade_history"]
-                if history:
-                    ctx += "RECENT GRADE HISTORY:\n"
-                    for term in history[-4:]:  # Last 4 terms
-                        term_name = term.get("term", "")
-                        term_gpa = term.get("term_gpa", "")
-                        courses = term.get("courses", [])
-                        course_strs = []
-                        for c in courses[:8]:
-                            code = c.get("code", "")
-                            grade = c.get("grade", "")
-                            if code:
-                                course_strs.append(f"{code}: {grade}" if grade else code)
-                        gpa_str = f" {term_gpa} GPA" if term_gpa else ""
-                        courses_str = ", ".join(course_strs) if course_strs else ""
-                        ctx += f"  {term_name}:{gpa_str} - {courses_str}\n"
-                    ctx += "\n"
-            except: pass
-
-        # Cumulative stats from Banner (may override DegreeWorks if more recent)
-        if banner.get("cumulative_gpa"):
-            ctx += f"- Cumulative GPA (Banner): {banner['cumulative_gpa']}\n"
-        if banner.get("deans_list_terms"):
-            try:
-                dl = json.loads(banner["deans_list_terms"]) if isinstance(banner["deans_list_terms"], str) else banner["deans_list_terms"]
-                if dl:
-                    ctx += f"- Dean's List: {', '.join(dl)}\n"
-            except: pass
-
-    ctx += "="*60 + "\n\n"
-    return ctx
-
-
-def _build_conversation_context(history_dicts: list) -> str:
-    """Build conversation context string from history dicts."""
-    if not history_dicts:
-        return ""
-    ctx = "Previous conversation:\n"
-    for h in history_dicts:
-        ctx += f"User: {h['user_query']}\n"
-        ctx += f"Assistant: {h['bot_response']}\n"
-    ctx += "\n"
-    return ctx
+from services.context_builders import (
+    build_student_context as _build_student_context,
+    build_conversation_context as _build_conversation_context,
+)
 
 
 # --- CHAT ROUTES (WITH CONVERSATION MEMORY + PERSONALIZATION) ---
@@ -2573,18 +2655,47 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     file_match = re.search(r'uploads/chat_files/([^\)]+)', user_q)
     needs_history = bool(file_match) or not USE_VERTEX_AGENT  # Only needed for file uploads and legacy path
 
-    # Parallel fetch: DegreeWorks + chat history (when both needed)
-    if needs_history:
-        dw_dict, history_dicts = await asyncio.gather(
+    # Lazy-load: only fetch Canvas if query mentions grades/assignments/deadlines/course codes
+    CANVAS_KEYWORDS = {"grade", "assignment", "due", "deadline", "missing", "class",
+                       "course", "score", "submit", "canvas", "homework", "quiz",
+                       "test", "exam", "gpa", "taking", "enrolled"}
+    has_course_code = bool(re.search(r'\b[A-Z]{2,4}\s*\d{3}\b', user_q, re.IGNORECASE))
+    needs_canvas = has_course_code or any(kw in user_q.lower() for kw in CANVAS_KEYWORDS)
+
+    # Parallel fetch: DegreeWorks + Canvas (if needed) + chat history (if needed)
+    if needs_history and needs_canvas:
+        dw_result, canvas_result, history_result = await asyncio.gather(
+            asyncio.to_thread(_fetch_dw_sync, user["user_id"]),
+            asyncio.to_thread(_fetch_canvas_sync, user["user_id"]),
+            asyncio.to_thread(_fetch_history_sync, user["user_id"], session_id, 10),
+            return_exceptions=True,
+        )
+        canvas_dict = canvas_result if not isinstance(canvas_result, Exception) else None
+        history_dicts = history_result if not isinstance(history_result, Exception) else []
+    elif needs_history:
+        dw_result, history_result = await asyncio.gather(
             asyncio.to_thread(_fetch_dw_sync, user["user_id"]),
             asyncio.to_thread(_fetch_history_sync, user["user_id"], session_id, 10),
+            return_exceptions=True,
         )
-    else:
-        # Vertex path without file upload: only need DegreeWorks
-        dw_dict = await asyncio.to_thread(_fetch_dw_sync, user["user_id"])
+        canvas_dict = None
+        history_dicts = history_result if not isinstance(history_result, Exception) else []
+    elif needs_canvas:
+        dw_result, canvas_result = await asyncio.gather(
+            asyncio.to_thread(_fetch_dw_sync, user["user_id"]),
+            asyncio.to_thread(_fetch_canvas_sync, user["user_id"]),
+            return_exceptions=True,
+        )
+        canvas_dict = canvas_result if not isinstance(canvas_result, Exception) else None
         history_dicts = []
+    else:
+        dw_result = await asyncio.to_thread(_fetch_dw_sync, user["user_id"])
+        canvas_dict = None
+        history_dicts = []
+    dw_dict = dw_result if not isinstance(dw_result, Exception) else None
 
     student_context = _build_student_context(dw_dict) if dw_dict else ""
+    canvas_context = _build_canvas_context(canvas_dict) if canvas_dict else ""
     conversation_context = _build_conversation_context(history_dicts)
 
     if file_match and USE_VERTEX_AGENT:
@@ -2597,11 +2708,13 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
             clean_query = re.sub(r'\[.*?\]\(.*?\)', '', user_q).strip()
             if not clean_query: clean_query = "Summarize this file."
 
-            file_context = f"{student_context}{conversation_context}File Content:\n{file_content}\n"
+            file_context = f"{student_context}{canvas_context}{conversation_context}File Content:\n{file_content}\n"
             answer = query_agent(
                 query=clean_query,
                 user_id=str(user["user_id"]),
                 context=file_context,
+                model=req.model,
+                canvas_context=canvas_context,
             )
         else:
             answer = "I received the file link, but I cannot find the file on the server to read it."
@@ -2639,13 +2752,15 @@ Use the provided file content and conversation history to answer the user's ques
         # ADK manages its own session memory. Sending old responses as context
         # causes hallucination loops (model repeats previous wrong answers).
         try:
-            agent_context = student_context  # DegreeWorks data only
+            agent_context = student_context  # DegreeWorks only (stable, for session reuse)  # DegreeWorks + Canvas data
 
-            print(f" Vertex AI query: '{user_q[:50]}...' (user={user['user_id']}, context={len(agent_context)} chars)")
+            print(f" Vertex AI query: '{user_q[:50]}...' (user={user['user_id']}, context={len(agent_context)} chars, model={req.model})")
             answer = query_agent(
                 query=user_q,
                 user_id=str(user["user_id"]),
                 context=agent_context,
+                model=req.model,
+                canvas_context=canvas_context,
             )
         except Exception as e:
             print(f"   Vertex AI Chat Error: {e}")
@@ -2713,16 +2828,34 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     session_id = req.session_id or "default"
     user_id = user["user_id"]
 
-    # Non-blocking DegreeWorks fetch (runs in thread pool, doesn't block event loop)
-    dw_dict = await asyncio.to_thread(_fetch_dw_sync, user_id)
+    # Lazy-load: only fetch Canvas if query mentions grades/assignments/deadlines/course codes
+    CANVAS_KEYWORDS = {"grade", "assignment", "due", "deadline", "missing", "class",
+                       "course", "score", "submit", "canvas", "homework", "quiz",
+                       "test", "exam", "gpa", "taking", "enrolled"}
+    has_course_code = bool(re.search(r'\b[A-Z]{2,4}\s*\d{3}\b', user_q, re.IGNORECASE))
+    needs_canvas = has_course_code or any(kw in user_q.lower() for kw in CANVAS_KEYWORDS)
+
+    # Non-blocking parallel fetch: DegreeWorks + Canvas (only if needed)
+    if needs_canvas:
+        dw_result, canvas_result = await asyncio.gather(
+            asyncio.to_thread(_fetch_dw_sync, user_id),
+            asyncio.to_thread(_fetch_canvas_sync, user_id),
+            return_exceptions=True,
+        )
+        canvas_dict = canvas_result if not isinstance(canvas_result, Exception) else None
+    else:
+        dw_result = await asyncio.to_thread(_fetch_dw_sync, user_id)
+        canvas_dict = None
+    dw_dict = dw_result if not isinstance(dw_result, Exception) else None
 
     student_context = _build_student_context(dw_dict) if dw_dict else ""
-    agent_context = student_context  # Only DegreeWorks, NOT conversation history (ADK manages its own memory)
+    canvas_context = _build_canvas_context(canvas_dict) if canvas_dict else ""
+    agent_context = student_context  # DegreeWorks only (stable, for session reuse)
 
     # =========================================================================
     # CACHE CHECK - Return cached response instantly if available
     # =========================================================================
-    context_hash = get_context_hash(user_id, has_degreeworks=bool(dw_dict))
+    context_hash = get_context_hash(user_id, has_degreeworks=bool(dw_dict), model=req.model, has_canvas=bool(canvas_dict))
 
     # Skip cache when user taps "Regenerate" for a fresh answer
     if req.skip_cache:
@@ -2781,7 +2914,9 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
             for event in query_agent_stream(
                 query=user_q,
                 user_id=str(user_id),
-                context=agent_context
+                context=agent_context,
+                model=req.model,
+                canvas_context=canvas_context
             ):
                 event_type = event.get("type", "")
                 content = event.get("content", "")
@@ -3436,14 +3571,18 @@ async def get_kb_file(filename: str, user: dict = Depends(get_current_user)):
     if not filename.endswith(".json"):
         raise HTTPException(status_code=400, detail="Only JSON files allowed")
 
-    filepath = os.path.join(DATA_SOURCES_DIR, filename)
+    # Prevent path traversal: strip directory components
+    safe_filename = os.path.basename(filename)
+    filepath = os.path.join(DATA_SOURCES_DIR, safe_filename)
+    if not os.path.realpath(filepath).startswith(os.path.realpath(DATA_SOURCES_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid filename")
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="File not found")
 
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             content = json.load(f)
-        return {"filename": filename, "content": content}
+        return {"filename": safe_filename, "content": content}
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=500, detail=f"Invalid JSON: {str(e)}")
 
@@ -3456,7 +3595,11 @@ async def update_kb_file(filename: str, content: dict, user: dict = Depends(get_
     if not filename.endswith(".json"):
         raise HTTPException(status_code=400, detail="Only JSON files allowed")
 
-    filepath = os.path.join(DATA_SOURCES_DIR, filename)
+    # Prevent path traversal
+    safe_filename = os.path.basename(filename)
+    filepath = os.path.join(DATA_SOURCES_DIR, safe_filename)
+    if not os.path.realpath(filepath).startswith(os.path.realpath(DATA_SOURCES_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
     # Create backup
     if os.path.exists(filepath):
@@ -3810,19 +3953,25 @@ async def submit_feedback(request: Request, user: dict = Depends(get_current_use
         db.add(fb)
         db.commit()
 
-    # If "not_helpful", find the original query from chat history and log as failed query
-    # This feeds into the auto-research pipeline so the bot learns from bad answers
+    # If "not_helpful" or "report", log directly as failed query (user explicitly said it's bad)
+    # Skip the pattern check since the user's judgment overrides automated detection
     if feedback_type in ("not_helpful", "report") and message_text:
         try:
-            from research_agent import detect_and_log_failed_query
-            # Find the user query that led to this bot response
+            from models import FailedQuery
             with SessionLocal() as db:
                 chat = db.query(ChatHistory).filter(
                     ChatHistory.user_id == user.get("user_id"),
                     ChatHistory.bot_response.contains(message_text[:100])
                 ).order_by(ChatHistory.timestamp.desc()).first()
                 if chat:
-                    detect_and_log_failed_query(chat.user_query, chat.bot_response, user.get("user_id"))
+                    entry = FailedQuery(
+                        user_query=chat.user_query.strip(),
+                        bot_response=chat.bot_response[:1000],
+                        user_id=user.get("user_id"),
+                        status="new",
+                    )
+                    db.add(entry)
+                    db.commit()
         except Exception:
             pass
 
