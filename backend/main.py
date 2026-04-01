@@ -12,7 +12,7 @@ import asyncio
 import shutil #  NEW: For file operations
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 #  FIXED IMPORTS: Use 'pypdf' which you installed, not 'PyPDF2'
 import pypdf 
@@ -213,7 +213,25 @@ def init_db():
             except Exception as e:
                 print(f"[ERROR] Failed to add morgan_connected_at column: {e}")
 
-        # 5. Check if degreeworks_data table exists
+        # 5. Add email auth columns if missing (DEFAULT TRUE so existing accounts are auto-verified)
+        for col, col_type in [
+            ("email_verified", "BOOLEAN DEFAULT TRUE"),
+            ("verification_token", "VARCHAR(255)"),
+            ("verification_token_expires", "DATETIME"),
+            ("reset_token", "VARCHAR(255)"),
+            ("reset_token_expires", "DATETIME"),
+        ]:
+            try:
+                conn.execute(text(f"SELECT {col} FROM users LIMIT 1"))
+            except (OperationalError, ProgrammingError):
+                try:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {col_type}"))
+                    conn.commit()
+                    print(f"[OK] Added '{col}' column to users")
+                except Exception:
+                    pass
+
+        # 6. Check if degreeworks_data table exists
         try:
             conn.execute(text("SELECT id FROM degreeworks_data LIMIT 1"))
             print("[OK] degreeworks_data table exists")
@@ -535,6 +553,19 @@ def check_guest_rate_limit(ip: str) -> bool:
     guest_rate_limits[ip].append(current_time)
     return True
 
+# --- Auth rate limiting ---
+auth_rate_limits = defaultdict(list)  # "endpoint:ip" -> list of timestamps
+
+def check_auth_rate_limit(ip: str, endpoint: str, max_requests: int, window_seconds: int) -> bool:
+    """Per-IP rate limiting for auth endpoints. Returns True if allowed."""
+    key = f"{endpoint}:{ip}"
+    current_time = time_module.time()
+    auth_rate_limits[key] = [t for t in auth_rate_limits[key] if current_time - t < window_seconds]
+    if len(auth_rate_limits[key]) >= max_requests:
+        return False
+    auth_rate_limits[key].append(current_time)
+    return True
+
 class Course(BaseModel):
     course_code: str
     course_name: str
@@ -730,28 +761,161 @@ def load_json_documents(paths: List[str]) -> List[Dict[str,Any]]:
 # ==============================================================================
 
 # --- Auth ---
+ALLOWED_EMAIL_DOMAINS = ["morgan.edu"]
+ALLOW_TEST_EMAILS = os.getenv("ALLOW_TEST_EMAILS", "false").lower() == "true"
+VERIFICATION_TOKEN_HOURS = 24
+
 @app.post("/api/register", status_code=status.HTTP_201_CREATED)
-def register(req: RegisterRequest, db: Session = Depends(get_db)):
-    # Validate email and password
+async def register(req: RegisterRequest, request: Request, db: Session = Depends(get_db)):
     import re
-    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', req.email):
+    from email_service import generate_token, send_verification_email_async
+
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_auth_rate_limit(client_ip, "register", 5, 3600):
+        raise HTTPException(status_code=429, detail="Too many registration attempts. Try again later.")
+
+    email = req.email.strip().lower()
+    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
         raise HTTPException(status_code=400, detail="Invalid email format")
+
+    # Only allow Morgan State email (test.com only if explicitly enabled via env var)
+    email_domain = email.split("@")[-1]
+    if email_domain not in ALLOWED_EMAIL_DOMAINS:
+        if not (ALLOW_TEST_EMAILS and email.endswith("@test.com")):
+            raise HTTPException(status_code=400, detail="Only @morgan.edu email addresses are allowed.")
+
     if len(req.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-    if db.query(User).filter(User.email == req.email).first():
+    if db.query(User).filter(User.email == email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
+
     hashed = hash_password(req.password)
-    student = User(email=req.email, password_hash=hashed, role="student")
+    token = generate_token()
+    student = User(
+        email=email, password_hash=hashed, role="student",
+        email_verified=False, verification_token=token,
+        verification_token_expires=datetime.now(timezone.utc) + timedelta(hours=VERIFICATION_TOKEN_HOURS),
+    )
     db.add(student)
     db.commit()
     db.refresh(student)
-    return {"message": "Account created", "user_id": student.id}
+
+    await send_verification_email_async(email, token)
+    return {"message": "Account created! Check your Morgan State email to verify.", "user_id": student.id}
+
+
+@app.get("/api/verify-email")
+def verify_email(token: str, db: Session = Depends(get_db)):
+    from starlette.responses import RedirectResponse
+    user = db.query(User).filter(User.verification_token == token).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification link")
+    # Check expiry
+    if user.verification_token_expires:
+        expires = user.verification_token_expires if user.verification_token_expires.tzinfo else user.verification_token_expires.replace(tzinfo=timezone.utc)
+        if expires < datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="Verification link has expired. Please request a new one.")
+    user.email_verified = True
+    user.verification_token = None
+    user.verification_token_expires = None
+    db.commit()
+    app_url = os.getenv("APP_URL", "https://cs.inavigator.ai")
+    return RedirectResponse(url=f"{app_url}/login?verified=true")
+
+
+@app.post("/api/resend-verification")
+async def resend_verification(request: Request, db: Session = Depends(get_db)):
+    from email_service import generate_token, send_verification_email_async
+
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_auth_rate_limit(client_ip, "resend-verify", 3, 900):
+        raise HTTPException(status_code=429, detail="Too many requests. Try again later.")
+
+    body = await request.json()
+    email = body.get("email", "").strip().lower()
+    user = db.query(User).filter(User.email == email).first()
+    # Same message regardless of outcome to prevent user enumeration
+    generic_msg = {"message": "If an account exists, a verification email has been sent."}
+    if not user or user.email_verified:
+        return generic_msg
+    token = generate_token()
+    user.verification_token = token
+    user.verification_token_expires = datetime.now(timezone.utc) + timedelta(hours=VERIFICATION_TOKEN_HOURS)
+    db.commit()
+    await send_verification_email_async(email, token)
+    return generic_msg
+
+
+@app.post("/api/forgot-password")
+async def forgot_password(request: Request, db: Session = Depends(get_db)):
+    from email_service import generate_token, send_password_reset_email_async
+
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_auth_rate_limit(client_ip, "forgot-pw", 3, 900):
+        raise HTTPException(status_code=429, detail="Too many requests. Try again later.")
+
+    body = await request.json()
+    email = body.get("email", "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email required")
+
+    user = db.query(User).filter(User.email == email).first()
+    if user:
+        token = generate_token()
+        user.reset_token = token
+        user.reset_token_expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        db.commit()
+        await send_password_reset_email_async(email, token)
+
+    return {"message": "If an account exists with that email, a password reset link has been sent."}
+
+
+@app.post("/api/reset-password")
+async def reset_password(request: Request, db: Session = Depends(get_db)):
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_auth_rate_limit(client_ip, "reset-pw", 5, 900):
+        raise HTTPException(status_code=429, detail="Too many requests. Try again later.")
+
+    body = await request.json()
+    token = body.get("token", "")
+    new_password = body.get("password", "")
+    if not token or not new_password:
+        raise HTTPException(status_code=400, detail="Token and new password required")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    user = db.query(User).filter(User.reset_token == token).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+    if user.reset_token_expires:
+        expires = user.reset_token_expires if user.reset_token_expires.tzinfo else user.reset_token_expires.replace(tzinfo=timezone.utc)
+        if expires < datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="Reset link has expired. Request a new one.")
+
+    user.password_hash = hash_password(new_password)
+    user.reset_token = None
+    user.reset_token_expires = None
+    # Receiving the reset email proves email ownership
+    user.email_verified = True
+    db.commit()
+    return {"message": "Password reset successfully. You can now log in."}
+
 
 @app.post("/api/login")
-def login(req: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == req.email).first()
+def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_auth_rate_limit(client_ip, "login", 10, 60):
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again in a minute.")
+
+    email = req.email.strip().lower()
+    user = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(req.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Require email verification (skip for admins and existing accounts)
+    if not getattr(user, 'email_verified', True) and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Please verify your email first. Check your inbox for the verification link.")
+
     token = create_access_token({
         "user_id": user.id,
         "role": user.role,

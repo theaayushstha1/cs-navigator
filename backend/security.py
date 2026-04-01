@@ -17,7 +17,7 @@ if not JWT_SECRET:
     raise RuntimeError("Missing JWT_SECRET in .env")
 
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 1440  
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "240"))
 
 def hash_password(plain: str) -> str:
     # Truncate to 72 bytes for bcrypt compatibility

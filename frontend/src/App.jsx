@@ -14,6 +14,8 @@ import CommandPalette from "./components/CommandPalette";
 
 import SignUp from "./SignUp";
 import Login  from "./Login";
+import ForgotPassword from "./ForgotPassword";
+import ResetPassword from "./ResetPassword";
 
 import "./index.css";
 
@@ -396,6 +398,9 @@ export default function App() {
             />
           }
         />
+
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
 
         {/* public: guest trial chat */}
         <Route

@@ -21,6 +21,11 @@ class User(Base):
     profile_picture_data = Column(Text, nullable=True)  # Store base64 image data
     morgan_connected = Column(Boolean, nullable=False, default=False)
     morgan_connected_at = Column(DateTime, nullable=True)  # When DegreeWorks was synced
+    email_verified = Column(Boolean, nullable=False, default=False)
+    verification_token = Column(String(255), nullable=True, index=True)
+    verification_token_expires = Column(DateTime, nullable=True)
+    reset_token = Column(String(255), nullable=True, index=True)
+    reset_token_expires = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     # Relationship to DegreeWorks data

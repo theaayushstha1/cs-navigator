@@ -127,7 +127,7 @@ export default function Signup({ onRegistered }) {
 
       <form onSubmit={handleSubmit}>
         <div className="field">
-          <label htmlFor="signup-email">Email Address</label>
+          <label htmlFor="signup-email">Morgan State Email <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", fontWeight: 400 }}>(@morgan.edu only)</span></label>
           <div className="field__control">
             <EnvelopeIcon className="field__icon" aria-hidden="true" />
             <input
