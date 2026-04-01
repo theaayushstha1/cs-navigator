@@ -828,7 +828,7 @@ async def resend_verification(request: Request, db: Session = Depends(get_db)):
     from email_service import generate_token, send_verification_email_async
 
     client_ip = request.client.host if request.client else "unknown"
-    if not check_auth_rate_limit(client_ip, "resend-verify", 3, 900):
+    if not check_auth_rate_limit(client_ip, "resend-verify", 5, 900):
         raise HTTPException(status_code=429, detail="Too many requests. Try again later.")
 
     body = await request.json()
@@ -851,7 +851,7 @@ async def forgot_password(request: Request, db: Session = Depends(get_db)):
     from email_service import generate_token, send_password_reset_email_async
 
     client_ip = request.client.host if request.client else "unknown"
-    if not check_auth_rate_limit(client_ip, "forgot-pw", 3, 900):
+    if not check_auth_rate_limit(client_ip, "forgot-pw", 5, 900):
         raise HTTPException(status_code=429, detail="Too many requests. Try again later.")
 
     body = await request.json()
