@@ -33,6 +33,32 @@ SESSION_TTL = 1800  # 30 minutes: reuse sessions within this window
 # Session cache: user_id -> {"session_id", "created_at", "context_hash"}
 _session_cache: dict[str, dict] = {}
 
+# Cloud Run auth: when ADK is --no-allow-unauthenticated, we need an ID token
+_id_token_cache: dict = {"token": None, "expires": 0}
+
+def _get_auth_headers() -> dict:
+    """Get auth headers for calling the ADK service on Cloud Run.
+    Uses Google metadata server for ID tokens in production.
+    Returns empty dict for local dev (localhost)."""
+    if "localhost" in ADK_BASE_URL or "127.0.0.1" in ADK_BASE_URL:
+        return {"Content-Type": "application/json"}
+
+    now = time_module.time()
+    if _id_token_cache["token"] and now < _id_token_cache["expires"] - 60:
+        return {"Content-Type": "application/json", "Authorization": f"Bearer {_id_token_cache['token']}"}
+
+    try:
+        import google.auth.transport.requests
+        import google.oauth2.id_token
+        auth_req = google.auth.transport.requests.Request()
+        token = google.oauth2.id_token.fetch_id_token(auth_req, ADK_BASE_URL)
+        _id_token_cache["token"] = token
+        _id_token_cache["expires"] = now + 3600  # tokens last ~1hr
+        return {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    except Exception as e:
+        print(f"   [AUTH] Failed to get ID token for ADK: {e}")
+        return {"Content-Type": "application/json"}
+
 
 def _compute_context_hash(context: str) -> str:
     """Hash the DegreeWorks context string to detect changes between queries."""
@@ -50,7 +76,7 @@ def _create_session(user_id: str, state: Optional[dict] = None) -> str:
         try:
             resp = requests.post(
                 f"{ADK_BASE_URL}/apps/{ADK_APP_NAME}/users/{user_id}/sessions",
-                headers={"Content-Type": "application/json"},
+                headers=_get_auth_headers(),
                 json=body,
                 timeout=30,
             )
