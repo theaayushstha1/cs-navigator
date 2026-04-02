@@ -19,54 +19,111 @@ from sqlalchemy import func
 
 log = logging.getLogger(__name__)
 
-# Patterns that indicate the bot genuinely couldn't answer (KB miss).
-# IMPORTANT: These must NOT match normal responses that happen to include
-# contact info as a helpful footer. Only match when the bot is admitting
-# it doesn't have the answer.
-FAILED_RESPONSE_PATTERNS = re.compile(
-    r"I (?:don't|do not) have (?:specific |enough )?information (?:about|on|regarding)|"
-    r"I (?:couldn't|could not) find (?:any |specific )?(?:information|details|data) (?:about|on|regarding)|"
-    r"not (?:available|found) in (?:my|the) knowledge base|"
-    r"I (?:don't|do not) have access to (?:that|this|your)|"
-    r"I am unable to (?:determine|find|provide) (?:that|this|specific)|"
-    r"I'm sorry,? I (?:don't|do not) (?:have|know)|"
-    r"I couldn't generate a response",
-    re.IGNORECASE
-)
-
 # Skip these short/greeting queries
 SKIP_PATTERNS = re.compile(
     r"^(hi|hello|hey|thanks|thank you|ok|okay|bye|good|sup|yo|what's up)[\s!?.]*$",
     re.IGNORECASE
 )
 
+# Lightweight fallback patterns: only used when grounding metadata is unavailable
+# (e.g. legacy non-ADK path). These are deliberately narrow to avoid false positives.
+_FALLBACK_FAILURE_PATTERNS = re.compile(
+    r"^I (?:don't|do not) have (?:specific |enough )?(?:information|details)|"
+    r"^I (?:couldn't|could not) find (?:any |specific )?(?:information|details)|"
+    r"^I'm sorry,? I (?:don't|do not) (?:have|know)|"
+    r"^Based on the information I have access to, I (?:cannot|can't|could not|do not have)",
+    re.IGNORECASE | re.MULTILINE
+)
+
 
 # =============================================================================
-# PHASE 1: Failed Query Detection
+# PHASE 1: Failed Query Detection (Grounding-Based)
 # =============================================================================
 
 def detect_and_log_failed_query(user_query: str, bot_response: str, user_id: int = None) -> bool:
-    """Check if the bot's response indicates a KB miss and log it.
-    Returns True if logged as a failed query."""
+    """Detect KB misses using Vertex AI Search grounding metadata.
+
+    PRIMARY SIGNAL: The ADK agent's groundingMetadata tells us exactly how many
+    KB documents were retrieved and what fraction of the response is grounded.
+    If zero KB chunks were returned, the agent had nothing to work with = KB miss.
+
+    FALLBACK: If grounding metadata is unavailable (legacy path, error), use a
+    narrow regex that only matches responses that START with failure language.
+
+    Returns True if logged as a failed query.
+    """
+    query = user_query.strip()
+
     # Skip short or greeting queries
-    if len(user_query.strip()) < 15 or SKIP_PATTERNS.match(user_query.strip()):
+    if len(query) < 15 or SKIP_PATTERNS.match(query):
         return False
 
-    # Check if response indicates a KB miss
-    if not FAILED_RESPONSE_PATTERNS.search(bot_response):
+    # Skip file uploads (PDF analysis, etc.)
+    if "[" in query and "](http" in query:
+        return False
+
+    # Skip conversational follow-ups with no real question word
+    if len(query.split()) <= 6 and not any(
+        kw in query.lower() for kw in ["what", "where", "who", "when", "how", "why", "which", "can", "is", "are", "do", "does"]
+    ):
+        return False
+
+    # DETECTION STRATEGY (layered):
+    #
+    # Layer 1: Grounding metadata — if ADK returned zero KB chunks, definite miss
+    # Layer 2: Response starts with admission of failure — agent searched KB but
+    #          found nothing relevant, so it says "I cannot find / I don't have"
+    #          even though Vertex AI Search returned SOME documents (just irrelevant ones)
+    #
+    # Both layers together eliminate false positives: a good answer that happens to
+    # hedge one detail won't match because it doesn't START with failure language.
+
+    is_kb_miss = False
+
+    # Layer 1: Check grounding metadata
+    grounding_chunks = -1  # -1 = unavailable
+    try:
+        from vertex_agent import get_last_grounding
+        grounding = get_last_grounding()
+        grounding_chunks = grounding.get("grounding_chunks", 0)
+
+        if not grounding.get("kb_grounded", True) or grounding_chunks == 0:
+            is_kb_miss = True
+            log.info(f"[RESEARCH] KB miss (0 grounding chunks): {query[:60]}")
+    except Exception as e:
+        log.warning(f"[RESEARCH] Grounding unavailable ({e})")
+
+    # Layer 2: Response-based detection (catches cases where KB returned docs
+    # but none were relevant — agent says "I cannot find" despite chunks > 0)
+    if not is_kb_miss:
+        first_line = bot_response.split("\n")[0].strip() if bot_response else ""
+        if _FALLBACK_FAILURE_PATTERNS.match(first_line):
+            # The response STARTS with failure language — this is the primary message,
+            # not a hedge buried in an otherwise good answer
+            is_kb_miss = True
+            log.info(f"[RESEARCH] KB miss (response starts with failure): {query[:60]}")
+
+    if not is_kb_miss:
         return False
 
     try:
         with SessionLocal() as db:
+            # Don't duplicate
+            existing = db.query(FailedQuery).filter(
+                FailedQuery.user_query == query,
+            ).first()
+            if existing:
+                return False
+
             entry = FailedQuery(
-                user_query=user_query.strip(),
-                bot_response=bot_response[:1000],  # Truncate long responses
+                user_query=query,
+                bot_response=bot_response[:1000],
                 user_id=user_id,
                 status="new",
             )
             db.add(entry)
             db.commit()
-            log.info(f"[RESEARCH] Logged failed query: {user_query[:60]}...")
+            log.info(f"[RESEARCH] Logged failed query: {query[:60]}...")
         return True
     except Exception as e:
         log.warning(f"[RESEARCH] Failed to log query: {e}")

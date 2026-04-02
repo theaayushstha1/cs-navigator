@@ -549,11 +549,21 @@ import time as time_module
 guest_rate_limits = defaultdict(list)  # IP -> list of timestamps
 GUEST_RATE_LIMIT = 15  # requests per minute (time-based session provides natural limiting)
 GUEST_RATE_WINDOW = 60  # seconds
+_guest_rate_last_cleanup = time_module.time()
 
 def check_guest_rate_limit(ip: str) -> bool:
     """Check if IP is within rate limit. Returns True if allowed, False if blocked."""
+    global _guest_rate_last_cleanup
     current_time = time_module.time()
-    # Clean old entries
+
+    # Periodic cleanup: purge stale IPs every 10 minutes to prevent memory leak
+    if current_time - _guest_rate_last_cleanup > 600:
+        stale_ips = [k for k, v in guest_rate_limits.items() if not v or current_time - v[-1] > GUEST_RATE_WINDOW]
+        for k in stale_ips:
+            del guest_rate_limits[k]
+        _guest_rate_last_cleanup = current_time
+
+    # Clean old entries for this IP
     guest_rate_limits[ip] = [t for t in guest_rate_limits[ip] if current_time - t < GUEST_RATE_WINDOW]
     # Check limit
     if len(guest_rate_limits[ip]) >= GUEST_RATE_LIMIT:
@@ -561,6 +571,12 @@ def check_guest_rate_limit(ip: str) -> bool:
     # Add new request
     guest_rate_limits[ip].append(current_time)
     return True
+
+# Forgot-password rate limiting: {email: [timestamp, ...]}
+_forgot_pw_timestamps: dict[str, list] = {}
+_forgot_pw_last_cleanup = time_module.time()
+FORGOT_PW_RATE_LIMIT = 5   # max requests per window
+FORGOT_PW_RATE_WINDOW = 900  # 15 minutes
 
 class Course(BaseModel):
     course_code: str
@@ -917,6 +933,24 @@ async def forgot_password(request: Request, db: Session = Depends(get_db)):
     if not email:
         raise HTTPException(status_code=400, detail="Email required")
 
+    # Rate limit: max 5 forgot-password requests per 15 minutes per email
+    global _forgot_pw_last_cleanup
+    now_ts = time_module.time()
+
+    # Periodic cleanup: purge stale emails every 15 minutes
+    if now_ts - _forgot_pw_last_cleanup > FORGOT_PW_RATE_WINDOW:
+        stale = [k for k, v in _forgot_pw_timestamps.items() if not v or now_ts - v[-1] > FORGOT_PW_RATE_WINDOW]
+        for k in stale:
+            del _forgot_pw_timestamps[k]
+        _forgot_pw_last_cleanup = now_ts
+
+    timestamps = _forgot_pw_timestamps.get(email, [])
+    timestamps = [t for t in timestamps if now_ts - t < FORGOT_PW_RATE_WINDOW]
+    if len(timestamps) >= FORGOT_PW_RATE_LIMIT:
+        return {"message": "If an account exists with that email, a password reset link has been sent."}
+    timestamps.append(now_ts)
+    _forgot_pw_timestamps[email] = timestamps
+
     user = db.query(User).filter(User.email == email).first()
     if user:
         token = generate_token()
@@ -1062,23 +1096,33 @@ async def upload_profile_picture(profilePicture: UploadFile = File(...), user: d
     return {"url": data_url}
 
 #  NEW: Chat File Upload Endpoint
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+
 @app.post("/api/upload-file")
 async def upload_chat_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     # 1. Validate File Type
-    if not allowed_file(file.filename): 
+    if not allowed_file(file.filename):
         raise HTTPException(400, "File type not allowed")
-    
+
     # 2. Create Unique Filename
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    # Sanitize filename
     clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
     filename = f"chat_{user['user_id']}_{timestamp}_{clean_name}"
     filepath = os.path.join(CHAT_FILES_FOLDER, filename)
 
-    # 3. Save the File
+    # 3. Stream to disk with size enforcement (never holds full file in memory)
     try:
+        bytes_written = 0
         with open(filepath, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            while chunk := await file.read(64 * 1024):  # 64KB chunks
+                bytes_written += len(chunk)
+                if bytes_written > MAX_UPLOAD_SIZE:
+                    buffer.close()
+                    os.remove(filepath)
+                    raise HTTPException(413, f"File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024*1024)}MB")
+                buffer.write(chunk)
+    except HTTPException:
+        raise  # Preserve 413 for oversized files
     except Exception as e:
         print(f"[ERROR] File Save Error: {e}")
         raise HTTPException(500, "Could not save file")
@@ -1482,10 +1526,13 @@ async def serve_bookmarklet_js(token: str = "", api: str = ""):
     The bookmarklet itself is a tiny loader that injects this script.
     This avoids Chrome's ~2KB URL length limit for bookmarklets.
     """
+    # Escape values to prevent JS injection via crafted query params
+    safe_api = json.dumps(api)    # wraps in quotes + escapes special chars
+    safe_token = json.dumps(token)
     js_code = f"""
 (function() {{
-  var API = '{api}';
-  var TOKEN = '{token}';
+  var API = {safe_api};
+  var TOKEN = {safe_token};
 
   var msg = document.createElement('div');
   msg.style.cssText = 'position:fixed;top:20px;right:20px;background:#002D72;color:#fff;padding:20px 24px;border-radius:12px;z-index:999999;font-family:system-ui,Arial;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,0.3);';
@@ -2251,11 +2298,11 @@ async def sync_banner_data(
                 sync_db.close()
 
         except ValueError as e:
-            # Auth errors
-            yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
+            # Auth errors (safe to show: "Invalid credentials", "LDAP not available", etc.)
+            yield f"data: {json.dumps({'type': 'error', 'detail': str(e)[:200]})}\n\n"
         except Exception as e:
             print(f"[ERROR] Banner sync failed: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'detail': f'Sync failed: {str(e)}'})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'detail': 'Sync failed. Please try again.'})}\n\n"
 
     return StreamingResponse(generate_sse(), media_type="text/event-stream")
 
@@ -2369,7 +2416,8 @@ async def sync_canvas_data(
             try:
                 data = await fetch_canvas_data(client)
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'detail': f'Failed to fetch Canvas data: {str(e)[:200]}'})}\n\n"
+                print(f"[ERROR] Canvas fetch failed: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'detail': 'Failed to fetch Canvas data. Please try again.'})}\n\n"
                 await client.aclose()
                 return
 
@@ -2413,7 +2461,8 @@ async def sync_canvas_data(
                     db.add(canvas_record)
                 db.commit()
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'detail': f'Database error: {str(e)[:200]}'})}\n\n"
+                print(f"[ERROR] Canvas DB save failed: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'detail': 'Failed to save Canvas data. Please try again.'})}\n\n"
                 return
 
             # Build summary
@@ -2429,7 +2478,8 @@ async def sync_canvas_data(
             yield f"data: {json.dumps({'type': 'done', 'summary': summary})}\n\n"
 
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'detail': str(e)[:300]})}\n\n"
+            print(f"[ERROR] Canvas sync failed: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'detail': 'Canvas sync failed. Please try again.'})}\n\n"
 
     return StreamingResponse(
         generate_sse(),
@@ -2906,9 +2956,11 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     # CACHE MISS - Stream from AI agent and cache the result
     # =========================================================================
     print(f"[CACHE] MISS for query: {user_q[:50]}...")
+    stream_had_error = False
 
     async def generate_sse():
         """SSE generator that streams text chunks from the agent."""
+        nonlocal stream_had_error
         full_response = ""
         try:
             for event in query_agent_stream(
@@ -2926,7 +2978,6 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
 
                 elif event_type == "chunk":
                     full_response += content
-                    # Send SSE event
                     yield f"data: {json.dumps({'type': 'chunk', 'content': content})}\n\n"
 
                 elif event_type == "done":
@@ -2934,11 +2985,13 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
                     yield f"data: {json.dumps({'type': 'done', 'content': full_response})}\n\n"
 
                 elif event_type == "error":
+                    stream_had_error = True
                     yield f"data: {json.dumps({'type': 'error', 'content': content})}\n\n"
                     full_response = content
                     break
 
         except Exception as e:
+            stream_had_error = True
             print(f"[ERROR] Streaming error: {e}")
             yield f"data: {json.dumps({'type': 'error', 'content': 'An error occurred during streaming.'})}\n\n"
             full_response = "An error occurred during streaming."
@@ -2963,11 +3016,13 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
             print(f"[ERROR] Failed to save streamed chat history: {e}")
 
         # Track failed queries for auto-research agent
-        try:
-            from research_agent import detect_and_log_failed_query
-            detect_and_log_failed_query(user_q, full_response, user_id)
-        except Exception:
-            pass
+        # Skip detection on error/empty responses (infra errors aren't KB misses)
+        if full_response and not stream_had_error and "error" not in full_response.lower()[:50]:
+            try:
+                from research_agent import detect_and_log_failed_query
+                detect_and_log_failed_query(user_q, full_response, user_id)
+            except Exception:
+                pass
 
     return StreamingResponse(
         generate_sse(),
@@ -3892,14 +3947,22 @@ async def get_ticket_stats(user: dict = Depends(get_current_user), db: Session =
 async def create_ticket(request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Create a new support ticket"""
     body = await request.json()
+    subject = (body.get("subject", "") or "")[:200]
+    description = (body.get("description", "") or "")[:5000]
+    category = body.get("category", "other") or "other"
+    priority = body.get("priority", "normal") or "normal"
+    attachment_data = body.get("attachment_data")
+    # Cap base64 attachment at ~7.5MB (10MB file base64-encoded)
+    if attachment_data and len(attachment_data) > 10_000_000:
+        raise HTTPException(413, "Attachment too large")
     ticket = SupportTicket(
         user_id=user["user_id"],
-        subject=body.get("subject", ""),
-        category=body.get("category", "other"),
-        description=body.get("description", ""),
-        priority=body.get("priority", "normal"),
-        attachment_data=body.get("attachment_data"),
-        attachment_name=body.get("attachment_name"),
+        subject=subject,
+        category=category,
+        description=description,
+        priority=priority,
+        attachment_data=attachment_data,
+        attachment_name=(body.get("attachment_name", "") or "")[:255],
     )
     db.add(ticket)
     db.commit()
@@ -3953,9 +4016,11 @@ async def submit_feedback(request: Request, user: dict = Depends(get_current_use
         db.add(fb)
         db.commit()
 
-    # If "not_helpful" or "report", log directly as failed query (user explicitly said it's bad)
-    # Skip the pattern check since the user's judgment overrides automated detection
-    if feedback_type in ("not_helpful", "report") and message_text:
+    # If "report" (explicit bug report), log as failed query for research.
+    # "not_helpful" alone is NOT logged - users thumb-down for many reasons
+    # (too verbose, wrong tone, etc.) that don't indicate a KB miss.
+    # Only "report" means "this answer is factually wrong or missing info".
+    if feedback_type == "report" and message_text:
         try:
             from models import FailedQuery
             with SessionLocal() as db:
@@ -3964,14 +4029,20 @@ async def submit_feedback(request: Request, user: dict = Depends(get_current_use
                     ChatHistory.bot_response.contains(message_text[:100])
                 ).order_by(ChatHistory.timestamp.desc()).first()
                 if chat:
-                    entry = FailedQuery(
-                        user_query=chat.user_query.strip(),
-                        bot_response=chat.bot_response[:1000],
-                        user_id=user.get("user_id"),
-                        status="new",
-                    )
-                    db.add(entry)
-                    db.commit()
+                    # Don't duplicate: check if this query was already logged
+                    existing = db.query(FailedQuery).filter(
+                        FailedQuery.user_query == chat.user_query.strip(),
+                        FailedQuery.user_id == user.get("user_id"),
+                    ).first()
+                    if not existing:
+                        entry = FailedQuery(
+                            user_query=chat.user_query.strip(),
+                            bot_response=chat.bot_response[:1000],
+                            user_id=user.get("user_id"),
+                            status="new",
+                        )
+                        db.add(entry)
+                        db.commit()
         except Exception:
             pass
 

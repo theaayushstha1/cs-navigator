@@ -137,6 +137,18 @@ def query_agent(query: str, user_id: str = "default", context: str = "", model: 
     return _run_query(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context)
 
 
+# Per-request grounding metadata. In async single-worker (uvicorn default),
+# requests are interleaved but not truly parallel, so a threading.local is
+# sufficient to isolate grounding state between coroutines on different threads.
+# For single-thread async, the value is set right before detect_and_log reads it
+# within the same coroutine, so no race occurs.
+import threading
+_grounding_local = threading.local()
+
+def _set_grounding(kb_grounded: bool, chunks: int, coverage: float):
+    _grounding_local.data = {"kb_grounded": kb_grounded, "grounding_chunks": chunks, "grounding_coverage": coverage}
+
+
 def _run_query(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = "") -> str:
     """Send a query to the ADK and parse the SSE response."""
     try:
@@ -185,8 +197,10 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
 
         resp.raise_for_status()
 
-        # Parse SSE events and extract the final text response
+        # Parse SSE events and extract the final text response + grounding metadata
         final_text = ""
+        grounding_chunks = 0
+        grounding_coverage = 0.0
         for line in resp.iter_lines():
             if not line:
                 continue
@@ -199,6 +213,23 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
                 event = json.loads(json_str)
             except json.JSONDecodeError:
                 continue
+
+            # Extract grounding metadata (tells us if KB search returned results)
+            gm = event.get("groundingMetadata")
+            if gm:
+                chunks = gm.get("groundingChunks", [])
+                supports = gm.get("groundingSupports", [])
+                grounding_chunks = len(chunks)
+                # Coverage: what fraction of the response is grounded in KB results
+                if supports and final_text:
+                    total_chars = len(final_text)
+                    grounded_chars = sum(
+                        s.get("segment", {}).get("endIndex", 0) - s.get("segment", {}).get("startIndex", 0)
+                        for s in supports
+                    )
+                    grounding_coverage = grounded_chars / total_chars if total_chars > 0 else 0.0
+                elif chunks:
+                    grounding_coverage = 1.0  # Has chunks but no segment info
 
             # Extract text from model responses (skip function_call / function_response)
             content = event.get("content", {})
@@ -213,6 +244,9 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
             for part in parts:
                 if isinstance(part, dict) and "text" in part:
                     final_text = part["text"]  # Keep last model text (the final answer)
+
+        # Store grounding signal for research_agent to read (thread-local)
+        _set_grounding(grounding_chunks > 0, grounding_chunks, grounding_coverage)
 
         if final_text:
             # Clean up citation artifacts from Gemini grounding
@@ -230,6 +264,18 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
     except Exception as e:
         print(f"   ADK query error: {e}")
         return f"An error occurred while processing your question. Please try again."
+
+
+def get_last_grounding() -> dict:
+    """Return grounding metadata from the most recent query on this thread.
+    Used by research_agent to determine if the KB actually had results.
+
+    Returns:
+        kb_grounded: True if Vertex AI Search returned any documents
+        grounding_chunks: Number of KB documents cited
+        grounding_coverage: Fraction of response text backed by KB sources (0.0-1.0)
+    """
+    return getattr(_grounding_local, "data", {"kb_grounded": True, "grounding_chunks": 0, "grounding_coverage": 1.0})
 
 
 def check_agent_health() -> dict:
@@ -340,6 +386,8 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
 
         # Stream SSE events and yield text chunks + status updates
         full_text = ""
+        grounding_chunks = 0
+        grounding_coverage = 0.0
         for line in resp.iter_lines():
             if not line:
                 continue
@@ -353,6 +401,22 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
             except json.JSONDecodeError:
                 continue
 
+            # Extract grounding metadata
+            gm = event.get("groundingMetadata")
+            if gm:
+                chunks = gm.get("groundingChunks", [])
+                supports = gm.get("groundingSupports", [])
+                grounding_chunks = len(chunks)
+                if supports and full_text:
+                    total_chars = len(full_text)
+                    grounded_chars = sum(
+                        s.get("segment", {}).get("endIndex", 0) - s.get("segment", {}).get("startIndex", 0)
+                        for s in supports
+                    )
+                    grounding_coverage = grounded_chars / total_chars if total_chars > 0 else 0.0
+                elif chunks:
+                    grounding_coverage = 1.0
+
             content = event.get("content", {})
             if not isinstance(content, dict):
                 continue
@@ -363,11 +427,9 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
             # Check for tool calls and yield status updates
             for part in parts:
                 if isinstance(part, dict):
-                    # Handle function calls (tools being invoked)
                     if "functionCall" in part:
                         func_name = part["functionCall"].get("name", "")
                         args = part["functionCall"].get("args", {})
-                        # Check for agent transfer
                         if func_name == "transfer_to_agent":
                             agent_name = args.get("agent_name", "specialist")
                             status = TOOL_STATUS_MAP.get(agent_name, f"Consulting {agent_name.replace('_', ' ')}")
@@ -382,18 +444,18 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
             for part in parts:
                 if isinstance(part, dict) and "text" in part:
                     text = part["text"]
-                    # Clean citation artifacts
                     text = re.sub(r'\s*\[cite:\s*[^\]]*\]', '', text)
                     if text.strip():
-                        # Yield the new text chunk (delta from previous)
                         if len(text) > len(full_text):
                             chunk = text[len(full_text):]
                             full_text = text
                             yield {"type": "chunk", "content": chunk}
                         elif text != full_text:
-                            # Complete replacement - yield the whole thing
                             full_text = text
                             yield {"type": "chunk", "content": text}
+
+        # Store grounding signal for research_agent (thread-local)
+        _set_grounding(grounding_chunks > 0, grounding_chunks, grounding_coverage)
 
         yield {"type": "done", "content": full_text.strip()}
 
