@@ -24,6 +24,7 @@ import { FaLightbulb } from "@react-icons/all-files/fa/FaLightbulb";
 import { FaQuestionCircle } from "@react-icons/all-files/fa/FaQuestionCircle";
 import { FaPaperclip } from "@react-icons/all-files/fa/FaPaperclip";
 import { FaCheckCircle } from "@react-icons/all-files/fa/FaCheckCircle";
+import { FaGithub } from "@react-icons/all-files/fa/FaGithub";
 import { getApiBase } from "../lib/apiBase";
 import "./ChatSidebar.css";
 
@@ -546,6 +547,12 @@ export default function ChatSidebar({
           >
             <FaSignOutAlt size={16} />
           </button>
+        </div>
+        <div className="sidebar-dev-credit">
+          <a href="https://github.com/theaayushstha1/cs-chatbot-morganstate" target="_blank" rel="noopener noreferrer">
+            <FaGithub size={10} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+            Open Source
+          </a>
         </div>
       </div>
 

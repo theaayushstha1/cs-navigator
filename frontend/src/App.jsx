@@ -14,6 +14,7 @@ import AdminDashboard from "./components/AdminDashboard";
 import Forbidden      from "./components/Forbidden";
 import LandingPage    from "./components/LandingPage";
 import CommandPalette from "./components/CommandPalette";
+import WelcomeModal from "./components/WelcomeModal";
 
 import SignUp from "./SignUp";
 import Login  from "./Login";
@@ -135,6 +136,7 @@ export default function App() {
   const [role, setRole]   = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [cmdkOpen, setCmdkOpen] = useState(false);
+  const [showWelcome, setShowWelcome] = useState(false);
 
   // Dark mode state
   const [darkMode, setDarkMode] = useState(
@@ -165,6 +167,19 @@ export default function App() {
     const shouldCollapse = sidebarCollapsed || !token;
     document.body.classList.toggle('sidebar-collapsed', shouldCollapse);
   }, [sidebarCollapsed, token]);
+
+  // Welcome modal: show once per account
+  useEffect(() => {
+    if (token && !localStorage.getItem("welcomed")) {
+      const timer = setTimeout(() => setShowWelcome(true), 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [token]);
+
+  const dismissWelcome = () => {
+    setShowWelcome(false);
+    localStorage.setItem("welcomed", "1");
+  };
 
   // Cmd+K listener
   useEffect(() => {
@@ -367,6 +382,7 @@ export default function App() {
   return (
     <>
       <Toaster position="top-center" richColors />
+      {showWelcome && <WelcomeModal onClose={dismissWelcome} />}
       <CommandPalette
         open={cmdkOpen}
         onOpenChange={setCmdkOpen}
