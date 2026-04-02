@@ -322,9 +322,8 @@ root_agent = LlmAgent(
     before_agent_callback=_greeting_fast_path,
     before_model_callback=_select_model,
     generate_content_config=types.GenerateContentConfig(
-        temperature=0.05,       # Near-deterministic: minimize creative fabrication
-        top_p=0.8,              # Tighter nucleus sampling: fewer unlikely tokens
-        top_k=20,               # Restrict vocabulary to top 20 candidates
+        temperature=0.1,         # Low creativity, grounded responses
+        top_p=0.9,              # Slightly tighter nucleus sampling
         max_output_tokens=1024,
     ),
 )
