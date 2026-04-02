@@ -27,6 +27,14 @@ from typing import Optional
 ADK_BASE_URL = os.getenv("ADK_BASE_URL", "http://127.0.0.1:8080")
 ADK_APP_NAME = os.getenv("ADK_APP_NAME", "cs_navigator_unified")
 
+# User-facing message when ADK is down. Clearly says it's a system issue,
+# NOT a knowledge gap. Prevents users from thinking the bot can't answer.
+_OUTAGE_MSG = (
+    "I'm temporarily having trouble connecting to my knowledge base. "
+    "This is a system issue, not a gap in my knowledge. "
+    "Please try again in a minute. If the problem persists, contact the CS department at (443) 885-3962."
+)
+
 # Session reuse settings
 SESSION_TTL = 1800  # 30 minutes: reuse sessions within this window
 
@@ -177,7 +185,7 @@ def query_agent(query: str, user_id: str = "default", context: str = "", model: 
             state["model_preference"] = model
         session_id = _create_session(user_id, state=state if state else None)
         if not session_id:
-            return "The AI agent is currently unavailable. Please try again in a moment."
+            return _OUTAGE_MSG
         _cache_session(user_id, session_id, context, model)
 
     return _run_query(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context)
@@ -239,7 +247,7 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
             if new_session_id:
                 _cache_session(user_id, new_session_id, context, model)
                 return _run_query(message, user_id, new_session_id, retried=True, context=context, model=model, canvas_context=canvas_context)
-            return "The AI agent is currently unavailable. Please try again in a moment."
+            return _OUTAGE_MSG
 
         resp.raise_for_status()
 
@@ -319,14 +327,6 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
         return "An error occurred while processing your question. Please try again."
 
 
-# User-facing message when ADK is down. Clearly says it's a system issue,
-# NOT a knowledge gap. This prevents professors from thinking the bot can't answer.
-_OUTAGE_MSG = (
-    "I'm temporarily having trouble connecting to my knowledge base. "
-    "This is a system issue, not a gap in my knowledge. "
-    "Please try again in a minute. If the problem persists, contact the CS department at (443) 885-3962."
-)
-
 
 def get_last_grounding() -> dict:
     """Return grounding metadata from the most recent query on this thread.
@@ -384,7 +384,7 @@ def query_agent_stream(query: str, user_id: str = "default", context: str = "", 
             state["model_preference"] = model
         session_id = _create_session(user_id, state=state if state else None)
         if not session_id:
-            yield {"type": "error", "content": "The AI agent is currently unavailable. Please try again in a moment."}
+            yield {"type": "error", "content": _OUTAGE_MSG}
             return
         _cache_session(user_id, session_id, context, model)
 
@@ -435,7 +435,7 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
                 _cache_session(user_id, new_session_id, context, model)
                 yield from _run_query_stream(message, user_id, new_session_id, retried=True, context=context, model=model, canvas_context=canvas_context)
                 return
-            yield {"type": "error", "content": "The AI agent is currently unavailable. Please try again in a moment."}
+            yield {"type": "error", "content": _OUTAGE_MSG}
             return
 
         resp.raise_for_status()
