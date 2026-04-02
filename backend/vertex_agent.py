@@ -302,14 +302,30 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
             return "I'm sorry, I couldn't generate a response. Please try rephrasing your question."
 
     except requests.exceptions.ConnectionError:
-        print("   ADK server not reachable. Is it running on port 8080?")
-        return "The AI agent is currently unavailable. Please try again in a moment."
+        print("   [OUTAGE] ADK server not reachable")
+        return _OUTAGE_MSG
     except requests.exceptions.Timeout:
-        print("   ADK query timed out after 120s")
-        return "The request took too long. Please try a simpler question."
+        print("   [OUTAGE] ADK query timed out after 120s")
+        return "The request took too long. Please try a simpler question or try again in a moment."
     except Exception as e:
+        error_str = str(e)
+        if "403" in error_str or "Forbidden" in error_str:
+            print(f"   [OUTAGE] ADK returned 403 Forbidden: {e}")
+            return _OUTAGE_MSG
+        elif "API key" in error_str:
+            print(f"   [OUTAGE] ADK missing API key / Vertex AI config: {e}")
+            return _OUTAGE_MSG
         print(f"   ADK query error: {e}")
-        return f"An error occurred while processing your question. Please try again."
+        return "An error occurred while processing your question. Please try again."
+
+
+# User-facing message when ADK is down. Clearly says it's a system issue,
+# NOT a knowledge gap. This prevents professors from thinking the bot can't answer.
+_OUTAGE_MSG = (
+    "I'm temporarily having trouble connecting to my knowledge base. "
+    "This is a system issue, not a gap in my knowledge. "
+    "Please try again in a minute. If the problem persists, contact the CS department at (443) 885-3962."
+)
 
 
 def get_last_grounding() -> dict:
@@ -506,11 +522,16 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
         yield {"type": "done", "content": full_text.strip()}
 
     except requests.exceptions.ConnectionError:
-        print("   ADK server not reachable. Is it running on port 8080?")
-        yield {"type": "error", "content": "The AI agent is currently unavailable. Please try again in a moment."}
+        print("   [OUTAGE] ADK server not reachable (stream)")
+        yield {"type": "error", "content": _OUTAGE_MSG}
     except requests.exceptions.Timeout:
-        print("   ADK query timed out after 120s")
-        yield {"type": "error", "content": "The request took too long. Please try a simpler question."}
+        print("   [OUTAGE] ADK query timed out after 120s (stream)")
+        yield {"type": "error", "content": "The request took too long. Please try a simpler question or try again in a moment."}
     except Exception as e:
-        print(f"   ADK stream error: {e}")
-        yield {"type": "error", "content": "An error occurred while processing your question. Please try again."}
+        error_str = str(e)
+        if "403" in error_str or "Forbidden" in error_str or "API key" in error_str:
+            print(f"   [OUTAGE] ADK auth/config error (stream): {e}")
+            yield {"type": "error", "content": _OUTAGE_MSG}
+        else:
+            print(f"   ADK stream error: {e}")
+            yield {"type": "error", "content": "An error occurred while processing your question. Please try again."}
