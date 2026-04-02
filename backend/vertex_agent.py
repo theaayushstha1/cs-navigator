@@ -38,8 +38,8 @@ _id_token_cache: dict = {"token": None, "expires": 0}
 
 def _get_auth_headers() -> dict:
     """Get auth headers for calling the ADK service on Cloud Run.
-    Uses Google metadata server for ID tokens in production.
-    Returns empty dict for local dev (localhost)."""
+    Uses the GCE metadata server to fetch an ID token in production.
+    Returns plain headers for local dev (localhost)."""
     if "localhost" in ADK_BASE_URL or "127.0.0.1" in ADK_BASE_URL:
         return {"Content-Type": "application/json"}
 
@@ -47,17 +47,37 @@ def _get_auth_headers() -> dict:
     if _id_token_cache["token"] and now < _id_token_cache["expires"] - 60:
         return {"Content-Type": "application/json", "Authorization": f"Bearer {_id_token_cache['token']}"}
 
+    # Method 1: GCE metadata server (works on Cloud Run, GCE, GKE)
     try:
-        import google.auth.transport.requests
+        audience = ADK_BASE_URL.rstrip("/")
+        metadata_url = (
+            f"http://metadata.google.internal/computeMetadata/v1/"
+            f"instance/service-accounts/default/identity?audience={audience}"
+        )
+        resp = requests.get(metadata_url, headers={"Metadata-Flavor": "Google"}, timeout=5)
+        if resp.status_code == 200:
+            token = resp.text
+            _id_token_cache["token"] = token
+            _id_token_cache["expires"] = now + 3600
+            print(f"   [AUTH] Got ID token via metadata server")
+            return {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    except Exception as e:
+        print(f"   [AUTH] Metadata server failed: {e}")
+
+    # Method 2: google-auth library fallback
+    try:
+        import google.auth.transport.requests as gauth_requests
         import google.oauth2.id_token
-        auth_req = google.auth.transport.requests.Request()
+        auth_req = gauth_requests.Request()
         token = google.oauth2.id_token.fetch_id_token(auth_req, ADK_BASE_URL)
         _id_token_cache["token"] = token
-        _id_token_cache["expires"] = now + 3600  # tokens last ~1hr
+        _id_token_cache["expires"] = now + 3600
+        print(f"   [AUTH] Got ID token via google-auth")
         return {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
     except Exception as e:
-        print(f"   [AUTH] Failed to get ID token for ADK: {e}")
-        return {"Content-Type": "application/json"}
+        print(f"   [AUTH] google-auth fallback failed: {e}")
+
+    return {"Content-Type": "application/json"}
 
 
 def _compute_context_hash(context: str) -> str:
