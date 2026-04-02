@@ -865,17 +865,31 @@ def root_dashboard(request: Request, user: Optional[dict] = Depends(get_optional
 # --- Auth ---
 ALLOWED_EMAIL_DOMAINS = ["morgan.edu"]
 
+_register_timestamps: dict[str, list] = {}
+
 @app.post("/api/register", status_code=status.HTTP_201_CREATED)
 def register(req: RegisterRequest, db: Session = Depends(get_db)):
     import re
     from email_service import generate_token, send_verification_email
 
-    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', req.email):
+    email = req.email.strip().lower()
+
+    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
         raise HTTPException(status_code=400, detail="Invalid email format")
 
+    # Rate limit per EMAIL (not per IP). On campus WiFi all students share one IP,
+    # so IP-based limiting blocks innocent users. 3 attempts per email per hour.
+    now_ts = time_module.time()
+    reg_ts = _register_timestamps.get(email, [])
+    reg_ts = [t for t in reg_ts if now_ts - t < 3600]
+    if len(reg_ts) >= 3:
+        raise HTTPException(status_code=429, detail="Too many attempts for this email. Try again in an hour.")
+    reg_ts.append(now_ts)
+    _register_timestamps[email] = reg_ts
+
     # Only allow Morgan State email for new registrations
-    email_domain = req.email.split("@")[-1].lower()
-    if email_domain not in ALLOWED_EMAIL_DOMAINS and not req.email.endswith("@test.com"):
+    email_domain = email.split("@")[-1].lower()
+    if email_domain not in ALLOWED_EMAIL_DOMAINS and not email.endswith("@test.com"):
         raise HTTPException(status_code=400, detail="Only @morgan.edu email addresses are allowed.")
 
     if len(req.password) < 8:
@@ -3122,8 +3136,11 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
                 if guest_gpa: parts.append(f"with ~{guest_gpa} GPA")
                 guest_context = f"[Guest user info: {' '.join(parts)}]\n"
 
-            # Use a guest-specific user_id based on IP for session management
-            guest_user_id = f"guest_{client_ip.replace('.', '_')}"
+            # Use a unique guest_user_id per request to prevent session bleed.
+            # Previously IP-based, which caused students on the same campus WiFi
+            # to share ADK sessions and see each other's DegreeWorks data.
+            import uuid
+            guest_user_id = f"guest_{uuid.uuid4().hex[:12]}"
             print(f"[CACHE] MISS (guest) for: '{user_q[:50]}...'")
             answer = query_agent(
                 query=user_q,

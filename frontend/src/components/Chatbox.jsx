@@ -506,10 +506,28 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
       const data = await res.json();
       const botResponse = data.response || data.message || "No response.";
 
-      addMessage(botResponse, "bot");
-
-      // Speak the response with OpenAI TTS
-      await speakWithTTS(botResponse);
+      const isOutage = botResponse.includes("temporarily") && botResponse.includes("knowledge base");
+      if (isOutage) {
+        toast("Hang tight! We're pushing an update. Try again in a moment.", {
+          duration: 6000,
+          style: {
+            background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
+            color: "#f1f5f9",
+            border: "1px solid rgba(99, 102, 241, 0.3)",
+            borderRadius: "14px",
+            padding: "14px 18px",
+            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(99, 102, 241, 0.1)",
+            backdropFilter: "blur(12px)",
+            fontSize: "0.88rem",
+            fontWeight: 500,
+            letterSpacing: "0.01em",
+          },
+          icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="url(#tg2)" strokeWidth="2" strokeLinecap="round"/><path d="M12 7v5l3 3" stroke="url(#tg2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><defs><linearGradient id="tg2" x1="3" y1="3" x2="21" y2="21"><stop stopColor="#818cf8"/><stop offset="1" stopColor="#6366f1"/></linearGradient></defs></svg>,
+        });
+      } else {
+        addMessage(botResponse, "bot");
+        await speakWithTTS(botResponse);
+      }
 
     } catch (err) {
       console.error("🎤 Voice send error:", err);
@@ -801,15 +819,40 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                                 return newMessages;
                             });
                         } else if (event.type === "error") {
-                            setMessages((prev) => {
-                                const newMessages = [...prev];
-                                newMessages[newMessages.length - 1] = {
-                                    ...newMessages[newMessages.length - 1],
-                                    text: event.content || "An error occurred.",
-                                    isStreaming: false
-                                };
-                                return newMessages;
-                            });
+                            const errMsg = event.content || "An error occurred.";
+                            const isOutage = errMsg.includes("temporarily") || errMsg.includes("knowledge base") || errMsg.includes("system issue");
+
+                            if (isOutage) {
+                                // Show toast notification instead of polluting the chat
+                                toast("Hang tight! We're pushing an update. Try again in a moment.", {
+                                    duration: 6000,
+                                    style: {
+                                      background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
+                                      color: "#f1f5f9",
+                                      border: "1px solid rgba(99, 102, 241, 0.3)",
+                                      borderRadius: "14px",
+                                      padding: "14px 18px",
+                                      boxShadow: "0 8px 32px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(99, 102, 241, 0.1)",
+                                      backdropFilter: "blur(12px)",
+                                      fontSize: "0.88rem",
+                                      fontWeight: 500,
+                                      letterSpacing: "0.01em",
+                                    },
+                                    icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="url(#tg)" strokeWidth="2" strokeLinecap="round"/><path d="M12 7v5l3 3" stroke="url(#tg)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><defs><linearGradient id="tg" x1="3" y1="3" x2="21" y2="21"><stop stopColor="#818cf8"/><stop offset="1" stopColor="#6366f1"/></linearGradient></defs></svg>,
+                                });
+                                // Remove the placeholder bot message
+                                setMessages((prev) => prev.slice(0, -1));
+                            } else {
+                                setMessages((prev) => {
+                                    const newMessages = [...prev];
+                                    newMessages[newMessages.length - 1] = {
+                                        ...newMessages[newMessages.length - 1],
+                                        text: errMsg,
+                                        isStreaming: false
+                                    };
+                                    return newMessages;
+                                });
+                            }
                         }
                     } catch (parseErr) {
                         console.warn("SSE parse error:", parseErr);
@@ -835,19 +878,48 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
 
     } catch (err) {
         console.error("Send error:", err);
-        setMessages((prev) => {
-            const newMessages = [...prev];
-            if (newMessages.length > 0 && newMessages[newMessages.length - 1].sender === "bot") {
-                newMessages[newMessages.length - 1] = {
-                    ...newMessages[newMessages.length - 1],
-                    text: "Error: " + err.message,
-                    isStreaming: false
-                };
-            } else {
-                newMessages.push({ text: "Error: " + err.message, sender: "bot", time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) });
-            }
-            return newMessages;
-        });
+        const isNetworkDown = err.message?.includes("Failed to fetch") || err.message?.includes("NetworkError") || err.message?.includes("network");
+
+        if (isNetworkDown) {
+            // Backend unreachable: show deploy toast, remove placeholder bot message
+            toast("We're deploying updates right now. Give it a moment and try again.", {
+                duration: 6000,
+                style: {
+                    background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
+                    color: "#f1f5f9",
+                    border: "1px solid rgba(99, 102, 241, 0.3)",
+                    borderRadius: "14px",
+                    padding: "14px 18px",
+                    boxShadow: "0 8px 32px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(99, 102, 241, 0.1)",
+                    backdropFilter: "blur(12px)",
+                    fontSize: "0.88rem",
+                    fontWeight: 500,
+                },
+                icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M21 12a9 9 0 11-6.22-8.56" stroke="url(#dg)" strokeWidth="2" strokeLinecap="round"/><path d="M21 3v5h-5" stroke="url(#dg)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><defs><linearGradient id="dg" x1="3" y1="3" x2="21" y2="21"><stop stopColor="#818cf8"/><stop offset="1" stopColor="#6366f1"/></linearGradient></defs></svg>,
+            });
+            // Remove the placeholder bot message
+            setMessages((prev) => {
+                const last = prev[prev.length - 1];
+                if (last && last.sender === "bot" && last.isStreaming) {
+                    return prev.slice(0, -1);
+                }
+                return prev;
+            });
+        } else {
+            setMessages((prev) => {
+                const newMessages = [...prev];
+                if (newMessages.length > 0 && newMessages[newMessages.length - 1].sender === "bot") {
+                    newMessages[newMessages.length - 1] = {
+                        ...newMessages[newMessages.length - 1],
+                        text: "Something went wrong. Please try again.",
+                        isStreaming: false
+                    };
+                } else {
+                    newMessages.push({ text: "Something went wrong. Please try again.", sender: "bot", time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) });
+                }
+                return newMessages;
+            });
+        }
     } finally {
         setIsLoading(false);
         // Regain focus
