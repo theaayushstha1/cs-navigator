@@ -350,7 +350,7 @@ export default function ChatSidebar({
   return (
     <div className="chat-sidebar">
       <div className="sidebar-top">
-        <div style={{ display: 'flex', gap: '8px', width: '100%' }}>
+        <div className="sidebar-top-row">
           <button
             className="sidebar-action-btn new-chat"
             onClick={onNew}
@@ -361,13 +361,11 @@ export default function ChatSidebar({
             <span>New Chat</span>
           </button>
           {onCollapse && (
-            <button
-              className="sidebar-action-btn"
-              onClick={onCollapse}
-              title="Collapse sidebar"
-              style={{ width: '40px', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-            >
-              <FaChevronRight size={14} style={{ transform: 'rotate(180deg)' }} />
+            <button className="sidebar-toggle-btn" onClick={onCollapse} title="Close sidebar">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                <line x1="9" y1="3" x2="9" y2="21"/>
+              </svg>
             </button>
           )}
         </div>

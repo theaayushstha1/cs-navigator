@@ -314,10 +314,12 @@ body.dark ::-webkit-scrollbar-thumb:hover {
   overflow-y: auto;
   overflow-x: hidden;
   z-index: 1;
+  transition: left 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 body.sidebar-collapsed .page-content {
-  left: 0;
+  left: 64px;
+  overflow-x: hidden;
 }
 
 @media (max-width: 768px) {

@@ -136,11 +136,30 @@ export default function GuestChatbox() {
   // Handle suggestion click
   const handleSuggestion = (text) => {
     if (!isLoading && !isSessionExpired) {
-      setInput(text);
-      setTimeout(() => {
-        const form = document.querySelector('.guest-chat-form');
-        if (form) form.requestSubmit();
-      }, 50);
+      // Directly send instead of just filling input
+      setInput('');
+      startSession();
+
+      const userMessage = text.trim();
+      setMessages(prev => [...prev, { text: userMessage, sender: "user", time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
+      setIsLoading(true);
+
+      (async () => {
+        try {
+          const res = await fetch(`${API_BASE}/chat/guest`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: userMessage, guestProfile: guestProfile || {} }),
+          });
+          const data = await res.json();
+          const botReply = data.response || "I couldn't process that. Please try again.";
+          setMessages(prev => [...prev, { text: botReply, sender: "bot", time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
+        } catch {
+          setMessages(prev => [...prev, { text: "Something went wrong. Please try again.", sender: "bot", time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
+        } finally {
+          setIsLoading(false);
+        }
+      })();
     }
   };
 

@@ -1,0 +1,106 @@
+<h2>Voice Mode Architecture: Before vs After</h2>
+<p class="subtitle">Same ADK agent, completely new voice pipeline</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">CURRENT (Walkie-Talkie)</div>
+    <div class="mockup-body" style="padding:20px;font-family:monospace;font-size:13px;line-height:2.2">
+      <div style="color:#ef4444">User speaks...</div>
+      <div style="color:#999;font-style:italic">--- 3-5s silence detection ---</div>
+      <div style="color:#f59e0b">Browser STT: "Where is the CS dept?"</div>
+      <div style="color:#999;font-style:italic">--- POST /chat (sync, wait 2-8s) ---</div>
+      <div style="color:#3b82f6">Full response received (all at once)</div>
+      <div style="color:#999;font-style:italic">--- OpenAI TTS (wait 300ms-1s) ---</div>
+      <div style="color:#22c55e">Play entire audio clip</div>
+      <div style="color:#999;font-style:italic">--- Done, resume listening ---</div>
+      <br>
+      <div style="background:#fef2f2;padding:12px;border-radius:8px;border:1px solid #fca5a5;color:#991b1b;font-family:system-ui;font-size:12px">
+        <strong>5-15 seconds</strong> of dead silence between speaking and hearing the answer
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header" style="background:#22c55e;color:white">UPGRADED (Conversational)</div>
+    <div class="mockup-body" style="padding:20px;font-family:monospace;font-size:13px;line-height:2.2">
+      <div style="color:#ef4444">User speaks...</div>
+      <div style="color:#22c55e">VAD: end-of-speech! (&lt;50ms)</div>
+      <div style="color:#f59e0b">Deepgram STT: <span style="color:#ccc">Where is</span> <span style="color:#ccc">the CS</span> "Where is the CS dept?"</div>
+      <div style="color:#3b82f6">SSE /chat/stream: chunks arriving...</div>
+      <div style="color:#8b5cf6">Sentence 1 complete -> TTS -> PLAY</div>
+      <div style="color:#3b82f6" style="opacity:0.6">...more chunks still generating...</div>
+      <div style="color:#8b5cf6">Sentence 2 complete -> TTS -> queue</div>
+      <div style="color:#ef4444;font-style:italic">User interrupts? -> stop TTS, listen</div>
+      <br>
+      <div style="background:#f0fdf4;padding:12px;border-radius:8px;border:1px solid #86efac;color:#166534;font-family:system-ui;font-size:12px">
+        <strong>1-2 seconds</strong> to first spoken word. User hears answer while rest generates.
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2 style="margin-top:40px">Voice Mode State Machine</h2>
+<p class="subtitle">Clean transitions with barge-in support</p>
+
+<div class="mockup">
+  <div class="mockup-header">State Flow</div>
+  <div class="mockup-body" style="padding:30px;text-align:center">
+    <div style="display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:wrap;font-family:system-ui">
+      <div style="background:#e0e7ff;padding:14px 24px;border-radius:12px;font-weight:600;color:#3730a3;border:2px solid #a5b4fc">IDLE</div>
+      <div style="color:#999;font-size:20px">-></div>
+      <div style="background:#fef2f2;padding:14px 24px;border-radius:12px;font-weight:600;color:#991b1b;border:2px solid #fca5a5;position:relative">
+        LISTENING
+        <div style="font-size:10px;color:#666;margin-top:4px">VAD active + live waveform</div>
+      </div>
+      <div style="color:#999;font-size:20px">-></div>
+      <div style="background:#eff6ff;padding:14px 24px;border-radius:12px;font-weight:600;color:#1e40af;border:2px solid #93c5fd">
+        PROCESSING
+        <div style="font-size:10px;color:#666;margin-top:4px">STT + LLM streaming</div>
+      </div>
+      <div style="color:#999;font-size:20px">-></div>
+      <div style="background:#f0fdf4;padding:14px 24px;border-radius:12px;font-weight:600;color:#166534;border:2px solid #86efac;position:relative">
+        SPEAKING
+        <div style="font-size:10px;color:#666;margin-top:4px">Sentence-by-sentence TTS</div>
+      </div>
+    </div>
+    <div style="margin-top:20px;display:flex;justify-content:center;gap:40px;font-size:12px;color:#666">
+      <div>SPEAKING -> <span style="color:#ef4444;font-weight:600">LISTENING</span> (barge-in: user speaks)</div>
+      <div>SPEAKING -> <span style="color:#ef4444;font-weight:600">LISTENING</span> (auto: all audio done)</div>
+      <div>Any state -> <span style="color:#3730a3;font-weight:600">IDLE</span> (user clicks stop)</div>
+    </div>
+  </div>
+</div>
+
+<h2 style="margin-top:40px">Implementation Phases</h2>
+<p class="subtitle">Each phase ships independently</p>
+
+<div class="options">
+  <div class="option" data-choice="phase1" onclick="toggleSelect(this)">
+    <div class="letter">1</div>
+    <div class="content">
+      <h3>VAD + Interim Results</h3>
+      <p>Add Silero VAD for instant end-of-speech. Show words appearing in real-time. Biggest UX win, least code.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="phase2" onclick="toggleSelect(this)">
+    <div class="letter">2</div>
+    <div class="content">
+      <h3>Streaming TTS</h3>
+      <p>Switch from /chat to /chat/stream. Sentence splitter + audio queue. Kills the long silence. User hears first sentence in ~1s.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="phase3" onclick="toggleSelect(this)">
+    <div class="letter">3</div>
+    <div class="content">
+      <h3>Deepgram STT</h3>
+      <p>Backend WebSocket proxy. Replace browser STT with Deepgram streaming. Faster and more accurate transcription.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="phase4" onclick="toggleSelect(this)">
+    <div class="letter">4</div>
+    <div class="content">
+      <h3>Barge-In + Waveform</h3>
+      <p>User can interrupt by speaking. Live audio waveform visualization. Full conversational feel.</p>
+    </div>
+  </div>
+</div>

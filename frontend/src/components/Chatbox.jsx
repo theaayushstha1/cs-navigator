@@ -634,7 +634,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
           setInput(text);
           // Auto-send the suggestion instead of just filling the input
           setTimeout(() => {
-              const form = document.querySelector('.chat-input-form');
+              const form = document.querySelector('.chat-input-wrapper');
               if (form) form.requestSubmit();
           }, 50);
       }

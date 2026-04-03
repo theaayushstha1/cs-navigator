@@ -17,15 +17,15 @@
   background: var(--bg-body);
   overflow: hidden;
   margin-left: 280px;
-  transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease;
   width: calc(100% - 280px);
   flex: 1;
   position: relative;
+  transition: margin-left 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease;
 }
 
 body.sidebar-collapsed .chat-main {
-  margin-left: 0;
-  width: 100%;
+  margin-left: 64px;
+  width: calc(100% - 64px);
 }
 
 /* Messages area */
@@ -554,7 +554,7 @@ body.sidebar-collapsed .chat-input-container {
   flex: 1;
   border: none;
   outline: none;
-  padding: 8px 12px;
+  padding: 10px 14px;
   font-size: 16px; /* CRITICAL: 16px prevents iOS zoom on focus */
   font-family: inherit;
   background: transparent;
