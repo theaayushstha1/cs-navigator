@@ -59,10 +59,12 @@ def parse_degreeworks_audit_json(audit: dict) -> dict:
         # or from degreeLiteral
         result["degree_program"] = degree_literal or None
 
-    # --- blockArray[0] (DEGREE block): credits, GPA ---
+    # --- blockArray: DEGREE block (credits) + MAJOR block (major GPA) ---
     blocks = audit.get("blockArray") or []
     for block in blocks:
-        if block.get("requirementType") == "DEGREE":
+        req_type = block.get("requirementType", "")
+
+        if req_type == "DEGREE":
             credits_applied = _to_float(block.get("creditsApplied"))
             credits_required = _to_float(block.get("creditsRequired"))
             block_gpa = _to_float(block.get("gpa"))
@@ -76,13 +78,48 @@ def parse_degreeworks_audit_json(audit: dict) -> dict:
             if block_gpa and not result.get("overall_gpa"):
                 result["overall_gpa"] = block_gpa
 
-            # Build degree program with major info from title
-            title = block.get("title", "").strip()
-            if title and result.get("degree_program"):
-                # title is like "Bachelor of Science", we need to add major
-                # Check degreeInformation for major
-                pass
-            break
+        elif req_type == "MAJOR":
+            major_gpa = _to_float(block.get("gpa"))
+            if major_gpa:
+                result["major_gpa"] = major_gpa
+            major_credits_req = _to_float(block.get("creditsRequired"))
+            major_credits_applied = _to_float(block.get("creditsApplied"))
+            if major_credits_req:
+                result["major_credits_required"] = major_credits_req
+            if major_credits_applied:
+                result["major_credits_earned"] = major_credits_applied
+
+    # --- Extract remaining requirements from ALL blocks ---
+    remaining = []
+    for block in blocks:
+        block_title = (block.get("title") or block.get("requirementType") or "").strip()
+        percent = block.get("percentComplete", "")
+        # Skip fully completed blocks
+        if str(percent) == "100":
+            continue
+        rules = block.get("ruleArray") or []
+        for rule in rules:
+            # Check if rule is not satisfied
+            if rule.get("percentComplete") == "100":
+                continue
+            label = (rule.get("label") or rule.get("ruleTag") or "").strip()
+            req_value = (rule.get("requirement") or {})
+            # Extract course requirements from ifElsePart or requirement
+            courses_needed = []
+            if_part = rule.get("ifElsePart") or rule.get("ifPart") or {}
+            class_array = (req_value.get("classesApplied") or {}).get("classArray") or []
+            # Get courses still needed from the rule
+            num_classes = req_value.get("numClasses") or req_value.get("classesRequired")
+            credits_req = req_value.get("creditsRequired")
+            if label:
+                entry = {"requirement": label, "category": block_title}
+                if num_classes:
+                    entry["classes_needed"] = num_classes
+                if credits_req:
+                    entry["credits_needed"] = credits_req
+                remaining.append(entry)
+    if remaining:
+        result["courses_remaining"] = json.dumps(remaining)
 
     # --- Find major from degreeInformation ---
     for deg in deg_array:
@@ -164,19 +201,22 @@ def parse_degreeworks_audit_json(audit: dict) -> dict:
                 "semester": cls.get("termLiteral", ""),
             })
 
-    # Deduplicate
+    # Deduplicate: keep all attempts for retaken courses (different semester/grade),
+    # only remove true duplicates (same code + semester + grade).
     seen = set()
     unique_completed = []
     for c in completed:
-        if c["code"] not in seen:
-            seen.add(c["code"])
+        key = (c["code"], c.get("semester", ""), c.get("grade", ""))
+        if key not in seen:
+            seen.add(key)
             unique_completed.append(c)
 
     seen_ip = set()
     unique_ip = []
     for c in in_progress_courses:
-        if c["code"] not in seen_ip:
-            seen_ip.add(c["code"])
+        key = (c["code"], c.get("semester", ""))
+        if key not in seen_ip:
+            seen_ip.add(key)
             unique_ip.append(c)
 
     result["courses_completed"] = json.dumps(unique_completed)

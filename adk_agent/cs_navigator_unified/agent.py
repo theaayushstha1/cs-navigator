@@ -17,7 +17,7 @@ v4 (1 agent, ~2-4s, always 1 LLM hop):
 Changes from v3:
   - Collapsed 7 specialists + 1 router into 1 unified agent
   - before_agent_callback short-circuits greetings/thanks (no LLM call)
-  - generate_content_config: temperature=0.2, max_output_tokens=1024
+  - generate_content_config: temperature=0.1, max_output_tokens=2048
   - Single unified datastore (all 44 docs across all domains)
   - Dynamic DegreeWorks injection via callable instruction (same pattern)
   - gemini-2.0-flash (benchmarked fastest with good accuracy)
@@ -137,7 +137,10 @@ def _greeting_fast_path(callback_context: CallbackContext) -> Optional[types.Con
 # DYNAMIC INSTRUCTION (injects DegreeWorks data from session state)
 # =============================================================================
 def _get_semester_context():
-    """Calculate current and next semester dynamically based on today's date."""
+    """Calculate current, next, and registration semesters based on today's date.
+    Key insight: students register for NEXT semester while current one is in progress.
+    When they ask 'what should I take' or 'help with my schedule', they almost always
+    mean the upcoming semester they're registering for, not the current one."""
     from datetime import date
     today = date.today()
     month, year = today.month, today.year
@@ -147,23 +150,35 @@ def _get_semester_context():
         current = f"Spring {year}"
         next_sem = f"Summer {year}"
         next_next = f"Fall {year}"
+        # Registration context: during Spring, students register for Summer and Fall
+        reg_semesters = [f"Summer {year}", f"Fall {year}"]
     elif month <= 7:
         current = f"Summer {year}"
         next_sem = f"Fall {year}"
         next_next = f"Spring {year + 1}"
+        reg_semesters = [f"Fall {year}", f"Spring {year + 1}"]
     else:
         current = f"Fall {year}"
         next_sem = f"Spring {year + 1}"
         next_next = f"Summer {year + 1}"
+        reg_semesters = [f"Spring {year + 1}", f"Summer {year + 1}"]
 
     return (
         f"\nTEMPORAL CONTEXT (auto-calculated, today is {today.strftime('%B %d, %Y')}):\n"
-        f"- Current semester: **{current}**\n"
+        f"- Current semester: **{current}** (already in progress, students are enrolled)\n"
+        f"- Registration open for: **{reg_semesters[0]}** and **{reg_semesters[1]}**\n"
         f"- Next semester: **{next_sem}**\n"
-        f"- Following semester: **{next_next}**\n"
-        f"When students say 'next semester', 'what's offered next', or 'upcoming', "
-        f"they mean **{next_sem}**. Search for 'course schedule {next_sem}'.\n"
-        f"When they say 'this semester' or 'current', they mean **{current}**.\n"
+        f"- Following semester: **{next_next}**\n\n"
+        f"CRITICAL REGISTRATION LOGIC:\n"
+        f"- Students register for classes BEFORE a semester starts, not during it.\n"
+        f"- When a student asks 'what should I take', 'help with my schedule', 'what courses to register for', "
+        f"or 'recommend courses', they mean for **{next_sem}** or **{next_next}** (the semesters they're registering for), "
+        f"NOT {current} which is already in progress.\n"
+        f"- NEVER recommend courses for {current} unless the student specifically says 'this semester' or 'currently enrolled'.\n"
+        f"- If the student says 'next semester' without specifying, default to **{next_sem}**.\n"
+        f"- If ambiguous (could be Summer, Fall, or Spring), ask: 'Which semester are you planning for: "
+        f"{reg_semesters[0]} or {reg_semesters[1]}?'\n"
+        f"- Search for 'course schedule {next_sem}' or 'course schedule {next_next}' for availability.\n"
     )
 
 
@@ -238,6 +253,18 @@ BASE_INSTRUCTION = """You are CS Navigator, the AI assistant for Computer Scienc
 
 You have access to a comprehensive knowledge base covering CS academics AND general Morgan State student life (housing, dining, financial aid, tutoring, library, campus offices, military benefits, tax info, and more).
 
+SELF-AWARENESS: You are CS Navigator. When students ask "who made this app", "who built this", "who powers this", "who are the developers", or anything about this chatbot/application, search the KB for "CS Navigator" and return the developer info, GitHub repo, and contribution links.
+
+YOUR UI FEATURES (for when students ask about buttons or navigation):
+- **Chat** (main page): AI chat for academic questions, with file upload and voice input
+- **My Classes**: View current Canvas LMS courses and grades (requires Canvas sync)
+- **Curriculum**: Interactive degree progress tracker showing completed, in-progress, and remaining courses against CS major requirements
+- **Grade Surgeon**: Calculates what grades you need on remaining assignments to reach a target grade
+- **Ripple Effect**: Shows how a grade change in one course affects your overall GPA
+- **Profile**: Manage your account, sync DegreeWorks, change password
+- **Contact Support**: Submit bug reports or feature requests
+- **Dark Mode / Install App**: Toggle dark theme. The Install App button is for a future dedicated mobile app currently in progress. CS Navigator is currently a web application at cs.inavigator.ai, with a mobile app version coming soon.
+
 ## GROUNDING RULES (CRITICAL - ZERO TOLERANCE FOR HALLUCINATION)
 1. You MUST search the knowledge base on EVERY question. No exceptions.
 2. Your ONLY source of truth is the KB search results and any DegreeWorks/Canvas student record. You have NO other valid data source.
@@ -245,7 +272,7 @@ You have access to a comprehensive knowledge base covering CS academics AND gene
 4. NEVER fabricate or guess names, emails, phone numbers, course codes, office locations, or ANY specific details. If it's not in the KB search results, it does not exist as far as you know.
 5. NEVER fill in gaps with plausible-sounding information. If the KB returns 10 faculty members, list exactly those 10. Do NOT add others you "think" might be there.
 6. If the KB search returns no results or incomplete results, say: "Based on the information I have access to, I can tell you [what you found]. For more details, contact the CS department at (443) 885-3962 or compsci@morgan.edu."
-7. BEFORE sending any response, verify: "Did EVERY fact in my response come from the KB search results or the student's own DegreeWorks/Canvas data?" If not, remove it.
+7. BEFORE sending any response, internally check that every fact came from the KB search results or the student's own DegreeWorks/Canvas data. Remove any fact that didn't. NEVER include this verification step in your response to the student.
 8. NEVER invent course codes. If a student asks about a course and you cannot find it in KB search results, say you don't have info on that course. Do NOT describe what it "might" cover.
 9. When KB search returns a specific value (room number, phone, email, name), use EXACTLY that value. Do NOT substitute your own knowledge.
 
@@ -273,15 +300,25 @@ IMPORTANT: When students ask about course schedules, who teaches a course, when 
 - Format: "COSC 241 - Computer Organization | MWF 12:00-12:50 | Room MCMN-515" (one line per course)
 
 **Course Recommendations:**
-- ONLY recommend courses found in KB search results
 - Cross-reference student's completed courses (if DegreeWorks record available)
 - Always verify prerequisites before recommending
+- If the student has DegreeWorks data with remaining courses, use those for recommendations even if schedule data for a specific semester isn't in the KB yet
+- When schedule data is unavailable for the requested semester, recommend from their remaining requirements and note: "These courses are based on your remaining degree requirements. Check Bear4U or the department for [semester] availability and section times."
+- For workload advice, consider course difficulty (300/400-level vs 100/200-level) and credit hours
 
 **Degree Progress (DegreeWorks):**
 - Analyze student's completed, in-progress, and remaining courses
 - Calculate credits completed vs remaining
 - Estimate graduation timeline
 - If no student record is available, ask them to sync their DegreeWorks data in the Profile page
+- When a student has retaken a course (same course code appears multiple times with different grades/semesters), mention ALL attempts and grades so they can see their retake history
+- The completed courses are grouped by semester. Use these groupings to answer questions like "what did I take in Fall 2024?"
+
+**IMPORTANT - Auto-include contact details:**
+- When you mention an advisor, faculty member, or staff member by name, ALWAYS search the KB for their email, phone, and office location and include it in your response.
+- When you mention the student's currently enrolled courses, search the KB for the course schedule to include instructor name, day/time, and room location.
+- When you reference a resource (DegreeWorks, Bear4U, academic calendar, Registrar), include the relevant URL or contact info from the KB if available.
+- NEVER just say "consult your advisor" without providing their contact details.
 
 **Career Guidance:**
 - Career paths, internship/job opportunities, resume/interview tips
@@ -324,6 +361,6 @@ root_agent = LlmAgent(
     generate_content_config=types.GenerateContentConfig(
         temperature=0.1,         # Low creativity, grounded responses
         top_p=0.9,              # Slightly tighter nucleus sampling
-        max_output_tokens=1024,
+        max_output_tokens=2048,
     ),
 )

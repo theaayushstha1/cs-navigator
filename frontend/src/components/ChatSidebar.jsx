@@ -184,7 +184,13 @@ export default function ChatSidebar({
       }
       deferredPromptRef.current = null;
     } else {
-      toast("To install, use your browser's 'Add to Home Screen' or 'Install App' option.", { duration: 4000 });
+      const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      if (isIOS || isSafari) {
+        toast("Tap the Share button in Safari, then tap 'Add to Home Screen'.", { duration: 6000 });
+      } else {
+        toast("Click the install icon in your browser's address bar, or use the menu to 'Install App'.", { duration: 5000 });
+      }
     }
   };
 

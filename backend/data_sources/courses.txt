@@ -59,6 +59,12 @@ Credits: 3
 Prerequisites: COSC 220 (Grade C or higher)
 Offered: Fall, Spring
 
+COSC 001 - Computer Science Senior Comprehensive Exam
+Credits: 0
+Prerequisites: Senior standing, completion of all required major courses
+Offered: Fall, Spring
+Note: Required for graduation. Must be passed to receive the B.S. in Computer Science.
+
 COSC 490 - Senior Project
 Credits: 3
 Prerequisites: Senior standing, Department Chair permission

@@ -94,7 +94,10 @@ def build_student_context(dw: dict) -> str:
         ("Classification", "classification"), ("Degree Program", "degree_program"),
         ("Overall GPA", "overall_gpa"), ("Major GPA", "major_gpa"),
         ("Credits Earned", "total_credits_earned"), ("Credits Required", "credits_required"),
-        ("Credits Remaining", "credits_remaining"), ("Academic Advisor", "advisor"),
+        ("Credits Remaining", "credits_remaining"),
+        ("Major Credits Required", "major_credits_required"),
+        ("Major Credits Earned", "major_credits_earned"),
+        ("Academic Advisor", "advisor"),
         ("Catalog Year", "catalog_year"),
     ]:
         val = dw.get(key)
@@ -102,14 +105,28 @@ def build_student_context(dw: dict) -> str:
             ctx += f"- {label}: {val}\n"
     ctx += "\n"
 
-    # Completed courses
+    # Completed courses (grouped by semester for historical queries)
     if dw.get("courses_completed"):
         try:
             completed = json.loads(dw["courses_completed"]) if isinstance(dw["courses_completed"], str) else dw["courses_completed"]
             if completed:
                 ctx += "ALREADY COMPLETED COURSES (DO NOT RECOMMEND THESE):\n"
+                # Group by semester so the agent can answer "what did I take in X semester?"
+                by_semester = {}
                 for c in completed:
-                    ctx += f"  - {c.get('code', '')} {c.get('name', '')} (Grade: {c.get('grade', '')})\n"
+                    sem = str(c.get('semester', '') or '').strip() or "Unknown Term"
+                    by_semester.setdefault(sem, []).append(c)
+                # Sort chronologically: Spring=1, Summer=2, Fall=3
+                def _sem_sort_key(sem_name):
+                    order = {"spring": 1, "summer": 2, "fall": 3}
+                    parts = sem_name.lower().split()
+                    if len(parts) == 2 and parts[1].isdigit():
+                        return (int(parts[1]), order.get(parts[0], 0))
+                    return (0, 0)
+                for sem in sorted(by_semester.keys(), key=_sem_sort_key):
+                    ctx += f"  [{sem}]\n"
+                    for c in by_semester[sem]:
+                        ctx += f"    - {c.get('code', '')} {c.get('name', '')} (Grade: {c.get('grade', '')})\n"
                 ctx += "\n"
         except Exception:
             pass
@@ -119,7 +136,14 @@ def build_student_context(dw: dict) -> str:
         try:
             in_progress = json.loads(dw["courses_in_progress"]) if isinstance(dw["courses_in_progress"], str) else dw["courses_in_progress"]
             if in_progress:
-                ctx += "CURRENTLY ENROLLED (DO NOT RECOMMEND THESE EITHER):\n"
+                semesters = {str(c.get('semester', '') or '').strip() for c in in_progress} - {''}
+                if len(semesters) == 1:
+                    label = f"CURRENTLY ENROLLED [{semesters.pop()}]"
+                else:
+                    label = "CURRENTLY ENROLLED"
+                total_credits = sum(c.get('credits', 0) or 0 for c in in_progress)
+                credits_note = f" ({total_credits} credits)" if total_credits else ""
+                ctx += f"{label}{credits_note} (DO NOT RECOMMEND THESE EITHER):\n"
                 for c in in_progress:
                     ctx += f"  - {c.get('code', '')} {c.get('name', '')}\n"
                 ctx += "\n"

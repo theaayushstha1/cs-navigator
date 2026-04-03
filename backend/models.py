@@ -151,7 +151,7 @@ class SupportTicket(Base):
     subject = Column(String(255), nullable=False)
     category = Column(String(50), nullable=False)  # "bug", "feature", "question", "other"
     description = Column(Text, nullable=False)
-    attachment_data = Column(Text, nullable=True)  # Base64 encoded file or screenshot
+    attachment_data = Column(Text(16777215), nullable=True)  # MEDIUMTEXT: Base64 encoded file (up to ~12MB)
     attachment_name = Column(String(255), nullable=True)
 
     # Status tracking

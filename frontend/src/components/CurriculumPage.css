@@ -79,12 +79,14 @@
    ======================================== */
 .progress-section {
   max-width: 1400px;
-  margin: -30px auto 24px auto;
+  margin: 24px auto 24px auto;
   padding: 0 24px;
+  position: relative;
+  z-index: 1;
 }
 
 .progress-card {
-  background: var(--bg-card);
+  background: var(--bg-card, #fff);
   border: 1px solid var(--border-color);
   border-radius: 16px;
   padding: 28px;

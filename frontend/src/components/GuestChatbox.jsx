@@ -77,6 +77,7 @@ export default function GuestChatbox() {
   });
   const [timeRemaining, setTimeRemaining] = useState(GUEST_SESSION_DURATION);
   const [showSignUpModal, setShowSignUpModal] = useState(false);
+  const [bonusUsed, setBonusUsed] = useState(() => localStorage.getItem("guest_bonus_used") === "true");
 
   // Refs
   const messagesEndRef = useRef(null);
@@ -228,7 +229,7 @@ export default function GuestChatbox() {
               </div>
               <span className="trial-divider">|</span>
               <button onClick={() => navigate("/signup")} className="trial-link">
-                Create an account for unlimited
+                Create an account for unlimited access
               </button>
             </>
           ) : (
@@ -238,7 +239,7 @@ export default function GuestChatbox() {
               </span>
               <span className="trial-divider">|</span>
               <button onClick={() => navigate("/signup")} className="trial-link">
-                Create an account for unlimited
+                Create an account for unlimited access
               </button>
             </>
           )}
@@ -344,6 +345,10 @@ export default function GuestChatbox() {
         )}
       </div>
 
+      <div style={{ textAlign: 'center', padding: '6px 0 10px', fontSize: '0.7rem', color: 'var(--text-tertiary, #94a3b8)', letterSpacing: '0.02em' }}>
+        CS Navigator {new Date().getFullYear()} | Morgan State University Department of Computer Science
+      </div>
+
       {/* Sign-up Modal */}
       {showSignUpModal && (
         <div className="signup-modal-overlay" onClick={() => setShowSignUpModal(false)}>
@@ -387,9 +392,21 @@ export default function GuestChatbox() {
             <div className="signup-modal-footer">
               <button
                 className="signup-modal-btn secondary"
-                onClick={() => setShowSignUpModal(false)}
+                onClick={() => {
+                  if (!bonusUsed) {
+                    // Grant 5 bonus minutes by pushing session start forward
+                    const bonus = 5 * 60 * 1000;
+                    const newStart = Date.now() - (GUEST_SESSION_DURATION - bonus);
+                    setSessionStartTime(newStart);
+                    localStorage.setItem("guest_session_start", newStart.toString());
+                    setTimeRemaining(bonus);
+                    setBonusUsed(true);
+                    localStorage.setItem("guest_bonus_used", "true");
+                  }
+                  setShowSignUpModal(false);
+                }}
               >
-                Maybe Later
+                {bonusUsed ? "Close" : "5 More Minutes"}
               </button>
               <button
                 className="signup-modal-btn primary"

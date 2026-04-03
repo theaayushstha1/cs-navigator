@@ -3365,6 +3365,13 @@ async def get_curriculum():
 
 @app.get("/health")
 def health():
+    if USE_VERTEX_AGENT:
+        try:
+            result = check_agent_health()
+            ai_status = result.get("status", "offline") if isinstance(result, dict) else "offline"
+        except Exception:
+            ai_status = "offline"
+        return {"status": "ok", "db": "connected", "ai": "ready" if ai_status == "connected" else "offline"}
     return {"status": "ok", "db": "connected", "ai": "ready" if qa else "offline"}
 
 # ==============================================================================
@@ -3941,6 +3948,7 @@ async def list_tickets(status: str = None, user: dict = Depends(get_current_user
                 "priority": t.priority,
                 "user_email": db.query(User).filter(User.id == t.user_id).first().email if t.user_id else "Unknown",
                 "attachment_name": t.attachment_name,
+                "attachment_data": t.attachment_data if t.attachment_data else None,
                 "admin_notes": t.admin_notes,
                 "created_at": t.created_at.isoformat() if t.created_at else None,
                 "updated_at": t.updated_at.isoformat() if t.updated_at else None,

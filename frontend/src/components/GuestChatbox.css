@@ -711,6 +711,7 @@
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
+  white-space: nowrap;
 }
 
 .signup-modal-btn.secondary {

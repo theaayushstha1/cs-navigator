@@ -59,6 +59,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
   });
 
   const [showPasswordForm, setShowPasswordForm] = useState(false);
+  const [showPwFields, setShowPwFields] = useState({ current: false, new: false, confirm: false });
 
   // Bookmarklet ref - React blocks javascript: URLs, so we set href via DOM
   const bookmarkletRef = useRef(null);
@@ -657,10 +658,16 @@ export default function ProfilePage({ userEmail, onLogout }) {
               </label>
               <input
                 type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={8}
                 value={profile.studentId || ""}
-                onChange={(e) => setProfile({ ...profile, studentId: e.target.value })}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/\D/g, '');
+                  setProfile({ ...profile, studentId: val });
+                }}
                 disabled={!isEditing}
-                placeholder="Enter your student ID"
+                placeholder="e.g. 00367844"
               />
             </div>
 
@@ -718,36 +725,57 @@ export default function ProfilePage({ userEmail, onLogout }) {
                 <label>
                   <FaLock /> Current Password
                 </label>
-                <input
-                  type="password"
-                  value={passwords.currentPassword}
-                  onChange={(e) => setPasswords({ ...passwords, currentPassword: e.target.value })}
-                  required
-                />
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showPwFields.current ? "text" : "password"}
+                    value={passwords.currentPassword}
+                    onChange={(e) => setPasswords({ ...passwords, currentPassword: e.target.value })}
+                    required
+                    style={{ paddingRight: '60px' }}
+                  />
+                  <button type="button" onClick={() => setShowPwFields(s => ({ ...s, current: !s.current }))}
+                    style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--msu-blue)', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}>
+                    {showPwFields.current ? "Hide" : "Show"}
+                  </button>
+                </div>
               </div>
 
               <div className="form-group">
                 <label>
                   <FaLock /> New Password
                 </label>
-                <input
-                  type="password"
-                  value={passwords.newPassword}
-                  onChange={(e) => setPasswords({ ...passwords, newPassword: e.target.value })}
-                  required
-                />
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showPwFields.new ? "text" : "password"}
+                    value={passwords.newPassword}
+                    onChange={(e) => setPasswords({ ...passwords, newPassword: e.target.value })}
+                    required
+                    style={{ paddingRight: '60px' }}
+                  />
+                  <button type="button" onClick={() => setShowPwFields(s => ({ ...s, new: !s.new }))}
+                    style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--msu-blue)', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}>
+                    {showPwFields.new ? "Hide" : "Show"}
+                  </button>
+                </div>
               </div>
 
               <div className="form-group">
                 <label>
                   <FaLock /> Confirm New Password
                 </label>
-                <input
-                  type="password"
-                  value={passwords.confirmPassword}
-                  onChange={(e) => setPasswords({ ...passwords, confirmPassword: e.target.value })}
-                  required
-                />
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showPwFields.confirm ? "text" : "password"}
+                    value={passwords.confirmPassword}
+                    onChange={(e) => setPasswords({ ...passwords, confirmPassword: e.target.value })}
+                    required
+                    style={{ paddingRight: '60px' }}
+                  />
+                  <button type="button" onClick={() => setShowPwFields(s => ({ ...s, confirm: !s.confirm }))}
+                    style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--msu-blue)', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}>
+                    {showPwFields.confirm ? "Hide" : "Show"}
+                  </button>
+                </div>
               </div>
 
               <div className="form-actions">

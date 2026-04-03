@@ -326,9 +326,9 @@ export default function CurriculumPage() {
           <FaStar size={24} />
           <div>
             <div className="stat-number">
-              {curriculumData.filter(c => c.requirement_type === "required" || c.requirement_type === "supporting").length}
+              {curriculumData.filter(c => c.requirement_type === "required" || c.requirement_type === "supporting" || c.requirement_type === "elective").length}
             </div>
-            <div className="stat-label">Required Courses</div>
+            <div className="stat-label">Total Degree Courses</div>
           </div>
         </div>
         <div className="stat-card">

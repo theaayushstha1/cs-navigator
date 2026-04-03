@@ -2190,7 +2190,31 @@ export default function AdminDashboard() {
                 <span className="ticket-date"><FaClock size={12} />{formatDateTime(selectedTicket.created_at)}</span>
               </div>
               <div className="modal-description"><h4>Description</h4><p>{selectedTicket.description}</p></div>
-              {selectedTicket.attachment_name && <div className="modal-attachment"><h4>Attachment</h4><span>{selectedTicket.attachment_name}</span></div>}
+              {selectedTicket.attachment_name && (
+                <div className="modal-attachment">
+                  <h4>Attachment</h4>
+                  {selectedTicket.attachment_data ? (
+                    <>
+                      {/\.(png|jpg|jpeg|gif|webp)$/i.test(selectedTicket.attachment_name) ? (
+                        <img
+                          src={selectedTicket.attachment_data.startsWith('data:') ? selectedTicket.attachment_data : `data:image/png;base64,${selectedTicket.attachment_data}`}
+                          alt={selectedTicket.attachment_name}
+                          style={{ maxWidth: '100%', maxHeight: '400px', borderRadius: '8px', marginBottom: '8px', border: '1px solid var(--border-color)' }}
+                        />
+                      ) : null}
+                      <a
+                        href={selectedTicket.attachment_data.startsWith('data:') ? selectedTicket.attachment_data : `data:application/octet-stream;base64,${selectedTicket.attachment_data}`}
+                        download={selectedTicket.attachment_name}
+                        style={{ display: 'inline-block', padding: '6px 14px', background: 'var(--msu-blue)', color: '#fff', borderRadius: '6px', fontSize: '0.85rem', textDecoration: 'none' }}
+                      >
+                        Download {selectedTicket.attachment_name}
+                      </a>
+                    </>
+                  ) : (
+                    <span>{selectedTicket.attachment_name}</span>
+                  )}
+                </div>
+              )}
               <div className="modal-actions">
                 <h4>Update Status</h4>
                 <div className="status-buttons">

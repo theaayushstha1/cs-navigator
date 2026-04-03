@@ -456,6 +456,9 @@
   font-weight: 700;
   color: var(--text-main);
   line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dw-stat-card .stat-label {
