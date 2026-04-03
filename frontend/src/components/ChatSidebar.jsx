@@ -28,19 +28,20 @@ import { FaGithub } from "@react-icons/all-files/fa/FaGithub";
 import { getApiBase } from "../lib/apiBase";
 import "./ChatSidebar.css";
 
-export default function ChatSidebar({ 
-  sessions, 
-  activeId, 
-  onNew, 
-  onSelect, 
-  onDelete, 
-  onLogout, 
+export default function ChatSidebar({
+  sessions,
+  activeId,
+  onNew,
+  onSelect,
+  onDelete,
+  onLogout,
   userEmail,
   onPin,
   onArchive,
   onRename,
   darkMode,
-  onToggleTheme
+  onToggleTheme,
+  onCollapse
 }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, sessionId: null });
@@ -349,15 +350,27 @@ export default function ChatSidebar({
   return (
     <div className="chat-sidebar">
       <div className="sidebar-top">
-        {/* NEW: Tooltips added to buttons */}
-        <button 
-          className="sidebar-action-btn new-chat" 
-          onClick={onNew}
-          title="Start a new chat session" // 🔥 NEW: Hover Text
-        >
-          <FaPlus size={16} />
-          <span>New Chat</span>
-        </button>
+        <div style={{ display: 'flex', gap: '8px', width: '100%' }}>
+          <button
+            className="sidebar-action-btn new-chat"
+            onClick={onNew}
+            title="Start a new chat session"
+            style={{ flex: 1 }}
+          >
+            <FaPlus size={16} />
+            <span>New Chat</span>
+          </button>
+          {onCollapse && (
+            <button
+              className="sidebar-action-btn"
+              onClick={onCollapse}
+              title="Collapse sidebar"
+              style={{ width: '40px', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              <FaChevronRight size={14} style={{ transform: 'rotate(180deg)' }} />
+            </button>
+          )}
+        </div>
 
         <div className="search-container" title="Search through your conversations"> {/* 🔥 NEW: Hover Text */}
           <FaSearch className="search-icon" size={14} />

@@ -417,7 +417,7 @@ body.sidebar-collapsed .chat-main {
   color: var(--msu-blue);
 }
 .message.bot .message-bubble strong {
-  color: var(--msu-blue);
+  color: inherit;
   font-weight: 700;
 }
 
@@ -456,9 +456,11 @@ body.dark .message-bubble blockquote {
 
 body.dark .message.bot .message-bubble h1,
 body.dark .message.bot .message-bubble h2,
-body.dark .message.bot .message-bubble h3,
-body.dark .message.bot .message-bubble strong {
+body.dark .message.bot .message-bubble h3 {
   color: #8ab4f8;
+}
+body.dark .message.bot .message-bubble strong {
+  color: inherit;
 }
 
 /* ─── END ENHANCED MARKDOWN STYLING ─── */
@@ -1485,7 +1487,7 @@ body.dark .message.bot .message-bubble h3 {
   color: #8ab4f8;
 }
 body.dark .message.bot .message-bubble strong {
-  color: #8ab4f8;
+  color: inherit;
 }
 
 /* --- 🔥 FILE CARD & STAGING STYLES (NEW) --- */

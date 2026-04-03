@@ -357,11 +357,20 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   };
 
   // Simple TTS for manual speaker button (uses browser TTS)
+  // Click once to play, click again to stop
   const speak = (text) => {
     if (!window.speechSynthesis) return toast.warning("Text-to-speech not supported in this browser.");
+    if (window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+      if (audioRef.current) audioRef.current.pause();
+      setIsSpeaking(false);
+      return;
+    }
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1.05;
+    utterance.onend = () => setIsSpeaking(false);
+    setIsSpeaking(true);
     window.speechSynthesis.speak(utterance);
   };
 
@@ -623,7 +632,11 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const handleSuggestion = (text) => {
       if (!isLoading) {
           setInput(text);
-          inputRef.current?.focus();
+          // Auto-send the suggestion instead of just filling the input
+          setTimeout(() => {
+              const form = document.querySelector('.chat-input-form');
+              if (form) form.requestSubmit();
+          }, 50);
       }
   };
 

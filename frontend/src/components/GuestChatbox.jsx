@@ -137,7 +137,10 @@ export default function GuestChatbox() {
   const handleSuggestion = (text) => {
     if (!isLoading && !isSessionExpired) {
       setInput(text);
-      inputRef.current?.focus();
+      setTimeout(() => {
+        const form = document.querySelector('.guest-chat-form');
+        if (form) form.requestSubmit();
+      }, 50);
     }
   };
 

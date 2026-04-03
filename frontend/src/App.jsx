@@ -61,7 +61,8 @@ function ChatLayout({
   onArchive,
   onRename,
   darkMode,
-  onToggleTheme
+  onToggleTheme,
+  onCollapse
 }) {
   const activeSession = sessions.find((s) => s.id === activeId) || { messages: [] };
   return (
@@ -79,6 +80,7 @@ function ChatLayout({
         onRename={onRename}
         darkMode={darkMode}
         onToggleTheme={onToggleTheme}
+        onCollapse={onCollapse}
       />
       {/* 🔥 UPDATE: Passing sessionId to Chatbox so it knows where to save */}
       <Chatbox
@@ -104,6 +106,7 @@ function SidebarLayout({
   onRename,
   darkMode,
   onToggleTheme,
+  onCollapse,
   children
 }) {
   return (
@@ -121,6 +124,7 @@ function SidebarLayout({
         onRename={onRename}
         darkMode={darkMode}
         onToggleTheme={onToggleTheme}
+        onCollapse={onCollapse}
       />
       <div className="page-content">
         {children}
@@ -452,6 +456,7 @@ export default function App() {
                 onRename={handleRename}
                 darkMode={darkMode}
                 onToggleTheme={toggleTheme}
+                onCollapse={toggleSidebar}
               />
             </RequireAuth>
           }
@@ -475,6 +480,7 @@ export default function App() {
                 onRename={handleRename}
                 darkMode={darkMode}
                 onToggleTheme={toggleTheme}
+                onCollapse={toggleSidebar}
               >
                 <MyClassesPage />
               </SidebarLayout>
@@ -500,6 +506,7 @@ export default function App() {
                 onRename={handleRename}
                 darkMode={darkMode}
                 onToggleTheme={toggleTheme}
+                onCollapse={toggleSidebar}
               >
                 <GradeSurgeon />
               </SidebarLayout>
@@ -525,6 +532,7 @@ export default function App() {
                 onRename={handleRename}
                 darkMode={darkMode}
                 onToggleTheme={toggleTheme}
+                onCollapse={toggleSidebar}
               >
                 <RippleEffect />
               </SidebarLayout>
@@ -550,6 +558,7 @@ export default function App() {
                 onRename={handleRename}
                 darkMode={darkMode}
                 onToggleTheme={toggleTheme}
+                onCollapse={toggleSidebar}
               >
                 <CurriculumPage />
               </SidebarLayout>
@@ -575,6 +584,7 @@ export default function App() {
                 onRename={handleRename}
                 darkMode={darkMode}
                 onToggleTheme={toggleTheme}
+                onCollapse={toggleSidebar}
               >
                 <ProfilePage userEmail={userEmail} onLogout={handleLogout} />
               </SidebarLayout>
