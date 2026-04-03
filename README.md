@@ -4,7 +4,7 @@
 
 CS Navigator is a full-stack AI chatbot built on Google ADK (Agent Development Kit) that helps Computer Science students at Morgan State University navigate their academic journey. It uses a multi-agent architecture with RAG retrieval, DegreeWorks integration, and multi-tier caching to deliver fast, personalized academic advising.
 
-> **Current Version:** 2.2 | **Live:** [https://inavigator.ai](https://inavigator.ai) | **Deployed on:** Google Cloud Run
+> **Current Version:** 2.2 | **Live:** [https://cs.inavigator.ai](https://inavigator.ai) | **Deployed on:** Google Cloud Run
 
 ---
 
