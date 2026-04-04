@@ -22,26 +22,10 @@ const API_BASE = getApiBase();
 const GUEST_SESSION_DURATION = 15 * 60 * 1000;
 const MAX_INPUT_LENGTH = 500;
 
-// Auto-generated guest profile
+// Guest profile - no fake academic data to prevent false answers
 const generateGuestProfile = () => {
-  const saved = localStorage.getItem("guest_profile");
-  if (saved) {
-    return JSON.parse(saved);
-  }
-
-  const classifications = ["Freshman", "Sophomore", "Junior", "Senior"];
-  const majors = ["Computer Science", "Undeclared", "Information Systems", "Engineering"];
-  const gpaOptions = ["2.85", "3.02", "3.24", "3.45", "3.67", "2.95", "3.12", "3.38"];
-
-  const profile = {
-    name: "Guest User",
-    gpa: gpaOptions[Math.floor(Math.random() * gpaOptions.length)],
-    classification: classifications[Math.floor(Math.random() * classifications.length)],
-    major: majors[Math.floor(Math.random() * majors.length)]
-  };
-
-  localStorage.setItem("guest_profile", JSON.stringify(profile));
-  return profile;
+  localStorage.removeItem("guest_profile"); // clean up old fake profiles
+  return { name: "Guest User" };
 };
 
 // Format time remaining as MM:SS

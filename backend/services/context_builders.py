@@ -84,8 +84,14 @@ def build_canvas_context(canvas: dict) -> str:
 
 def build_student_context(dw: dict) -> str:
     """Build the DegreeWorks student context string from a dict of fields."""
+    data_source = dw.get("data_source", "manual_entry")
+    is_manual = data_source == "manual_entry"
+
     ctx = "\n" + "=" * 60 + "\n"
-    ctx += "THIS STUDENT'S DEGREEWORKS ACADEMIC RECORD:\n"
+    if is_manual:
+        ctx += "THIS STUDENT'S SELF-REPORTED ACADEMIC DATA (not verified):\n"
+    else:
+        ctx += "THIS STUDENT'S DEGREEWORKS ACADEMIC RECORD:\n"
     ctx += "=" * 60 + "\n\n"
 
     ctx += "STUDENT PROFILE:\n"

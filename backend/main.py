@@ -244,6 +244,18 @@ def init_db():
             except Exception as e:
                 print(f"[ERROR] Failed to create degreeworks_data table: {e}")
 
+        # 6b. Add data_source column to degreeworks_data if missing
+        try:
+            conn.execute(text("SELECT data_source FROM degreeworks_data LIMIT 1"))
+        except (OperationalError, ProgrammingError):
+            print("[WARN] 'data_source' column missing from degreeworks_data. Adding it now...")
+            try:
+                conn.execute(text("ALTER TABLE degreeworks_data ADD COLUMN data_source VARCHAR(50) DEFAULT 'manual_entry'"))
+                conn.commit()
+                print("[OK] Successfully added 'data_source' column!")
+            except Exception as e:
+                print(f"[ERROR] Failed to add data_source column: {e}")
+
         # 6. Check if support_tickets table exists
         try:
             conn.execute(text("SELECT id FROM support_tickets LIMIT 1"))
@@ -867,7 +879,8 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
 
     # Only allow Morgan State email for new registrations
     email_domain = email.split("@")[-1].lower()
-    if email_domain not in ALLOWED_EMAIL_DOMAINS and not email.endswith("@test.com"):
+    allow_test = os.getenv("ALLOW_TEST_EMAILS", "false").lower() == "true"
+    if email_domain not in ALLOWED_EMAIL_DOMAINS and not (allow_test and email.endswith("@test.com")):
         raise HTTPException(status_code=400, detail="Only @morgan.edu email addresses are allowed.")
 
     if len(req.password) < 8:
@@ -1153,6 +1166,11 @@ async def sync_degreeworks(
         # Check if user already has DegreeWorks data
         existing = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
 
+        # Determine data source: only raw_data indicates a parsed/scraped source
+        data_source = "manual_entry"
+        if req.raw_data:
+            data_source = "pdf_parse"
+
         if existing:
             # Update existing record
             existing.student_name = req.student_name
@@ -1171,6 +1189,7 @@ async def sync_degreeworks(
             existing.courses_remaining = json.dumps(req.courses_remaining) if req.courses_remaining else None
             existing.requirements_status = json.dumps(req.requirements_status) if req.requirements_status else None
             existing.raw_data = req.raw_data
+            existing.data_source = data_source
             existing.updated_at = datetime.now(timezone.utc)
         else:
             # Create new record
@@ -1191,7 +1210,8 @@ async def sync_degreeworks(
                 courses_in_progress=json.dumps(req.courses_in_progress) if req.courses_in_progress else None,
                 courses_remaining=json.dumps(req.courses_remaining) if req.courses_remaining else None,
                 requirements_status=json.dumps(req.requirements_status) if req.requirements_status else None,
-                raw_data=req.raw_data
+                raw_data=req.raw_data,
+                data_source=data_source
             )
             db.add(new_data)
 
@@ -2250,6 +2270,7 @@ async def sync_banner_data(
                     except Exception as e:
                         print(f"[BANNER] Profile parse error: {e}")
 
+                existing_dw.data_source = "banner_scrape"
                 existing_dw.updated_at = datetime.now(timezone.utc)
 
                 # Auto-populate user profile
@@ -2616,6 +2637,7 @@ def _fetch_dw_sync(user_id: int) -> Optional[dict]:
             "courses_in_progress": dw.courses_in_progress,
             "courses_remaining": dw.courses_remaining,
             "raw_data": dw.raw_data,
+            "data_source": getattr(dw, 'data_source', None) or "manual_entry",
         }
 
         # Also fetch Banner data if available
@@ -3132,20 +3154,26 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
         print(f"[CACHE] HIT (guest) for: {user_q[:50]}...")
         return {"response": cached_response, "cached": True}
 
+    # Detect personal academic queries and redirect guests to sign up
+    _PERSONAL_KEYWORDS = [
+        "my gpa", "my grade", "my classes", "my schedule", "my advisor",
+        "my courses", "my transcript", "my degree", "my credits",
+        "my assignment", "my canvas", "degreeworks", "degree works",
+        "what am i taking", "what classes am i", "how many credits do i",
+        "my remaining", "my progress", "my academic"
+    ]
+    query_lower = user_q.lower()
+    if any(kw in query_lower for kw in _PERSONAL_KEYWORDS):
+        return {"response": (
+            "To access your personal academic information like GPA, courses, "
+            "and degree progress, you'll need to **create a free account** with your "
+            "Morgan State email. This connects your DegreeWorks and Canvas data securely.\n\n"
+            "**[Create an account here](https://cs.inavigator.ai/register)** to unlock personalized features!"
+        )}
+
     # Use Vertex AI Agent for real questions
     if USE_VERTEX_AGENT:
         try:
-            # Build light guest context
-            guest_profile = req.guestProfile or {}
-            guest_context = ""
-            guest_classification = guest_profile.get("classification", "")
-            guest_gpa = guest_profile.get("gpa", "")
-            if guest_classification or guest_gpa:
-                parts = []
-                if guest_classification: parts.append(f"a {guest_classification} student")
-                if guest_gpa: parts.append(f"with ~{guest_gpa} GPA")
-                guest_context = f"[Guest user info: {' '.join(parts)}]\n"
-
             # Use a unique guest_user_id per request to prevent session bleed.
             # Previously IP-based, which caused students on the same campus WiFi
             # to share ADK sessions and see each other's DegreeWorks data.
@@ -3155,7 +3183,7 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
             answer = query_agent(
                 query=user_q,
                 user_id=guest_user_id,
-                context=guest_context,
+                context="",
             )
 
             # Cache the successful response

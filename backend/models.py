@@ -86,6 +86,9 @@ class DegreeWorksData(Base):
     # Raw data backup
     raw_data = Column(Text, nullable=True)  # Full JSON dump for reference
 
+    # Data source tracking
+    data_source = Column(String(50), nullable=True, default="manual_entry")  # "pdf_parse", "banner_scrape", "html_scrape", "manual_entry"
+
     # Metadata
     synced_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

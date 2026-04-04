@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Create Admin Account Script
-Usage: python create_admin.py [email] [password]
-Defaults: admin@csnavigator.com / Admin123!
+Usage: python create_admin.py <email> <password>
+   or: ADMIN_EMAIL=x ADMIN_PASSWORD=y python create_admin.py
 """
 
 import sys
@@ -15,7 +15,8 @@ from db import engine, SessionLocal, Base
 from models import User
 from security import hash_password
 
-def create_admin(email: str = "admin@csnavigator.com", password: str = "Admin123!"):
+
+def create_admin(email: str, password: str):
     """Create an admin user in the database"""
 
     # Create all tables if they don't exist
@@ -51,7 +52,6 @@ def create_admin(email: str = "admin@csnavigator.com", password: str = "Admin123
 
         print(f"Admin account created successfully!")
         print(f"  Email: {email}")
-        print(f"  Password: {password}")
         print(f"  Role: admin")
 
         return admin
@@ -64,9 +64,15 @@ def create_admin(email: str = "admin@csnavigator.com", password: str = "Admin123
         db.close()
 
 if __name__ == "__main__":
-    # Get email and password from command line args, or use defaults
-    email = sys.argv[1] if len(sys.argv) > 1 else "admin@csnavigator.com"
-    password = sys.argv[2] if len(sys.argv) > 2 else "Admin123!"
+    # Get from CLI args first, then env vars
+    email = sys.argv[1] if len(sys.argv) > 1 else os.getenv("ADMIN_EMAIL")
+    password = sys.argv[2] if len(sys.argv) > 2 else os.getenv("ADMIN_PASSWORD")
+
+    if not email or not password:
+        print("ERROR: Provide email and password as arguments or env vars.")
+        print("Usage: python create_admin.py <email> <password>")
+        print("   or: ADMIN_EMAIL=x ADMIN_PASSWORD=y python create_admin.py")
+        sys.exit(1)
 
     print(f"\nCreating admin account...")
     print(f"Database: {os.getenv('DATABASE_URL', 'Not set - check .env')}\n")
