@@ -1,5 +1,5 @@
 // src/components/ProfilePage.jsx
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { FaArrowLeft } from "@react-icons/all-files/fa/FaArrowLeft";
 import { FaUser } from "@react-icons/all-files/fa/FaUser";
@@ -12,7 +12,6 @@ import { FaGraduationCap } from "@react-icons/all-files/fa/FaGraduationCap";
 import { FaCheckCircle } from "@react-icons/all-files/fa/FaCheckCircle";
 import { FaTimes } from "@react-icons/all-files/fa/FaTimes";
 import { FaSync } from "@react-icons/all-files/fa/FaSync";
-import { FaBookmark } from "@react-icons/all-files/fa/FaBookmark";
 import { FaChartLine } from "@react-icons/all-files/fa/FaChartLine";
 import { FaBook } from "@react-icons/all-files/fa/FaBook";
 import { FaExternalLinkAlt } from "@react-icons/all-files/fa/FaExternalLinkAlt";
@@ -60,15 +59,6 @@ export default function ProfilePage({ userEmail, onLogout }) {
 
   const [showPasswordForm, setShowPasswordForm] = useState(false);
   const [showPwFields, setShowPwFields] = useState({ current: false, new: false, confirm: false });
-
-  // Bookmarklet ref - React blocks javascript: URLs, so we set href via DOM
-  const bookmarkletRef = useRef(null);
-  const setBookmarkletHref = useCallback((node) => {
-    if (node) {
-      node.setAttribute('href', getBookmarkletCode());
-      bookmarkletRef.current = node;
-    }
-  }, []);
 
   // DegreeWorks Modal State
   const [showMorganModal, setShowMorganModal] = useState(false);
@@ -181,18 +171,6 @@ export default function ProfilePage({ userEmail, onLogout }) {
     } finally {
       setLoading(false);
     }
-  };
-
-  // Generate the bookmarklet code - tiny loader that fetches the full script from the server
-  // This avoids Chrome's ~2KB URL length limit for bookmarklets
-  const getBookmarkletCode = () => {
-    const token = localStorage.getItem("token");
-    return `javascript:void(function(){var s=document.createElement('script');s.src='${API_BASE}/api/bookmarklet.js?token=${token}&api=${encodeURIComponent(API_BASE)}';document.body.appendChild(s)}())`;
-  };
-
-  const copyBookmarklet = () => {
-    navigator.clipboard.writeText(getBookmarkletCode());
-    setMessage({ type: "success", text: "Bookmarklet code copied! Paste it as the URL of a new bookmark." });
   };
 
   const handleUpdateProfile = async (e) => {
@@ -455,56 +433,11 @@ export default function ProfilePage({ userEmail, onLogout }) {
     }
   };
 
-  // Manual entry state
-  const [showManualEntry, setShowManualEntry] = useState(false);
   const [showPdfUpload, setShowPdfUpload] = useState(false);
   const [pdfUploading, setPdfUploading] = useState(false);
 
-  // 🔥 Ref for PDF file input (more reliable than label htmlFor)
+  // Ref for PDF file input (more reliable than label htmlFor)
   const pdfInputRef = React.useRef(null);
-
-  const [manualData, setManualData] = useState({
-    student_name: "",
-    classification: "Freshman",
-    degree_program: "Bachelor of Science in Computer Science",
-    overall_gpa: "",
-    total_credits_earned: "",
-    credits_remaining: ""
-  });
-
-  const handleManualSubmit = async () => {
-    setLoading(true);
-    try {
-      const token = localStorage.getItem("token");
-      const response = await fetch(`${API_BASE}/api/degreeworks/sync`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          ...manualData,
-          overall_gpa: manualData.overall_gpa ? parseFloat(manualData.overall_gpa) : null,
-          total_credits_earned: manualData.total_credits_earned ? parseFloat(manualData.total_credits_earned) : null,
-          credits_remaining: manualData.credits_remaining ? parseFloat(manualData.credits_remaining) : null
-        })
-      });
-
-      if (response.ok) {
-        setProfile({ ...profile, morganConnected: true });
-        setMessage({ type: "success", text: "Academic data saved successfully!" });
-        setShowMorganModal(false);
-        setShowManualEntry(false);
-        fetchDegreeWorksData();
-      } else {
-        setMessage({ type: "error", text: "Failed to save data. Please try again." });
-      }
-    } catch (error) {
-      setMessage({ type: "error", text: "Network error. Please try again." });
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handlePdfUpload = async (e) => {
     console.log("📄 PDF Upload triggered", e);
@@ -554,7 +487,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
         fetchDegreeWorksData();
       } else {
         console.error("❌ Upload failed:", data);
-        setMessage({ type: "error", text: data.detail || data.message || "Failed to parse PDF. Please try manual entry instead." });
+        setMessage({ type: "error", text: data.detail || data.message || "Failed to parse PDF. Please try again or use Banner Auto-Sync." });
       }
     } catch (error) {
       console.error("❌ Upload error:", error);
@@ -865,8 +798,8 @@ export default function ProfilePage({ userEmail, onLogout }) {
 
               {(!degreeWorksData.overall_gpa || !degreeWorksData.classification) && (
                 <div className="dw-warning">
-                  <p>Some data couldn't be extracted from your PDF. Use <strong>Quick Manual Entry</strong> to add missing info.</p>
-                  <button className="text-btn" onClick={() => { setShowManualEntry(true); setShowMorganModal(true); }}>Add Missing Data</button>
+                  <p>Some data couldn't be extracted. Please try uploading again or use Banner Auto-Sync.</p>
+                  <button className="text-btn" onClick={() => { setShowPdfUpload(false); setShowMorganModal(true); }}>Re-sync Data</button>
                 </div>
               )}
             </div>
@@ -885,34 +818,6 @@ export default function ProfilePage({ userEmail, onLogout }) {
             </div>
           )}
         </div>
-
-        {/* Admin Access - Only show for admins */}
-        {profile.role === "admin" && (
-          <div className="profile-section admin-section">
-            <div className="section-header">
-              <h3><FaShieldAlt /> Admin Access</h3>
-            </div>
-            <div className="admin-access-content">
-              <p>You have administrator privileges. Access the admin dashboard to manage tickets and curriculum.</p>
-              <div style={{ position: "relative", display: "inline-block", width: "100%" }}>
-                <button className="admin-access-btn" onClick={() => navigate("/admin")}>
-                  <FaCog /> Open Admin Dashboard
-                </button>
-                {pendingResearch > 0 && (
-                  <span style={{
-                    position: "absolute", top: "-8px", right: "-4px",
-                    background: "#ef4444", color: "white", borderRadius: "50%",
-                    width: "22px", height: "22px", display: "flex", alignItems: "center",
-                    justifyContent: "center", fontSize: "11px", fontWeight: 700,
-                    boxShadow: "0 2px 6px rgba(239,68,68,0.4)", border: "2px solid var(--bg-card)"
-                  }}>
-                    {pendingResearch}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Canvas Sync */}
         <div className="profile-section">
@@ -976,6 +881,34 @@ export default function ProfilePage({ userEmail, onLogout }) {
           </div>
         </div>
 
+        {/* Admin Access - Only show for admins */}
+        {profile.role === "admin" && (
+          <div className="profile-section admin-section">
+            <div className="section-header">
+              <h3><FaShieldAlt /> Admin Access</h3>
+            </div>
+            <div className="admin-access-content">
+              <p>You have administrator privileges. Access the admin dashboard to manage tickets and curriculum.</p>
+              <div style={{ position: "relative", display: "inline-block", width: "100%" }}>
+                <button className="admin-access-btn" onClick={() => navigate("/admin")}>
+                  <FaCog /> Open Admin Dashboard
+                </button>
+                {pendingResearch > 0 && (
+                  <span style={{
+                    position: "absolute", top: "-8px", right: "-4px",
+                    background: "#ef4444", color: "white", borderRadius: "50%",
+                    width: "22px", height: "22px", display: "flex", alignItems: "center",
+                    justifyContent: "center", fontSize: "11px", fontWeight: 700,
+                    boxShadow: "0 2px 6px rgba(239,68,68,0.4)", border: "2px solid var(--bg-card)"
+                  }}>
+                    {pendingResearch}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Logout */}
         <div className="profile-section">
           <button className="logout-btn" onClick={onLogout}>
@@ -990,7 +923,6 @@ export default function ProfilePage({ userEmail, onLogout }) {
           <div className="modal-content degreeworks-modal" onClick={(e) => e.stopPropagation()}>
             <button className="modal-close" onClick={() => {
               setShowMorganModal(false);
-              setShowManualEntry(false);
               setShowPdfUpload(false);
             }}>
               <FaTimes />
@@ -1003,11 +935,11 @@ export default function ProfilePage({ userEmail, onLogout }) {
             </div>
 
             <div className="modal-body">
-              {!showManualEntry && !showPdfUpload ? (
+              {!showPdfUpload ? (
                 <>
                   {/* Option Selection */}
                   <div className="sync-options">
-                    {/* Option 0: Auto-Sync from Banner (NEW) */}
+                    {/* Option 1: Auto-Sync from Banner */}
                     <div className="sync-option highlighted" onClick={() => setShowPdfUpload('banner')}>
                       <div className="option-icon sync-icon">
                         <FaSync />
@@ -1015,18 +947,6 @@ export default function ProfilePage({ userEmail, onLogout }) {
                       <div className="option-content">
                         <h4>Auto-Sync from Banner (Recommended)</h4>
                         <p>Log in with your MSU credentials to automatically pull all your academic data.</p>
-                      </div>
-                      <FaExternalLinkAlt className="option-arrow" />
-                    </div>
-
-                    {/* Option 1: One-Click Sync via Bookmarklet */}
-                    <div className="sync-option" onClick={() => setShowPdfUpload('bookmarklet')}>
-                      <div className="option-icon sync-icon">
-                        <FaSync />
-                      </div>
-                      <div className="option-content">
-                        <h4>Bookmarklet Sync</h4>
-                        <p>Already on DegreeWorks? Use our sync button to instantly import your data.</p>
                       </div>
                       <FaExternalLinkAlt className="option-arrow" />
                     </div>
@@ -1039,18 +959,6 @@ export default function ProfilePage({ userEmail, onLogout }) {
                       <div className="option-content">
                         <h4>Upload DegreeWorks Document</h4>
                         <p>Upload a PDF, screenshot, or DOCX of your DegreeWorks page.</p>
-                      </div>
-                      <FaExternalLinkAlt className="option-arrow" />
-                    </div>
-
-                    {/* Option 3: Manual Entry */}
-                    <div className="sync-option" onClick={() => setShowManualEntry(true)}>
-                      <div className="option-icon">
-                        <FaUser />
-                      </div>
-                      <div className="option-content">
-                        <h4>Quick Manual Entry</h4>
-                        <p>Type in your GPA, classification, and credits manually.</p>
                       </div>
                       <FaExternalLinkAlt className="option-arrow" />
                     </div>
@@ -1086,6 +994,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
                             onChange={(e) => setBannerCreds({ ...bannerCreds, username: e.target.value })}
                             autoComplete="username"
                           />
+                          <span style={{ fontSize: "0.75rem", color: "#888", marginTop: 2 }}>Username only, not your full email</span>
                         </div>
                         <div className="form-group">
                           <label>MSU Password</label>
@@ -1200,72 +1109,6 @@ export default function ProfilePage({ userEmail, onLogout }) {
                     </div>
                   ) : null}
                 </div>
-              ) : showPdfUpload === 'bookmarklet' ? (
-                /* One-Click Sync Instructions */
-                <div className="pdf-upload-section">
-                  <button className="back-to-options" onClick={() => setShowPdfUpload(false)}>
-                    <FaArrowLeft /> Back to options
-                  </button>
-
-                  <h3>Sync DegreeWorks</h3>
-
-                  <div className="pdf-instructions">
-                    <div className="instruction-step">
-                      <span className="step-num">1</span>
-                      <div>
-                        <strong>Drag this button to your bookmarks bar</strong>
-                        <p>This is a one-time setup. Just drag it up there.</p>
-                        <div className="bookmarklet-drag-container">
-                          <a
-                            ref={setBookmarkletHref}
-                            onClick={(e) => e.preventDefault()}
-                            className="bookmarklet-drag-btn"
-                            title="Drag me to your bookmarks bar!"
-                          >
-                            <FaSync /> Sync to CS Navigator
-                          </a>
-                          <span className="drag-hint">Drag me up to your bookmarks bar</span>
-                        </div>
-                        <div className="bookmark-instructions">
-                          <small>
-                            Don't see a bookmarks bar? Press <strong>Ctrl+Shift+B</strong> (Chrome) or <strong>Ctrl+B</strong> (Firefox) to show it.
-                          </small>
-                        </div>
-                        <div className="bookmark-instructions" style={{ marginTop: '8px' }}>
-                          <small>
-                            <strong>Can't drag?</strong>{' '}
-                            <button className="inline-copy-btn" onClick={copyBookmarklet}>
-                              Copy the code
-                            </button>{' '}
-                            and create a bookmark manually with it as the URL.
-                          </small>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="instruction-step">
-                      <span className="step-num">2</span>
-                      <div>
-                        <strong>Go to DegreeWorks and log in</strong>
-                        <p>Open your DegreeWorks audit page through MyMSU Banner.</p>
-                        <button className="step-action-btn small" onClick={openMorganPortal}>
-                          <FaExternalLinkAlt /> Open MyMSU
-                        </button>
-                      </div>
-                    </div>
-                    <div className="instruction-step">
-                      <span className="step-num">3</span>
-                      <div>
-                        <strong>Click "Sync to CS Navigator" in your bookmarks bar</strong>
-                        <p>While on the DegreeWorks page, click the bookmark. You'll see a confirmation when it's done.</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="info-box">
-                    <FaCheckCircle />
-                    <p>After syncing, refresh this page to see your GPA, courses, and academic progress.</p>
-                  </div>
-                </div>
               ) : showPdfUpload === 'pdf' ? (
                 /* PDF Upload Section */
                 <div className="pdf-upload-section">
@@ -1332,100 +1175,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
                     <p className="upload-hint">Supports PDF, DOCX, and images (PNG, JPG, GIF) from DegreeWorks</p>
                   </div>
                 </div>
-              ) : (
-                /* Manual Entry Form */
-                <div className="manual-entry-form">
-                  <button className="back-to-options" onClick={() => setShowManualEntry(false)}>
-                    <FaArrowLeft /> Back to options
-                  </button>
-
-                  <h3>Enter Your Academic Info</h3>
-                  <p className="form-subtitle">This helps us give you personalized recommendations</p>
-
-                  <div className="manual-form-grid">
-                    <div className="form-group">
-                      <label>Full Name</label>
-                      <input
-                        type="text"
-                        placeholder="e.g., John Smith"
-                        value={manualData.student_name}
-                        onChange={(e) => setManualData({...manualData, student_name: e.target.value})}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label>Classification</label>
-                      <select
-                        value={manualData.classification}
-                        onChange={(e) => setManualData({...manualData, classification: e.target.value})}
-                      >
-                        <option value="Freshman">Freshman</option>
-                        <option value="Sophomore">Sophomore</option>
-                        <option value="Junior">Junior</option>
-                        <option value="Senior">Senior</option>
-                        <option value="Graduate">Graduate</option>
-                      </select>
-                    </div>
-
-                    <div className="form-group">
-                      <label>Degree Program</label>
-                      <select
-                        value={manualData.degree_program}
-                        onChange={(e) => setManualData({...manualData, degree_program: e.target.value})}
-                      >
-                        <option value="Bachelor of Science in Computer Science">B.S. Computer Science</option>
-                        <option value="Bachelor of Science in Information Systems">B.S. Information Systems</option>
-                        <option value="Bachelor of Science in Cybersecurity">B.S. Cybersecurity</option>
-                        <option value="Master of Science in Computer Science">M.S. Computer Science</option>
-                        <option value="Other">Other</option>
-                      </select>
-                    </div>
-
-                    <div className="form-group">
-                      <label>Overall GPA</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        max="4"
-                        placeholder="e.g., 3.50"
-                        value={manualData.overall_gpa}
-                        onChange={(e) => setManualData({...manualData, overall_gpa: e.target.value})}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label>Credits Earned</label>
-                      <input
-                        type="number"
-                        min="0"
-                        placeholder="e.g., 60"
-                        value={manualData.total_credits_earned}
-                        onChange={(e) => setManualData({...manualData, total_credits_earned: e.target.value})}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label>Credits Remaining</label>
-                      <input
-                        type="number"
-                        min="0"
-                        placeholder="e.g., 60"
-                        value={manualData.credits_remaining}
-                        onChange={(e) => setManualData({...manualData, credits_remaining: e.target.value})}
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    className="modal-primary-btn submit-manual"
-                    onClick={handleManualSubmit}
-                    disabled={loading}
-                  >
-                    {loading ? "Saving..." : "Save Academic Data"}
-                  </button>
-                </div>
-              )}
+              ) : null}
 
               <div className="security-note">
                 <FaLock />
@@ -1439,7 +1189,6 @@ export default function ProfilePage({ userEmail, onLogout }) {
             <div className="modal-footer">
               <button className="modal-secondary-btn" onClick={() => {
                 setShowMorganModal(false);
-                setShowManualEntry(false);
                 setShowPdfUpload(false);
               }}>
                 Close
@@ -1476,6 +1225,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
                         onChange={(e) => setCanvasCreds({ ...canvasCreds, username: e.target.value })}
                         autoComplete="username"
                       />
+                      <span style={{ fontSize: "0.75rem", color: "#888", marginTop: 2 }}>Username only, not your full email</span>
                     </div>
                     <div className="form-group">
                       <label>MSU Password</label>

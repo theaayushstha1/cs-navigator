@@ -49,6 +49,9 @@ _SKIP_GROUNDING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Detects when Gemini self-reports a KB access failure (transient Vertex AI Search issue)
+_KB_FAIL_RE = re.compile(r"having trouble (accessing|connecting to) my knowledge base", re.IGNORECASE)
+
 
 def _apply_grounding_gate(text: str, chunks: int, has_student_data: bool = False) -> str:
     """Append a disclaimer when the agent answered with NO data source at all.
@@ -345,6 +348,12 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
             # Clean up citation artifacts from Gemini grounding
             final_text = re.sub(r'\s*\[cite:\s*[^\]]*\]', '', final_text).strip()
 
+            # Retry once if Gemini self-reported a KB access failure (transient Vertex AI Search issue)
+            if _KB_FAIL_RE.search(final_text) and not retried:
+                print("   [RETRY] Gemini reported KB access failure, retrying once...")
+                time_module.sleep(2)
+                return _run_query(message, user_id, session_id, retried=True, context=context, model=model, canvas_context=canvas_context, memory_context=memory_context)
+
             # Grounding validation gate: flag low-grounded responses
             has_data = bool(context or canvas_context)
             final_text = _apply_grounding_gate(final_text, grounding_chunks, has_student_data=has_data)
@@ -568,6 +577,13 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
 
         # Store grounding signal for research_agent (thread-local)
         _set_grounding(grounding_chunks > 0, grounding_chunks, grounding_coverage)
+
+        # If Gemini self-reported a KB access failure, send a clearer error
+        # (can't retry in streaming mode since broken chunks are already sent to client)
+        if _KB_FAIL_RE.search(full_text):
+            print("   [KB_FAIL] Gemini reported KB access failure during stream")
+            yield {"type": "error", "content": _OUTAGE_MSG}
+            return
 
         # Grounding validation gate: append disclaimer if low-grounded
         has_data = bool(context or canvas_context)
