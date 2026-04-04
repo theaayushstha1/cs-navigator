@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { FaPlus } from "@react-icons/all-files/fa/FaPlus";
 import { FaSearch } from "@react-icons/all-files/fa/FaSearch";
 import { FaBook } from "@react-icons/all-files/fa/FaBook";
+import { FaChalkboardTeacher } from "@react-icons/all-files/fa/FaChalkboardTeacher";
 import { FaChartLine } from "@react-icons/all-files/fa/FaChartLine";
 import { FaProjectDiagram } from "@react-icons/all-files/fa/FaProjectDiagram";
 import { FaTrash } from "@react-icons/all-files/fa/FaTrash";
@@ -412,7 +413,7 @@ export default function ChatSidebar({
           onClick={handleMyClassesClick}
           title="View your Canvas courses, assignments, and grades"
         >
-          <FaBook size={16} />
+          <FaChalkboardTeacher size={16} />
           <span>My Classes</span>
         </button>
         <button

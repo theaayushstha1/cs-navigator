@@ -921,6 +921,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
           </div>
           <div className="admin-access-content">
             {canvasConnected ? (
+              <>
               <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
                 <FaCheckCircle style={{ color: "#34a853", fontSize: "1.2rem" }} />
                 <div>
@@ -952,6 +953,13 @@ export default function ProfilePage({ userEmail, onLogout }) {
                   </button>
                 </div>
               </div>
+              <p style={{
+                margin: "0 0 8px", fontSize: "0.78rem", color: "var(--text-tertiary, #999)",
+                lineHeight: 1.4, paddingLeft: "36px"
+              }}>
+                <span style={{ color: "#d93025", fontWeight: 500 }}>Re-sync weekly</span> for the most accurate grades, assignments, and deadlines in chat.
+              </p>
+              </>
             ) : (
               <>
                 <p>Connect your Canvas account to see courses, assignments, grades, and deadlines in one place.</p>
