@@ -1,15 +1,16 @@
 """
 Query Rewriter for Follow-up Resolution
 =========================================
-Detects follow-up questions (pronouns, short vague queries) and rewrites
-them to be self-contained using recent conversation history.
+Two-layer system for resolving pronouns and references in follow-up queries:
 
-Fixes the core issue: VertexAiSearchTool grounds on the raw user query,
-so "tell me more about him" returns random results. Rewriting to
-"tell me more about Aayush Shrestha" lets the KB search work correctly.
+Layer 1 (deterministic): Entity focus tracker. Extracts entities from both
+the user's query AND the bot's response. When both mention the same entity,
+that becomes the confirmed "current focus." Pronouns are replaced using
+this focus with zero LLM calls.
 
-Uses Gemini 2.0 Flash with a cached client and minimal prompt for
-fast (~300-400ms) rewrites. Falls back to original query on failure.
+Layer 2 (LLM fallback): Gemini rewriter. For complex cases where regex
+can't determine the entity, uses a fast Gemini call with explicit
+"most recent exchange" priority.
 """
 
 import os
@@ -90,8 +91,149 @@ def is_likely_followup(query: str) -> bool:
     return False
 
 
+# =============================================================================
+# LAYER 1: Deterministic Entity Focus Tracker
+# =============================================================================
+
+# Patterns to extract entities from text
+_PERSON_RE = re.compile(
+    r'(?:Dr\.?\s+|Professor\s+)([A-Z][a-z]+(?:\s+(?:"[^"]+"\s+)?[A-Z][a-z]+)?)',
+)
+_COURSE_RE = re.compile(r'\b([A-Z]{2,4}\s*\d{3})\b')
+_PROGRAM_RE = re.compile(r'\b(4\+1|accelerated master|honors program|cloud computing degree|MS in Advanced Computing)\b', re.IGNORECASE)
+
+
+def _extract_focus(user_query: str, bot_response: str) -> dict:
+    """Extract the confirmed focus entity from a Q&A exchange.
+    Cross-references what the user asked about with what the bot answered about.
+    When both sides mention the same entity, it's the confirmed focus."""
+
+    focus = {"person": None, "course": None, "program": None}
+
+    # Extract from user query
+    user_persons = _PERSON_RE.findall(user_query)
+    user_courses = _COURSE_RE.findall(user_query)
+    user_programs = _PROGRAM_RE.findall(user_query)
+
+    # Also catch "my advisor" pattern
+    if re.search(r'\bmy advisor\b|\badvisor\b', user_query, re.IGNORECASE):
+        # Extract advisor name from bot response
+        advisor_match = _PERSON_RE.findall(bot_response[:300])
+        if advisor_match:
+            focus["person"] = advisor_match[0]
+            return focus
+
+    # Extract from bot response (first 300 chars, where the main answer is)
+    bot_persons = _PERSON_RE.findall(bot_response[:300])
+    bot_courses = _COURSE_RE.findall(bot_response[:300])
+
+    # Cross-reference: if user asked about a person and bot answered about them
+    if user_persons and bot_persons:
+        # Check if any user person matches any bot person (by last name)
+        for up in user_persons:
+            up_last = up.split()[-1].lower()
+            for bp in bot_persons:
+                bp_last = bp.split()[-1].lower()
+                if up_last == bp_last:
+                    focus["person"] = bp  # Use bot's version (more complete name)
+                    break
+
+    # If user didn't mention a specific person but bot clearly answered about one
+    if not focus["person"] and not user_persons and bot_persons:
+        # Bot response starts with a person's name = that's the focus
+        first_person = bot_persons[0]
+        focus["person"] = first_person
+
+    # Course focus
+    if user_courses and bot_courses:
+        for uc in user_courses:
+            uc_norm = uc.replace(" ", "")
+            for bc in bot_courses:
+                if uc.replace(" ", "") == bc.replace(" ", ""):
+                    focus["course"] = bc
+                    break
+
+    if not focus["course"] and user_courses:
+        focus["course"] = user_courses[0]
+
+    # Program focus
+    if user_programs:
+        focus["program"] = user_programs[0]
+
+    return focus
+
+
+def _detect_explicit_override(query: str) -> dict:
+    """Detect explicit topic switches like 'go back to Dr. Mack' or 'what about COSC 472'.
+    Returns the new focus entity if found, or empty dict."""
+    override = {}
+
+    # "go back to X", "back to X", "switch to X", "now about X"
+    back_match = re.search(
+        r'(?:go back to|back to|switch to|now (?:tell me )?about|let.s talk about)\s+(?:Dr\.?\s+)?(\w+)',
+        query, re.IGNORECASE
+    )
+    if back_match:
+        name = back_match.group(1)
+        # Don't treat course prefixes (COSC, CLCO, etc.) as person names
+        if not re.match(r'^[A-Z]{2,4}$', name) and (name[0].isupper() or re.match(r'(?:dr|professor)', query, re.IGNORECASE)):
+            override["person"] = name
+
+    # "what about COSC XXX"
+    course_match = re.search(r'(?:what about|how about|switch to)\s+([A-Z]{2,4}\s*\d{3})', query, re.IGNORECASE)
+    if course_match:
+        override["course"] = course_match.group(1)
+
+    return override
+
+
+def _apply_focus(query: str, focus: dict) -> str:
+    """Replace pronouns in query with the confirmed focus entity.
+    Returns the rewritten query, or original if no replacement was made."""
+
+    original = query
+    q = query
+
+    if focus.get("person"):
+        name = focus["person"]
+        # Replace gendered pronouns
+        q = re.sub(r'\bhe\b(?!\w)', f'Dr. {name.split()[-1]}', q, flags=re.IGNORECASE)
+        q = re.sub(r'\bhim\b(?!\w)', f'Dr. {name.split()[-1]}', q, flags=re.IGNORECASE)
+        q = re.sub(r'\bhis\b(?!\w)', f"Dr. {name.split()[-1]}'s", q, flags=re.IGNORECASE)
+        q = re.sub(r'\bshe\b(?!\w)', f'Dr. {name.split()[-1]}', q, flags=re.IGNORECASE)
+        q = re.sub(r'\bher\b(?!\w)', f"Dr. {name.split()[-1]}'s", q, flags=re.IGNORECASE)
+        q = re.sub(r'\bthey\b(?!\w)', f'Dr. {name.split()[-1]}', q, flags=re.IGNORECASE)
+        q = re.sub(r'\bthem\b(?!\w)', f'Dr. {name.split()[-1]}', q, flags=re.IGNORECASE)
+        q = re.sub(r'\btheir\b(?!\w)', f"Dr. {name.split()[-1]}'s", q, flags=re.IGNORECASE)
+
+    if focus.get("course"):
+        code = focus["course"]
+        q = re.sub(r'\bit\b(?!\w)', code, q, flags=re.IGNORECASE, count=1)
+        q = re.sub(r'\bthat course\b', code, q, flags=re.IGNORECASE)
+        q = re.sub(r'\bthe course\b', code, q, flags=re.IGNORECASE)
+
+    if focus.get("program"):
+        prog = focus["program"]
+        q = re.sub(r'\bthat program\b', prog, q, flags=re.IGNORECASE)
+        q = re.sub(r'\bthe program\b', prog, q, flags=re.IGNORECASE)
+        q = re.sub(r'\bit\b(?!\w)', prog, q, flags=re.IGNORECASE, count=1)
+
+    if q != original:
+        print(f"   [FOCUS] '{original}' -> '{q}'")
+        return q
+
+    return None  # No replacement made, fall through to LLM rewriter
+
+
+# =============================================================================
+# LAYER 2: LLM Rewriter (fallback for complex cases)
+# =============================================================================
+
 def rewrite_query(query: str, history: list[dict]) -> str:
     """Rewrite a follow-up query to be self-contained.
+
+    Layer 1: Deterministic focus tracker (cross-references user query + bot response)
+    Layer 2: Gemini rewriter (fallback for cases regex can't handle)
 
     Args:
         query: The user's current message
@@ -103,29 +245,66 @@ def rewrite_query(query: str, history: list[dict]) -> str:
     if not history or not is_likely_followup(query):
         return query
 
+    # Layer 0: Check for explicit topic overrides ("go back to Dr. Mack")
+    override = _detect_explicit_override(query)
+    if override:
+        # User explicitly named who/what they want. Use it as focus.
+        print(f"   [OVERRIDE] Detected explicit switch: {override}")
+        focused = _apply_focus(query, override)
+        if focused:
+            return focused
+
+    # Layer 1: Try deterministic focus replacement from last turn
+    # Only replaces when we have a HIGH-CONFIDENCE match (both user and bot agree on entity)
+    last_turn = history[-1]
+    focus = _extract_focus(last_turn["user_query"], last_turn["bot_response"])
+    focused = _apply_focus(query, focus)
+    if focused:
+        return focused
+
+    # Layer 2: LLM rewriter for complex cases
+    # If the LLM can't confidently rewrite, it returns the original query unchanged
+    # and the agent (which has full session history) handles it or asks for clarification
     client = _get_client()
     if not client:
-        return query
+        return query  # No LLM available, agent handles it with session context
 
-    # Use last 1-2 turns, heavily truncated (just enough for entity names)
-    recent = history[-2:]
+    recent = history[-3:]
     ctx = ""
     for h in recent:
-        ctx += f"Q: {h['user_query']}\nA: {h['bot_response'][:150]}\n"
+        ctx += f"Q: {h['user_query'][:100]}\nA: {h['bot_response'][:200]}\n"
 
     try:
         response = client.models.generate_content(
             model="gemini-2.0-flash",
-            contents=f"Rewrite replacing pronouns with names from context. Return ONLY the question.\nContext:\n{ctx}\nRewrite: {query}",
-            config={"temperature": 0.0, "max_output_tokens": 80},
+            contents=(
+                "Rewrite the follow-up question to be self-contained by replacing pronouns and references "
+                "with the specific names/entities they refer to.\n\n"
+                "CRITICAL RULES:\n"
+                "1. Pronouns like 'he', 'she', 'they', 'it' refer to the entity in the MOST RECENT exchange.\n"
+                "2. If you are NOT SURE what the pronoun or reference refers to, return the ORIGINAL question "
+                "EXACTLY as written. Do NOT guess. The chatbot will ask the student for clarification.\n"
+                "3. 'tell me more' or 'how do I apply' with clear context from the last answer -> rewrite.\n"
+                "4. 'tell me more' with vague/broad context -> return original unchanged.\n\n"
+                f"Recent conversation:\n{ctx}\n"
+                f"Follow-up question: {query}\n"
+                "Rewritten question (return ONLY the rewritten question, nothing else):"
+            ),
+            config={"temperature": 0.0, "max_output_tokens": 100},
         )
         rewritten = response.text.strip().strip('"').strip("'")
 
         if rewritten and 5 < len(rewritten) < 300:
+            # If the rewriter just returned the same thing, let the agent handle it
+            if rewritten.lower().strip("?. ") == query.lower().strip("?. "):
+                print(f"   [REWRITE] Unchanged -> agent will handle with session context")
+                return query
             print(f"   [REWRITE] '{query}' -> '{rewritten}'")
             return rewritten
 
     except Exception as e:
         print(f"   [REWRITE] Failed ({type(e).__name__}: {e})")
 
+    # All layers failed -> pass original to agent. Agent has session history
+    # and will either answer from context or ask for clarification.
     return query

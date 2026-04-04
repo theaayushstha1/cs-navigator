@@ -195,22 +195,42 @@ export default function ChatSidebar({
   };
 
   // 🎫 Support Ticket Handlers
-  const handleTicketAttachment = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      if (file.size > 5 * 1024 * 1024) {
-        toast.warning("File size must be under 5MB");
+  const compressImage = (file, maxWidth = 1200, quality = 0.7) => {
+    return new Promise((resolve) => {
+      // Non-image files pass through as-is
+      if (!file.type.startsWith("image/")) {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(file);
         return;
       }
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setTicketForm(prev => ({
-          ...prev,
-          attachment: reader.result,
-          attachmentName: file.name
-        }));
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        let w = img.width, h = img.height;
+        if (w > maxWidth) { h = (h * maxWidth) / w; w = maxWidth; }
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", quality));
       };
-      reader.readAsDataURL(file);
+      img.src = URL.createObjectURL(file);
+    });
+  };
+
+  const handleTicketAttachment = async (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      if (file.size > 10 * 1024 * 1024) {
+        toast.warning("File size must be under 10MB");
+        return;
+      }
+      const compressed = await compressImage(file);
+      setTicketForm(prev => ({
+        ...prev,
+        attachment: compressed,
+        attachmentName: file.name
+      }));
     }
   };
 
