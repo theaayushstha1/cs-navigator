@@ -64,14 +64,14 @@ def hr():
 story = []
 
 # ─── TITLE ───
-story.append(Paragraph('CS Navigator: Student Testing Report', styles['DocTitle']))
-story.append(Paragraph('April 2, 2026 | Prepared for Dr. Shuangbao (Paul) Wang, Department Chair', styles['DocSub']))
+story.append(Paragraph('CS Navigator: Testing Report Summary and Feedback', styles['DocTitle']))
+story.append(Paragraph('April 2, 2026 | Prepared for Dr. Naja Mack and Dr. Shuangbao (Paul) Wang', styles['DocSub']))
 story.append(hr())
 
 # ─── 1. OVERVIEW ───
 story.append(Paragraph('1. Overview', styles['H1']))
 story.append(Paragraph(
-    'On April 2, 2026, students from Dr. Wang\'s class tested CS Navigator as part of a '
+    'On April 2, 2026, students from Dr. Naja Mack\'s lab tested CS Navigator as part of a '
     'structured evaluation. Testing coincided with a scheduled deployment of version 5.0, '
     'which introduced Canvas LMS integration and security improvements. During a 45-minute '
     'deployment window (3:00 to 3:45 PM ET), the AI agent was temporarily unreachable due to '

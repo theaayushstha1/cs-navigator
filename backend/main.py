@@ -93,7 +93,7 @@ except ImportError:
 
 # Local Imports (Auth & DB) - These must run AFTER load_dotenv
 from db import SessionLocal, engine, Base
-from models import User, DegreeWorksData, BannerStudentData, SupportTicket, FailedQuery, KBSuggestion, CanvasStudentData
+from models import User, DegreeWorksData, BannerStudentData, SupportTicket, FailedQuery, KBSuggestion, CanvasStudentData, UserMemory, ChatHistory, Feedback
 from security import hash_password, verify_password, create_access_token
 from jose import JWTError, jwt
 
@@ -138,33 +138,10 @@ elif not all([PINECONE_API_KEY, PINECONE_ENV, PINECONE_INDEX, OPENAI_API_KEY]):
     print("[WARN] WARNING: Some API keys are missing. Chatbot features will be limited.")
 
 # ==============================================================================
-# 3. DATABASE MODELS (UPDATED WITH SESSION_ID)
+# 3. DATABASE MODELS
 # ==============================================================================
-class ChatHistory(Base):
-    """
-    Stores chat history in AWS RDS (or local DB).
-    Linked to the User table via user_id.
-    """
-    __tablename__ = "chat_history"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    session_id = Column(String(255), default="default") #  NEW: Support multiple threads
-    user_query = Column(Text)
-    bot_response = Column(Text)
-    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-class Feedback(Base):
-    """
-     NEW: Stores user feedback on bot responses for improving the chatbot.
-    """
-    __tablename__ = "feedback"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    session_id = Column(String(255), default="default")
-    message_text = Column(Text)  # The bot message that was rated
-    feedback_type = Column(String(50))  # 'helpful', 'not_helpful', 'report'
-    report_details = Column(Text, nullable=True)  # Additional details for reports
-    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+# ChatHistory, Feedback, and all other models are now in models.py
+# Imported above: ChatHistory, Feedback (via models import line)
 
 def init_db():
     """Initializes the database tables and runs migrations."""
@@ -2502,6 +2479,7 @@ async def sync_canvas_data(
     )
 
 
+
 @app.get("/api/canvas")
 async def get_canvas_data(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get stored Canvas data for the current user."""
@@ -2686,6 +2664,13 @@ from services.context_builders import (
     build_canvas_context as _build_canvas_context,
 )
 
+# Tier 1: Query rewriting for follow-up resolution
+from services.query_rewriter import rewrite_query, is_likely_followup
+
+# Tier 2: Long-term user memory
+from services.memory_service import fetch_user_memories_sync, build_memory_context
+from services.course_context import build_course_context
+
 
 def _fetch_history_sync(user_id: int, session_id: str, limit: int = 10) -> list:
     """Fetch chat history in a separate DB session for parallel execution."""
@@ -2713,11 +2698,13 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     if not user: raise HTTPException(401, "Unauthorized")
 
     user_q = req.query.strip()
+    original_q = user_q  # Preserve original for chat history (before rewrite)
     session_id = req.session_id or "default"
 
     # Detect file upload early to decide what data we need
     file_match = re.search(r'uploads/chat_files/([^\)]+)', user_q)
-    needs_history = bool(file_match) or not USE_VERTEX_AGENT  # Only needed for file uploads and legacy path
+    # Always fetch history for follow-up rewriting (Tier 1) + file uploads + legacy path
+    needs_history = True
 
     # Lazy-load: only fetch Canvas if query mentions grades/assignments/deadlines/course codes
     CANVAS_KEYWORDS = {"grade", "assignment", "due", "deadline", "missing", "class",
@@ -2726,41 +2713,36 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     has_course_code = bool(re.search(r'\b[A-Z]{2,4}\s*\d{3}\b', user_q, re.IGNORECASE))
     needs_canvas = has_course_code or any(kw in user_q.lower() for kw in CANVAS_KEYWORDS)
 
-    # Parallel fetch: DegreeWorks + Canvas (if needed) + chat history (if needed)
-    if needs_history and needs_canvas:
-        dw_result, canvas_result, history_result = await asyncio.gather(
-            asyncio.to_thread(_fetch_dw_sync, user["user_id"]),
-            asyncio.to_thread(_fetch_canvas_sync, user["user_id"]),
-            asyncio.to_thread(_fetch_history_sync, user["user_id"], session_id, 10),
-            return_exceptions=True,
-        )
-        canvas_dict = canvas_result if not isinstance(canvas_result, Exception) else None
-        history_dicts = history_result if not isinstance(history_result, Exception) else []
-    elif needs_history:
-        dw_result, history_result = await asyncio.gather(
-            asyncio.to_thread(_fetch_dw_sync, user["user_id"]),
-            asyncio.to_thread(_fetch_history_sync, user["user_id"], session_id, 10),
-            return_exceptions=True,
-        )
-        canvas_dict = None
-        history_dicts = history_result if not isinstance(history_result, Exception) else []
-    elif needs_canvas:
-        dw_result, canvas_result = await asyncio.gather(
-            asyncio.to_thread(_fetch_dw_sync, user["user_id"]),
-            asyncio.to_thread(_fetch_canvas_sync, user["user_id"]),
-            return_exceptions=True,
-        )
-        canvas_dict = canvas_result if not isinstance(canvas_result, Exception) else None
-        history_dicts = []
-    else:
-        dw_result = await asyncio.to_thread(_fetch_dw_sync, user["user_id"])
-        canvas_dict = None
-        history_dicts = []
-    dw_dict = dw_result if not isinstance(dw_result, Exception) else None
+    # Parallel fetch: DegreeWorks + Canvas (if needed) + chat history (for rewriting) + long-term memory
+    fetch_tasks = [
+        asyncio.to_thread(_fetch_dw_sync, user["user_id"]),
+        asyncio.to_thread(_fetch_history_sync, user["user_id"], session_id, 5),
+        asyncio.to_thread(fetch_user_memories_sync, user["user_id"], 10),
+    ]
+    if needs_canvas:
+        fetch_tasks.append(asyncio.to_thread(_fetch_canvas_sync, user["user_id"]))
+
+    results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+    dw_dict = results[0] if not isinstance(results[0], Exception) else None
+    history_dicts = results[1] if not isinstance(results[1], Exception) else []
+    memory_dicts = results[2] if not isinstance(results[2], Exception) else []
+    canvas_dict = results[3] if needs_canvas and len(results) > 3 and not isinstance(results[3], Exception) else None
+
+    # Tier 1: Rewrite follow-up queries to be self-contained (fixes pronoun resolution)
+    if USE_VERTEX_AGENT and history_dicts and is_likely_followup(user_q):
+        user_q = await asyncio.to_thread(rewrite_query, user_q, history_dicts)
 
     student_context = _build_student_context(dw_dict) if dw_dict else ""
     canvas_context = _build_canvas_context(canvas_dict) if canvas_dict else ""
+    memory_context = build_memory_context(memory_dicts)
     conversation_context = _build_conversation_context(history_dicts)
+
+    # Pre-compute course context (prereq analysis, schedule, eligibility)
+    course_context = build_course_context(dw_dict, user_q) if dw_dict else ""
+    if course_context:
+        # Append to student context so agent sees it alongside DegreeWorks data
+        student_context += f"\n{course_context}"
 
     if file_match and USE_VERTEX_AGENT:
         # File uploaded -> include file content as context for the agent
@@ -2779,6 +2761,7 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
                 context=file_context,
                 model=req.model,
                 canvas_context=canvas_context,
+                memory_context=memory_context,
             )
         else:
             answer = "I received the file link, but I cannot find the file on the server to read it."
@@ -2812,19 +2795,21 @@ Use the provided file content and conversation history to answer the user's ques
 
     elif USE_VERTEX_AGENT:
         # Vertex AI Agent Engine path
-        # NOTE: Only send DegreeWorks student data, NOT conversation history.
-        # ADK manages its own session memory. Sending old responses as context
-        # causes hallucination loops (model repeats previous wrong answers).
+        # Tier 1: Query already rewritten above (follow-ups resolved)
+        # Tier 2: Long-term memory injected via memory_context
+        # NOTE: DegreeWorks = stable context (hashed for session reuse)
+        #       Canvas + Memory = volatile (sent via state_delta per request)
         try:
-            agent_context = student_context  # DegreeWorks only (stable, for session reuse)  # DegreeWorks + Canvas data
+            agent_context = student_context  # DegreeWorks only (stable, for session reuse)
 
-            print(f" Vertex AI query: '{user_q[:50]}...' (user={user['user_id']}, context={len(agent_context)} chars, model={req.model})")
+            print(f" Vertex AI query: '{user_q[:50]}...' (user={user['user_id']}, context={len(agent_context)} chars, memory={len(memory_context)} chars, model={req.model})")
             answer = query_agent(
                 query=user_q,
                 user_id=str(user["user_id"]),
                 context=agent_context,
                 model=req.model,
                 canvas_context=canvas_context,
+                memory_context=memory_context,
             )
         except Exception as e:
             print(f"   Vertex AI Chat Error: {e}")
@@ -2862,13 +2847,21 @@ ONLY answer based on the KNOWLEDGE BASE CONTEXT provided. If info is not found, 
         new_chat = ChatHistory(
             user_id=user["user_id"],
             session_id=session_id,
-            user_query=user_q,
+            user_query=original_q,
             bot_response=answer
         )
         db.add(new_chat)
         db.commit()
     except Exception as e:
         print(f"[ERROR] Failed to save chat history: {e}")
+
+    # 4. Track failed queries for auto-research agent
+    if answer and "error" not in answer.lower()[:50]:
+        try:
+            from research_agent import detect_and_log_failed_query
+            detect_and_log_failed_query(original_q, answer, user["user_id"], has_student_data=bool(student_context))
+        except Exception:
+            pass
 
     return {"response": answer}
 
@@ -2889,6 +2882,7 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
         raise HTTPException(401, "Unauthorized")
 
     user_q = req.query.strip()
+    original_q = user_q  # Keep original for cache key + chat history
     session_id = req.session_id or "default"
     user_id = user["user_id"]
 
@@ -2899,22 +2893,36 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     has_course_code = bool(re.search(r'\b[A-Z]{2,4}\s*\d{3}\b', user_q, re.IGNORECASE))
     needs_canvas = has_course_code or any(kw in user_q.lower() for kw in CANVAS_KEYWORDS)
 
-    # Non-blocking parallel fetch: DegreeWorks + Canvas (only if needed)
+    # Non-blocking parallel fetch: DegreeWorks + Canvas (if needed) + history (for rewriting) + memory
+    fetch_tasks = [
+        asyncio.to_thread(_fetch_dw_sync, user_id),
+        asyncio.to_thread(_fetch_history_sync, user_id, session_id, 5),
+        asyncio.to_thread(fetch_user_memories_sync, user_id, 10),
+    ]
     if needs_canvas:
-        dw_result, canvas_result = await asyncio.gather(
-            asyncio.to_thread(_fetch_dw_sync, user_id),
-            asyncio.to_thread(_fetch_canvas_sync, user_id),
-            return_exceptions=True,
-        )
-        canvas_dict = canvas_result if not isinstance(canvas_result, Exception) else None
-    else:
-        dw_result = await asyncio.to_thread(_fetch_dw_sync, user_id)
-        canvas_dict = None
-    dw_dict = dw_result if not isinstance(dw_result, Exception) else None
+        fetch_tasks.append(asyncio.to_thread(_fetch_canvas_sync, user_id))
+
+    results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+    dw_dict = results[0] if not isinstance(results[0], Exception) else None
+    history_dicts = results[1] if not isinstance(results[1], Exception) else []
+    memory_dicts = results[2] if not isinstance(results[2], Exception) else []
+    canvas_dict = results[3] if needs_canvas and len(results) > 3 and not isinstance(results[3], Exception) else None
+
+    # Tier 1: Rewrite follow-up queries (resolve pronouns before KB search)
+    if history_dicts and is_likely_followup(user_q):
+        user_q = await asyncio.to_thread(rewrite_query, user_q, history_dicts)
 
     student_context = _build_student_context(dw_dict) if dw_dict else ""
     canvas_context = _build_canvas_context(canvas_dict) if canvas_dict else ""
-    agent_context = student_context  # DegreeWorks only (stable, for session reuse)
+    memory_context = build_memory_context(memory_dicts)
+
+    # Pre-compute course context (prereq analysis, schedule, eligibility)
+    course_context = build_course_context(dw_dict, user_q) if dw_dict else ""
+    if course_context:
+        student_context += f"\n{course_context}"
+
+    agent_context = student_context  # DegreeWorks + course analysis (stable, for session reuse)
 
     # =========================================================================
     # CACHE CHECK - Return cached response instantly if available
@@ -2942,13 +2950,13 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
             # Send the full response immediately
             yield f"data: {json.dumps({'type': 'done', 'content': cached_response})}\n\n"
 
-            # Still save to chat history
+            # Still save to chat history (save original query, not rewritten)
             try:
                 with SessionLocal() as save_db:
                     new_chat = ChatHistory(
                         user_id=user_id,
                         session_id=session_id,
-                        user_query=user_q,
+                        user_query=original_q,
                         bot_response=cached_response
                     )
                     save_db.add(new_chat)
@@ -2982,7 +2990,8 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
                 user_id=str(user_id),
                 context=agent_context,
                 model=req.model,
-                canvas_context=canvas_context
+                canvas_context=canvas_context,
+                memory_context=memory_context,
             ):
                 event_type = event.get("type", "")
                 content = event.get("content", "")
@@ -3015,13 +3024,13 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
             if query_cache.set(user_q, full_response, context_hash):
                 print(f"[CACHE] Stored response for: {user_q[:50]}...")
 
-        # Save to chat history after stream completes
+        # Save to chat history after stream completes (save original query, not rewritten)
         try:
             with SessionLocal() as save_db:
                 new_chat = ChatHistory(
                     user_id=user_id,
                     session_id=session_id,
-                    user_query=user_q,
+                    user_query=original_q,
                     bot_response=full_response
                 )
                 save_db.add(new_chat)
@@ -3034,7 +3043,7 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
         if full_response and not stream_had_error and "error" not in full_response.lower()[:50]:
             try:
                 from research_agent import detect_and_log_failed_query
-                detect_and_log_failed_query(user_q, full_response, user_id)
+                detect_and_log_failed_query(original_q, full_response, user_id, has_student_data=bool(agent_context))
             except Exception:
                 pass
 
@@ -3173,6 +3182,14 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
             answer = "I'm having trouble processing your request. Please try again."
     else:
         answer = "AI system is initializing. Please try again in a moment."
+
+    # Track failed queries for auto-research agent (guest queries too)
+    if answer and "error" not in answer.lower()[:50]:
+        try:
+            from research_agent import detect_and_log_failed_query
+            detect_and_log_failed_query(user_q, answer)
+        except Exception:
+            pass
 
     return {"response": answer}
 
@@ -4272,6 +4289,88 @@ async def internal_research_trigger(request: Request):
         raise HTTPException(status_code=403, detail="Invalid research secret")
     result = await asyncio.to_thread(run_research_batch)
     return result
+
+
+@app.post("/api/internal/memory/consolidate")
+async def internal_memory_consolidate(request: Request):
+    """Triggered by Cloud Scheduler daily at 3am. Consolidates conversations into long-term user memories."""
+    secret = request.headers.get("X-Research-Secret", "")
+    expected = os.getenv("RESEARCH_SECRET", "")
+    if not expected or secret != expected:
+        raise HTTPException(status_code=403, detail="Invalid research secret")
+    from services.memory_service import consolidate_user_memories
+    result = await asyncio.to_thread(consolidate_user_memories, 24)
+    return result
+
+
+@app.post("/api/internal/canvas/sync")
+async def internal_canvas_sync(request: Request):
+    """Triggered by Cloud Scheduler daily at 4am. Refreshes Canvas data for all synced users.
+    Requires canvas_client.refresh_canvas_data() to be implemented."""
+    secret = request.headers.get("X-Research-Secret", "")
+    expected = os.getenv("RESEARCH_SECRET", "")
+    if not expected or secret != expected:
+        raise HTTPException(status_code=403, detail="Invalid research secret")
+
+    # Canvas uses LDAP session auth. Cannot auto-refresh without storing credentials.
+    # This endpoint reports stale records so admins know which students have old data.
+    from models import CanvasStudentData
+    from datetime import timedelta
+
+    db = SessionLocal()
+    try:
+        canvas_records = db.query(CanvasStudentData).all()
+        if not canvas_records:
+            return {"status": "no_canvas_users", "total": 0}
+
+        stale_cutoff = datetime.utcnow() - timedelta(days=3)
+        stale = [r for r in canvas_records if r.synced_at and r.synced_at < stale_cutoff]
+        fresh = [r for r in canvas_records if r.synced_at and r.synced_at >= stale_cutoff]
+
+        return {
+            "status": "report",
+            "note": "Canvas uses LDAP auth. Cannot auto-refresh. Students re-sync manually in Profile.",
+            "total_users": len(canvas_records),
+            "fresh_last_3d": len(fresh),
+            "stale_over_3d": len(stale),
+        }
+    finally:
+        db.close()
+
+
+@app.post("/api/internal/degreeworks/sync")
+async def internal_degreeworks_sync(request: Request):
+    """Triggered by Cloud Scheduler monthly (1st of month at 5am). Refreshes DegreeWorks data.
+    Requires banner_scraper.client.refresh_degreeworks_data() to be implemented."""
+    secret = request.headers.get("X-Research-Secret", "")
+    expected = os.getenv("RESEARCH_SECRET", "")
+    if not expected or secret != expected:
+        raise HTTPException(status_code=403, detail="Invalid research secret")
+
+    # DegreeWorks uses CAS session auth (no API tokens). Cannot auto-refresh
+    # without student credentials. This endpoint reports stale records for admin awareness.
+    from models import DegreeWorksData
+    from datetime import timedelta
+
+    db = SessionLocal()
+    try:
+        dw_records = db.query(DegreeWorksData).all()
+        if not dw_records:
+            return {"status": "no_degreeworks_users", "total": 0}
+
+        stale_cutoff = datetime.utcnow() - timedelta(days=30)
+        stale = [r for r in dw_records if r.synced_at and r.synced_at < stale_cutoff]
+        fresh = [r for r in dw_records if r.synced_at and r.synced_at >= stale_cutoff]
+
+        return {
+            "status": "report",
+            "note": "DegreeWorks requires CAS login. Cannot auto-refresh. Students must re-sync manually.",
+            "total_users": len(dw_records),
+            "fresh_last_30d": len(fresh),
+            "stale_over_30d": len(stale),
+        }
+    finally:
+        db.close()
 
 
 # ==============================================================================

@@ -328,3 +328,5 @@ async def sync_canvas(username: str, password: str, progress_callback=None) -> d
         return data
     finally:
         await client.aclose()
+
+

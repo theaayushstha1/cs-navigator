@@ -1141,11 +1141,11 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                     {msg.sender === "bot" && !msg.isStreaming && (
                       <div className="bot-action-row">
                         <button
-                          className="tts-btn"
+                          className={`tts-btn${isSpeaking ? ' tts-active' : ''}`}
                           onClick={() => speak(msg.text)}
-                          title="Read response aloud"
+                          title={isSpeaking ? "Stop speaking" : "Read response aloud"}
                         >
-                          <FaVolumeUp size={14}/>
+                          {isSpeaking ? <FaStop size={14}/> : <FaVolumeUp size={14}/>}
                         </button>
                         {i === messages.length - 1 && !isLoading && (
                           <button

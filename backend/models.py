@@ -1,8 +1,32 @@
 # backend/models.py
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Float, ForeignKey, func
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 from db import Base
+
+
+class ChatHistory(Base):
+    """Stores chat history in AWS RDS (or local DB).
+    Linked to the User table via user_id."""
+    __tablename__ = "chat_history"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    session_id = Column(String(255), default="default")
+    user_query = Column(Text)
+    bot_response = Column(Text)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Feedback(Base):
+    """Stores user feedback on bot responses for improving the chatbot."""
+    __tablename__ = "feedback"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    session_id = Column(String(255), default="default")
+    message_text = Column(Text)
+    feedback_type = Column(String(50))  # 'helpful', 'not_helpful', 'report'
+    report_details = Column(Text, nullable=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class User(Base):
@@ -169,6 +193,22 @@ class SupportTicket(Base):
 
     # Relationships
     user = relationship("User", foreign_keys=[user_id], backref="tickets")
+
+
+class UserMemory(Base):
+    """Long-term user memory for chatbot personalization.
+    Consolidated from daily conversations via cron job.
+    Stored on our RDS (FERPA-safe), not Vertex AI."""
+    __tablename__ = "user_memories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    memory_type = Column(String(50), nullable=False)  # interest, preference, goal, context
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", backref="memories")
 
 
 class FailedQuery(Base):

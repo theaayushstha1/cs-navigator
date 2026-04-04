@@ -103,7 +103,7 @@ body.sidebar-collapsed .user-avatar {
   min-height: 36px;
 }
 
-body.sidebar-collapsed .profile-picture,
+body.sidebar-collapsed .chat-sidebar .profile-picture,
 body.sidebar-collapsed .user-avatar img {
   width: 36px !important;
   height: 36px !important;

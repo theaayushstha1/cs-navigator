@@ -35,6 +35,38 @@ _OUTAGE_MSG = (
     "Please try again in a minute. If the problem persists, contact the CS department at (443) 885-3962."
 )
 
+# Grounding validation: minimum thresholds before flagging a response
+_GROUNDING_MIN_CHUNKS = 1       # At least 1 KB doc must be cited
+_GROUNDING_DISCLAIMER = (
+    "\n\n---\n*I may not have complete information on this topic in my knowledge base. "
+    "Please verify with the CS department at (443) 885-3962 or compsci@morgan.edu.*"
+)
+
+# Patterns that are inherently non-KB (greetings, security refusals, outages)
+# These responses don't need KB grounding so skip the gate
+_SKIP_GROUNDING_RE = re.compile(
+    r'^(Hey!|Hello!|I can only help with Morgan State|I\'m temporarily having trouble|You\'re welcome)',
+    re.IGNORECASE,
+)
+
+
+def _apply_grounding_gate(text: str, chunks: int, has_student_data: bool = False) -> str:
+    """Append a disclaimer when the agent answered with NO data source at all.
+
+    Data sources: KB search (chunks > 0) or student records (DegreeWorks/Canvas).
+    If either is present, the answer is grounded in real data. No disclaimer needed.
+    Disclaimer only fires when: 0 KB chunks AND no student data = pure model generation.
+    """
+    if not text or _SKIP_GROUNDING_RE.match(text):
+        return text
+    if chunks >= _GROUNDING_MIN_CHUNKS:
+        return text
+    if has_student_data:
+        return text
+    print(f"   [GROUNDING] No data source ({chunks} chunks, no student data) - appending disclaimer")
+    return text + _GROUNDING_DISCLAIMER
+
+
 # Session reuse settings
 SESSION_TTL = 1800  # 30 minutes: reuse sessions within this window
 
@@ -158,12 +190,12 @@ def _cache_session(user_id: str, session_id: str, context: str = "", model: str 
     }
 
 
-def query_agent(query: str, user_id: str = "default", context: str = "", model: str = "", canvas_context: str = "") -> str:
+def query_agent(query: str, user_id: str = "default", context: str = "", model: str = "", canvas_context: str = "", memory_context: str = "") -> str:
     """
     Send a query to the CS Navigator agent and return the final text response.
 
     Reuses ADK sessions when the user's DegreeWorks context hasn't changed.
-    Canvas data is sent via state_delta (volatile, changes often).
+    Canvas + memory data sent via state_delta (volatile, changes often).
 
     Args:
         query: The user's question
@@ -171,8 +203,9 @@ def query_agent(query: str, user_id: str = "default", context: str = "", model: 
         context: DegreeWorks student data (injected into session state, stable)
         model: Model preference ("inav-1.0" or "inav-1.1")
         canvas_context: Canvas LMS data (sent via state_delta, volatile)
+        memory_context: Long-term user memory (sent via state_delta, volatile)
     """
-    # Session reuse: hash only DegreeWorks (stable), NOT Canvas (volatile)
+    # Session reuse: hash only DegreeWorks (stable), NOT Canvas/memory (volatile)
     session_id = _get_valid_session(user_id, context, model)
 
     if not session_id:
@@ -181,6 +214,8 @@ def query_agent(query: str, user_id: str = "default", context: str = "", model: 
             state["degreeworks"] = context
         if canvas_context:
             state["canvas"] = canvas_context
+        if memory_context:
+            state["memory"] = memory_context
         if model:
             state["model_preference"] = model
         session_id = _create_session(user_id, state=state if state else None)
@@ -188,7 +223,7 @@ def query_agent(query: str, user_id: str = "default", context: str = "", model: 
             return _OUTAGE_MSG
         _cache_session(user_id, session_id, context, model)
 
-    return _run_query(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context)
+    return _run_query(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context, memory_context=memory_context)
 
 
 # Per-request grounding metadata. In async single-worker (uvicorn default),
@@ -203,7 +238,7 @@ def _set_grounding(kb_grounded: bool, chunks: int, coverage: float):
     _grounding_local.data = {"kb_grounded": kb_grounded, "grounding_chunks": chunks, "grounding_coverage": coverage}
 
 
-def _run_query(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = "") -> str:
+def _run_query(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = "", memory_context: str = "") -> str:
     """Send a query to the ADK and parse the SSE response."""
     try:
         payload = {
@@ -215,12 +250,14 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
                 "parts": [{"text": message}],
             },
         }
-        # Send volatile data via state_delta (Canvas changes often, model per-request)
+        # Send volatile data via state_delta (Canvas/memory change often, model per-request)
         state_delta = {}
         if model:
             state_delta["model_preference"] = model
         if canvas_context:
             state_delta["canvas"] = canvas_context
+        if memory_context:
+            state_delta["memory"] = memory_context
         if state_delta:
             payload["state_delta"] = state_delta
 
@@ -232,7 +269,7 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
             timeout=120,
         )
 
-        # Handle "Session not found": recreate with DegreeWorks + Canvas state and retry once
+        # Handle "Session not found": recreate with DegreeWorks + Canvas + memory state and retry once
         if resp.status_code == 404 and not retried:
             print(f"   ADK session {session_id} not found, creating a new one...")
             _session_cache.pop(user_id, None)
@@ -241,12 +278,14 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
                 state["degreeworks"] = context
             if canvas_context:
                 state["canvas"] = canvas_context
+            if memory_context:
+                state["memory"] = memory_context
             if model:
                 state["model_preference"] = model
             new_session_id = _create_session(user_id, state=state if state else None)
             if new_session_id:
                 _cache_session(user_id, new_session_id, context, model)
-                return _run_query(message, user_id, new_session_id, retried=True, context=context, model=model, canvas_context=canvas_context)
+                return _run_query(message, user_id, new_session_id, retried=True, context=context, model=model, canvas_context=canvas_context, memory_context=memory_context)
             return _OUTAGE_MSG
 
         resp.raise_for_status()
@@ -304,8 +343,13 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
 
         if final_text:
             # Clean up citation artifacts from Gemini grounding
-            final_text = re.sub(r'\s*\[cite:\s*[^\]]*\]', '', final_text)
-            return final_text.strip()
+            final_text = re.sub(r'\s*\[cite:\s*[^\]]*\]', '', final_text).strip()
+
+            # Grounding validation gate: flag low-grounded responses
+            has_data = bool(context or canvas_context)
+            final_text = _apply_grounding_gate(final_text, grounding_chunks, has_student_data=has_data)
+
+            return final_text
         else:
             return "I'm sorry, I couldn't generate a response. Please try rephrasing your question."
 
@@ -365,13 +409,13 @@ def reset_session(user_id: str) -> None:
     _session_cache.pop(user_id, None)
 
 
-def query_agent_stream(query: str, user_id: str = "default", context: str = "", model: str = "", canvas_context: str = ""):
+def query_agent_stream(query: str, user_id: str = "default", context: str = "", model: str = "", canvas_context: str = "", memory_context: str = ""):
     """
     Send a query to the CS Navigator agent and stream text chunks as they arrive.
 
-    Session reuse based on DegreeWorks (stable). Canvas sent via state_delta (volatile).
+    Session reuse based on DegreeWorks (stable). Canvas + memory sent via state_delta (volatile).
     """
-    # Session reuse: hash only DegreeWorks (stable), NOT Canvas
+    # Session reuse: hash only DegreeWorks (stable), NOT Canvas/memory
     session_id = _get_valid_session(user_id, context, model)
 
     if not session_id:
@@ -380,6 +424,8 @@ def query_agent_stream(query: str, user_id: str = "default", context: str = "", 
             state["degreeworks"] = context
         if canvas_context:
             state["canvas"] = canvas_context
+        if memory_context:
+            state["memory"] = memory_context
         if model:
             state["model_preference"] = model
         session_id = _create_session(user_id, state=state if state else None)
@@ -388,10 +434,10 @@ def query_agent_stream(query: str, user_id: str = "default", context: str = "", 
             return
         _cache_session(user_id, session_id, context, model)
 
-    yield from _run_query_stream(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context)
+    yield from _run_query_stream(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context, memory_context=memory_context)
 
 
-def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = ""):
+def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = "", memory_context: str = ""):
     """Stream query results from ADK, yielding text chunks as they arrive."""
     try:
         payload = {
@@ -408,6 +454,8 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
             state_delta["model_preference"] = model
         if canvas_context:
             state_delta["canvas"] = canvas_context
+        if memory_context:
+            state_delta["memory"] = memory_context
         if state_delta:
             payload["state_delta"] = state_delta
 
@@ -419,7 +467,7 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
             timeout=120,
         )
 
-        # Handle "Session not found": recreate with DegreeWorks + Canvas state and retry once
+        # Handle "Session not found": recreate with DegreeWorks + Canvas + memory state and retry once
         if resp.status_code == 404 and not retried:
             print(f"   ADK session {session_id} not found, creating a new one...")
             _session_cache.pop(user_id, None)
@@ -428,12 +476,14 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
                 state["degreeworks"] = context
             if canvas_context:
                 state["canvas"] = canvas_context
+            if memory_context:
+                state["memory"] = memory_context
             if model:
                 state["model_preference"] = model
             new_session_id = _create_session(user_id, state=state if state else None)
             if new_session_id:
                 _cache_session(user_id, new_session_id, context, model)
-                yield from _run_query_stream(message, user_id, new_session_id, retried=True, context=context, model=model, canvas_context=canvas_context)
+                yield from _run_query_stream(message, user_id, new_session_id, retried=True, context=context, model=model, canvas_context=canvas_context, memory_context=memory_context)
                 return
             yield {"type": "error", "content": _OUTAGE_MSG}
             return
@@ -519,7 +569,15 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
         # Store grounding signal for research_agent (thread-local)
         _set_grounding(grounding_chunks > 0, grounding_chunks, grounding_coverage)
 
-        yield {"type": "done", "content": full_text.strip()}
+        # Grounding validation gate: append disclaimer if low-grounded
+        has_data = bool(context or canvas_context)
+        final = _apply_grounding_gate(full_text.strip(), grounding_chunks, has_student_data=has_data)
+        if final != full_text.strip():
+            # Stream the disclaimer as a final chunk
+            disclaimer = final[len(full_text.strip()):]
+            yield {"type": "chunk", "content": disclaimer}
+
+        yield {"type": "done", "content": final}
 
     except requests.exceptions.ConnectionError:
         print("   [OUTAGE] ADK server not reachable (stream)")

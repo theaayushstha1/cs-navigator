@@ -27,11 +27,15 @@ SKIP_PATTERNS = re.compile(
 
 # Lightweight fallback patterns: only used when grounding metadata is unavailable
 # (e.g. legacy non-ADK path). These are deliberately narrow to avoid false positives.
+# Match responses where the agent explicitly says it has NO information.
+# Catches both direct ("I don't have...") and hedged ("Based on the information I have, I do not have...")
+# Do NOT match "I cannot provide YOUR specific..." (agent has general info, just not personalized)
+# Do NOT match "Based on the information I have access to, I can tell you..." (agent HAS the answer)
 _FALLBACK_FAILURE_PATTERNS = re.compile(
-    r"^I (?:don't|do not) have (?:specific |enough )?(?:information|details)|"
-    r"^I (?:couldn't|could not) find (?:any |specific )?(?:information|details)|"
-    r"^I'm sorry,? I (?:don't|do not) (?:have|know)|"
-    r"^Based on the information I have access to, I (?:cannot|can't|could not|do not have)",
+    r"^I (?:don't|do not) have (?:any )?(?:information|details|specific information) (?:about|on|regarding)|"
+    r"^I (?:couldn't|could not) find (?:any )?(?:information|details) (?:about|on|regarding)|"
+    r"^I don't have information about .+ in my knowledge base|"
+    r"^Based on the information I have access to, I (?:do not have|don't have|cannot find|couldn't find) (?:details|information|specific)",
     re.IGNORECASE | re.MULTILINE
 )
 
@@ -40,12 +44,13 @@ _FALLBACK_FAILURE_PATTERNS = re.compile(
 # PHASE 1: Failed Query Detection (Grounding-Based)
 # =============================================================================
 
-def detect_and_log_failed_query(user_query: str, bot_response: str, user_id: int = None) -> bool:
+def detect_and_log_failed_query(user_query: str, bot_response: str, user_id: int = None, has_student_data: bool = False) -> bool:
     """Detect KB misses using Vertex AI Search grounding metadata.
 
     PRIMARY SIGNAL: The ADK agent's groundingMetadata tells us exactly how many
     KB documents were retrieved and what fraction of the response is grounded.
     If zero KB chunks were returned, the agent had nothing to work with = KB miss.
+    EXCEPTION: If has_student_data is True, the answer came from DW/Canvas, not KB.
 
     FALLBACK: If grounding metadata is unavailable (legacy path, error), use a
     narrow regex that only matches responses that START with failure language.
@@ -53,9 +58,14 @@ def detect_and_log_failed_query(user_query: str, bot_response: str, user_id: int
     Returns True if logged as a failed query.
     """
     query = user_query.strip()
+    response = bot_response.strip() if bot_response else ""
 
     # Skip short or greeting queries
     if len(query) < 15 or SKIP_PATTERNS.match(query):
+        return False
+
+    # Skip security refusals (not a KB miss, just off-topic/injection)
+    if response.startswith("I can only help with Morgan State"):
         return False
 
     # Skip file uploads (PDF analysis, etc.)
@@ -87,7 +97,7 @@ def detect_and_log_failed_query(user_query: str, bot_response: str, user_id: int
         grounding = get_last_grounding()
         grounding_chunks = grounding.get("grounding_chunks", 0)
 
-        if not grounding.get("kb_grounded", True) or grounding_chunks == 0:
+        if (not grounding.get("kb_grounded", True) or grounding_chunks == 0) and not has_student_data:
             is_kb_miss = True
             log.info(f"[RESEARCH] KB miss (0 grounding chunks): {query[:60]}")
     except Exception as e:
