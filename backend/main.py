@@ -117,7 +117,7 @@ PINECONE_NAMESPACE = os.getenv("PINECONE_NAMESPACE", "docs")
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY")  # Still needed for TTS
 JWT_SECRET         = os.getenv("JWT_SECRET")
 ALGORITHM          = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 240
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "4320"))  # 3 days default
 
 # Upload configuration
 UPLOAD_FOLDER = os.path.join(BACKEND_DIR, "uploads", "profile_pictures")
