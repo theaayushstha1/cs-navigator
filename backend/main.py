@@ -405,7 +405,7 @@ async def lifespan(app):
     yield
     # Shutdown (cleanup if needed)
 
-app = FastAPI(title="CS Chatbot API", version="2.1.0", lifespan=lifespan)
+app = FastAPI(title="CS Navigator API", version="5.0.0", lifespan=lifespan)
 
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5175,http://127.0.0.1:3000,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:8000,https://inavigator.ai,https://cs.inavigator.ai,https://api.inavigator.ai,https://csnavigator-frontend-750361124802.us-central1.run.app").split(",")
 print(f"[CORS] Allowed origins: {ALLOWED_ORIGINS}")
@@ -787,7 +787,8 @@ def get_optional_user(
 def root_dashboard(request: Request, user: Optional[dict] = Depends(get_optional_user)):
     """Dashboard showing all endpoints and recent logs. Admin only, dev/staging only."""
     if not user or user.get("role") != "admin":
-        return HTMLResponse("<h1>CSNavigator API</h1><p>Running.</p>", status_code=200)
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url="/docs")
     # Hide logs in production unless explicitly enabled
     show_logs = os.getenv("SHOW_DASHBOARD_LOGS", "true").lower() == "true"
     routes = []
