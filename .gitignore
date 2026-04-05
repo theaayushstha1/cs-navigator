@@ -78,3 +78,14 @@ jan.txt
 
 # Local database
 *.db
+
+# Workspace artifacts
+.superpowers/
+
+# Test scripts & reports
+stress_test_*.py
+stress_test_*.txt
+stress_test_*.json
+
+# PIDs
+*.pid
