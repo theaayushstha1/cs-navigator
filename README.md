@@ -241,9 +241,17 @@ cs-chatbot-morganstate/
 
 ---
 
-## Contributing
+## Team
 
-CS Navigator is a research project under Dr. Shuangbao "Paul" Wang at Morgan State University's Computer Science Department.
+Built under the guidance of **Dr. Shuangbao "Paul" Wang**, Professor and Chair of Computer Science at Morgan State University.
+
+| Name | Role |
+|------|------|
+| **Aayush Shrestha** | Lead Developer. ADK agent architecture, backend systems, Canvas/DegreeWorks integration, caching, security hardening, Cloud Run deployment. |
+| **Sakina Shrestha** | Developer. RAG pipeline (v1.0), agent contributions, frontend development. |
+| **Dr. Shuangbao "Paul" Wang** | Faculty Advisor. Research direction, department coordination, testing oversight. |
+
+## Contributing
 
 To contribute:
 1. Fork the repository
