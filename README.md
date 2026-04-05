@@ -27,40 +27,29 @@ Built with Google ADK (Agent Development Kit), Gemini 2.5 Flash, and Vertex AI S
 
 <p align="center">
   <img src="docs/screenshots/demo.gif" width="80%" alt="CS Navigator Demo">
-  <br><em>Login, ask a question, get a personalized response in seconds</em>
+  <br><em>Ask questions, get personalized answers grounded in university data</em>
 </p>
 
-## Screenshots
+### Features: Curriculum, My Classes, Grade Surgeon, Ripple Effect
 
 <p align="center">
-  <img src="docs/screenshots/chat-home.png" width="80%" alt="Chat Interface">
-  <br><em>Personalized chat with DegreeWorks data, sidebar navigation, and conversation history</em>
+  <img src="docs/screenshots/demo-features.gif" width="80%" alt="Features Tour">
+  <br><em>Track degree progress, view grades, analyze course impact</em>
 </p>
 
-<details>
-<summary><strong>More Screenshots</strong></summary>
+### Personalized Advising with DegreeWorks
 
 <p align="center">
-  <img src="docs/screenshots/guest-chat.png" width="80%" alt="Guest Try Chat">
-  <br><em>Guest trial mode with 15-minute timer and suggested questions</em>
+  <img src="docs/screenshots/demo-personal.gif" width="80%" alt="Personalized Chat">
+  <br><em>Agent reads your academic record and gives tailored answers</em>
 </p>
+
+### Admin Dashboard
 
 <p align="center">
-  <img src="docs/screenshots/admin-dashboard.png" width="80%" alt="Admin Dashboard">
-  <br><em>Admin dashboard with system health, KB management, and analytics</em>
+  <img src="docs/screenshots/demo-admin.gif" width="80%" alt="Admin Dashboard">
+  <br><em>Manage knowledge base, users, tickets, research pipeline, system health</em>
 </p>
-
-<p align="center">
-  <img src="docs/screenshots/login-page.png" width="80%" alt="Login Page">
-  <br><em>Login page with Morgan State branding and feature highlights</em>
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/profile-page.png" width="80%" alt="Profile Settings">
-  <br><em>Profile settings with DegreeWorks and Canvas LMS integration</em>
-</p>
-
-</details>
 
 ---
 
