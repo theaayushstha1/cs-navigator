@@ -708,6 +708,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
     if ((!sendText && !pendingFile) || isLoading) return;
 
     setIsLoading(true);
+    setInput("");  // Clear input immediately to prevent concatenation with next typed message
     let finalMessage = sendText;
 
     try {

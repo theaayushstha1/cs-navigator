@@ -71,7 +71,7 @@ def _apply_grounding_gate(text: str, chunks: int, has_student_data: bool = False
 
 
 # Session reuse settings
-SESSION_TTL = 1800  # 30 minutes: reuse sessions within this window
+SESSION_TTL = 86400  # 24 hours: sessions persist all day, context hash handles data changes
 
 # Session cache: user_id -> {"session_id", "created_at", "context_hash"}
 _session_cache: dict[str, dict] = {}

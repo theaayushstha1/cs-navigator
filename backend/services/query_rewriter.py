@@ -256,11 +256,17 @@ def rewrite_query(query: str, history: list[dict]) -> str:
 
     # Layer 1: Try deterministic focus replacement from last turn
     # Only replaces when we have a HIGH-CONFIDENCE match (both user and bot agree on entity)
-    last_turn = history[-1]
-    focus = _extract_focus(last_turn["user_query"], last_turn["bot_response"])
-    focused = _apply_focus(query, focus)
-    if focused:
-        return focused
+    # SKIP if the current query already has its own clear entities (prevents context bleed)
+    has_own_course = bool(_COURSE_RE.search(query))
+    has_own_person = bool(_PERSON_RE.search(query))
+    has_own_topic = bool(re.search(r'\b(calc|physics|gpa|grade|class|major|minor|credit)\b', query, re.IGNORECASE))
+
+    if not has_own_course and not has_own_person and not has_own_topic:
+        last_turn = history[-1]
+        focus = _extract_focus(last_turn["user_query"], last_turn["bot_response"])
+        focused = _apply_focus(query, focus)
+        if focused:
+            return focused
 
     # Layer 2: LLM rewriter for complex cases
     # If the LLM can't confidently rewrite, it returns the original query unchanged
@@ -283,9 +289,11 @@ def rewrite_query(query: str, history: list[dict]) -> str:
                 "CRITICAL RULES:\n"
                 "1. Pronouns like 'he', 'she', 'they', 'it' refer to the entity in the MOST RECENT exchange.\n"
                 "2. If you are NOT SURE what the pronoun or reference refers to, return the ORIGINAL question "
-                "EXACTLY as written. Do NOT guess. The chatbot will ask the student for clarification.\n"
-                "3. 'tell me more' or 'how do I apply' with clear context from the last answer -> rewrite.\n"
-                "4. 'tell me more' with vague/broad context -> return original unchanged.\n\n"
+                "EXACTLY as written. Do NOT guess. The chatbot has full conversation history and will handle it.\n"
+                "3. 'tell me more' or 'explain more simply' -> return ORIGINAL unchanged. The chatbot already has context.\n"
+                "4. 'what about that class' without a clear specific class in recent history -> return ORIGINAL unchanged.\n"
+                "5. Generic follow-ups like 'what do I do first', 'thanks but thats not what i asked' -> return ORIGINAL unchanged.\n"
+                "6. ONLY rewrite when you can confidently replace a pronoun with a SPECIFIC named entity.\n\n"
                 f"Recent conversation:\n{ctx}\n"
                 f"Follow-up question: {query}\n"
                 "Rewritten question (return ONLY the rewritten question, nothing else):"
