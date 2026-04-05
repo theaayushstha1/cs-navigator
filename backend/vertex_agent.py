@@ -76,6 +76,18 @@ SESSION_TTL = 1800  # 30 minutes: reuse sessions within this window
 # Session cache: user_id -> {"session_id", "created_at", "context_hash"}
 _session_cache: dict[str, dict] = {}
 
+# Persistent HTTP sessions per user for Cloud Run session affinity.
+# Cloud Run uses a cookie to pin requests to the same instance.
+# Without this, min-instances>1 causes 404s because sessions are in-memory per instance.
+_http_sessions: dict[str, requests.Session] = {}
+
+def _get_http_session(user_id: str) -> requests.Session:
+    """Get or create a persistent requests.Session for this user.
+    Preserves cookies so Cloud Run session affinity routes to the same instance."""
+    if user_id not in _http_sessions:
+        _http_sessions[user_id] = requests.Session()
+    return _http_sessions[user_id]
+
 # Cloud Run auth: when ADK is --no-allow-unauthenticated, we need an ID token
 _id_token_cache: dict = {"token": None, "expires": 0}
 
@@ -134,10 +146,11 @@ def _create_session(user_id: str, state: Optional[dict] = None) -> str:
     """Create a new ADK session for the user, optionally with initial state.
     Retries once on timeout to handle Cloud Run cold starts on the ADK service."""
     import time as _time
+    http = _get_http_session(str(user_id))
     body = {"state": state} if state else {}
     for attempt in range(2):
         try:
-            resp = requests.post(
+            resp = http.post(
                 f"{ADK_BASE_URL}/apps/{ADK_APP_NAME}/users/{user_id}/sessions",
                 headers=_get_auth_headers(),
                 json=body,
@@ -167,16 +180,19 @@ def _get_valid_session(user_id: str, context: str = "", model: str = "") -> Opti
     if age >= SESSION_TTL:
         print(f"   ADK session expired (age={age:.0f}s), creating new")
         _session_cache.pop(user_id, None)
+        _http_sessions.pop(user_id, None)  # fresh cookie for new instance affinity
         return None
 
     if cached["context_hash"] != ctx_hash:
         print(f"   ADK session context changed, creating new")
         _session_cache.pop(user_id, None)
+        _http_sessions.pop(user_id, None)
         return None
 
     if cached.get("model", "") != model:
         print(f"   ADK session model changed ({cached.get('model', '')} -> {model}), creating new")
         _session_cache.pop(user_id, None)
+        _http_sessions.pop(user_id, None)
         return None
 
     print(f"   ADK session reused: {cached['session_id']} (age={age:.0f}s)")
@@ -244,6 +260,7 @@ def _set_grounding(kb_grounded: bool, chunks: int, coverage: float):
 def _run_query(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = "", memory_context: str = "") -> str:
     """Send a query to the ADK and parse the SSE response."""
     try:
+        http = _get_http_session(str(user_id))
         payload = {
             "app_name": ADK_APP_NAME,
             "user_id": user_id,
@@ -264,7 +281,7 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
         if state_delta:
             payload["state_delta"] = state_delta
 
-        resp = requests.post(
+        resp = http.post(
             f"{ADK_BASE_URL}/run_sse",
             headers={"Content-Type": "application/json"},
             json=payload,
@@ -449,6 +466,7 @@ def query_agent_stream(query: str, user_id: str = "default", context: str = "", 
 def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = "", memory_context: str = ""):
     """Stream query results from ADK, yielding text chunks as they arrive."""
     try:
+        http = _get_http_session(str(user_id))
         payload = {
             "app_name": ADK_APP_NAME,
             "user_id": user_id,
@@ -468,7 +486,7 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
         if state_delta:
             payload["state_delta"] = state_delta
 
-        resp = requests.post(
+        resp = http.post(
             f"{ADK_BASE_URL}/run_sse",
             headers={"Content-Type": "application/json"},
             json=payload,
