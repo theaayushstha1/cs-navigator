@@ -23,6 +23,13 @@ Built with Google ADK (Agent Development Kit), Gemini 2.5 Flash, and Vertex AI S
 
 ---
 
+## Demo
+
+<p align="center">
+  <img src="docs/screenshots/demo.gif" width="80%" alt="CS Navigator Demo">
+  <br><em>Login, ask a question, get a personalized response in seconds</em>
+</p>
+
 ## Screenshots
 
 <p align="center">
