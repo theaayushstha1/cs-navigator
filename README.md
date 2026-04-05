@@ -22,6 +22,40 @@ Built with Google ADK (Agent Development Kit), Gemini 2.5 Flash, and Vertex AI S
 
 ---
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/chat-home.png" width="80%" alt="Chat Interface">
+  <br><em>Personalized chat with DegreeWorks data, sidebar navigation, and conversation history</em>
+</p>
+
+<details>
+<summary><strong>More Screenshots</strong></summary>
+
+<p align="center">
+  <img src="docs/screenshots/guest-chat.png" width="80%" alt="Guest Try Chat">
+  <br><em>Guest trial mode with 15-minute timer and suggested questions</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/admin-dashboard.png" width="80%" alt="Admin Dashboard">
+  <br><em>Admin dashboard with system health, KB management, and analytics</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/login-page.png" width="80%" alt="Login Page">
+  <br><em>Login page with Morgan State branding and feature highlights</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/profile-page.png" width="80%" alt="Profile Settings">
+  <br><em>Profile settings with DegreeWorks and Canvas LMS integration</em>
+</p>
+
+</details>
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -70,6 +104,67 @@ flowchart TB
     style Backend fill:#e8f5e9,stroke:#2e7d32
     style ADK fill:#fff3e0,stroke:#e65100
     style Data fill:#fce4ec,stroke:#c62828
+```
+
+### Caching Flow
+
+```mermaid
+flowchart LR
+    Q[Student Query] --> L1{L1: In-Memory}
+    L1 -->|HIT ~0.001ms| R[Response]
+    L1 -->|MISS| L2{L2: Redis Cloud}
+    L2 -->|HIT ~1ms| R
+    L2 -->|MISS| L3{L3: Semantic Cache}
+    L3 -->|Similar Found\ncos_sim > 0.78| R
+    L3 -->|No Match| Agent[ADK Agent\n~3-8s]
+    Agent --> R
+    Agent -.->|Store| L1
+    Agent -.->|Store 24hr| L2
+    Agent -.->|Store Embedding| L3
+
+    style L1 fill:#e8f5e9,stroke:#2e7d32
+    style L2 fill:#e3f2fd,stroke:#1565c0
+    style L3 fill:#fff3e0,stroke:#e65100
+    style Agent fill:#fce4ec,stroke:#c62828
+```
+
+### Self-Healing Research Pipeline
+
+```mermaid
+flowchart LR
+    Chat[Student Chat] --> Detect{Failed Query\nDetector}
+    Detect -->|0 KB Chunks| Log[Log to DB]
+    Log --> Cluster[Cluster Similar\nFailures]
+    Cluster --> Research[Gemini + Google\nSearch Overnight]
+    Research --> Suggest[KB Addition\nSuggestion]
+    Suggest --> Admin[Admin Reviews\nin Dashboard]
+    Admin -->|Approve| KB[Knowledge Base\nUpdated]
+
+    style Detect fill:#ffebee,stroke:#c62828
+    style Research fill:#e3f2fd,stroke:#1565c0
+    style KB fill:#e8f5e9,stroke:#2e7d32
+```
+
+### Follow-Up Resolution
+
+```mermaid
+flowchart TD
+    FQ[Follow-up Question] --> L0{Layer 0\nRegex Override}
+    L0 -->|"go back to X"\n"switch to X"| Resolved[Rewritten Query]
+    L0 -->|No Match| Check{Has Own\nEntities?}
+    Check -->|"calc", "COSC 320"| Skip[Skip to Agent\nNo Rewriting]
+    Check -->|No Clear Entity| L1{Layer 1\nEntity Focus}
+    L1 -->|Pronoun Replaced| Resolved
+    L1 -->|Can't Resolve| L2{Layer 2\nGemini LLM}
+    L2 -->|Confident Rewrite| Resolved
+    L2 -->|Unsure| Pass[Pass Original\nAgent Has History]
+    Resolved --> Agent[ADK Agent]
+    Skip --> Agent
+    Pass --> Agent
+
+    style L0 fill:#e8f5e9,stroke:#2e7d32
+    style L1 fill:#e3f2fd,stroke:#1565c0
+    style L2 fill:#fff3e0,stroke:#e65100
 ```
 
 ---
