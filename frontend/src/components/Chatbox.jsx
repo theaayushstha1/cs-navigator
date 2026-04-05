@@ -517,7 +517,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
 
       const isOutage = botResponse.includes("temporarily") && botResponse.includes("knowledge base");
       if (isOutage) {
-        toast("Hang tight! We're pushing an update. Try again in a moment.", {
+        toast("Warming up! Try your question again.", {
           duration: 6000,
           style: {
             background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
@@ -838,7 +838,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
 
                             if (isOutage) {
                                 // Show toast notification instead of polluting the chat
-                                toast("Hang tight! We're pushing an update. Try again in a moment.", {
+                                toast("Warming up! Try your question again.", {
                                     duration: 6000,
                                     style: {
                                       background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
@@ -896,7 +896,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
 
         if (isNetworkDown) {
             // Backend unreachable: show deploy toast, remove placeholder bot message
-            toast("We're deploying updates right now. Give it a moment and try again.", {
+            toast("Warming up! Try your question again.", {
                 duration: 6000,
                 style: {
                     background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",

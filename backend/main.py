@@ -2846,6 +2846,20 @@ async def reset_chat_history(user=Depends(get_current_user), db: Session = Depen
     db.commit()
     return {"message": "Chat history reset."}
 
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Delete a single chat session for the logged-in user."""
+    deleted = db.query(ChatHistory).filter(
+        ChatHistory.user_id == user["user_id"],
+        ChatHistory.session_id == session_id,
+    ).delete()
+    db.commit()
+    if deleted == 0:
+        raise HTTPException(404, "Session not found")
+    return {"message": "Session deleted", "deleted_messages": deleted}
+
+
 # --- Voice Mode Endpoints ---
 @app.post("/api/tts")
 async def text_to_speech(req: TTSRequest, _user=Depends(get_current_user)):

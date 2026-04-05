@@ -298,11 +298,19 @@ export default function App() {
     navigate("/chat");
   };
   
-  const handleDelete = (id) => {
+  const handleDelete = async (id) => {
     if (!window.confirm("Delete this chat permanently?")) return;
     const next = sessions.filter((s) => s.id !== id);
     setSessions(next);
     if (activeId === id) setActiveId(next[0]?.id || "");
+    try {
+      await fetch(`${API_BASE}/api/sessions/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      });
+    } catch (err) {
+      console.error("Failed to delete session from server:", err);
+    }
   };
   
   // 🔥 FIXED: Prevent infinite re-renders by checking if messages actually changed
