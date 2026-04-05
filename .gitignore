@@ -89,3 +89,14 @@ stress_test_*.json
 
 # PIDs
 *.pid
+
+# Legacy EC2 deployment (archived)
+deploy.sh
+quickdeploy.sh
+docker-compose.yml
+HOW_TO.md
+cs-chatbot-key.*
+
+# Utility scripts (not part of app)
+generate_audio.py
+generate_pdf.py
