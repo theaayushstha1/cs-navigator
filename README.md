@@ -149,15 +149,15 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    FQ[Follow-up Question] --> L0{Layer 0\nRegex Override}
-    L0 -->|"go back to X"\n"switch to X"| Resolved[Rewritten Query]
-    L0 -->|No Match| Check{Has Own\nEntities?}
-    Check -->|"calc", "COSC 320"| Skip[Skip to Agent\nNo Rewriting]
-    Check -->|No Clear Entity| L1{Layer 1\nEntity Focus}
+    FQ[Follow-up Question] --> L0{Layer 0: Regex Override}
+    L0 -->|go back to X, switch to X| Resolved[Rewritten Query]
+    L0 -->|No Match| Check{Has Own Entities?}
+    Check -->|calc, COSC 320| Skip[Skip to Agent]
+    Check -->|No Clear Entity| L1{Layer 1: Entity Focus}
     L1 -->|Pronoun Replaced| Resolved
-    L1 -->|Can't Resolve| L2{Layer 2\nGemini LLM}
+    L1 -->|Cannot Resolve| L2{Layer 2: Gemini LLM}
     L2 -->|Confident Rewrite| Resolved
-    L2 -->|Unsure| Pass[Pass Original\nAgent Has History]
+    L2 -->|Unsure| Pass[Pass Original to Agent]
     Resolved --> Agent[ADK Agent]
     Skip --> Agent
     Pass --> Agent
