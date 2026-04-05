@@ -7,11 +7,12 @@
   <a href="#version-history">Version History</a>
 </p>
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.0-blue" alt="Version">
-  <img src="https://img.shields.io/badge/status-production-green" alt="Status">
+  <a href="https://github.com/theaayushstha1/cs-navigator/actions"><img src="https://github.com/theaayushstha1/cs-navigator/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/theaayushstha1/cs-navigator/releases/tag/v5.0"><img src="https://img.shields.io/badge/version-5.0-blue" alt="Version"></a>
   <img src="https://img.shields.io/badge/tests-409%20passed%20(95.4%25)-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/deploy-Google%20Cloud%20Run-4285F4" alt="Deploy">
   <img src="https://img.shields.io/badge/AI-Google%20ADK%20%2B%20Gemini-orange" alt="AI">
+  <a href="https://github.com/theaayushstha1/cs-navigator/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
 </p>
 
 ---
