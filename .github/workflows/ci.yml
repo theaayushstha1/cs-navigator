@@ -13,6 +13,10 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    env:
+      JWT_SECRET: ci-test-secret
+      DATABASE_URL: sqlite:///./ci_test.db
+      VERTEX_AI_AGENT_URL: http://localhost:8080
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
