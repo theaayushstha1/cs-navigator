@@ -7,44 +7,25 @@ import "./GuestChatbox.css";
 
 // Default suggestions for guests
 const GUEST_SUGGESTIONS = [
-  "What CS courses are available?",
-  "What are the prerequisites for COSC 311?",
-  "Who is the chair of Computer Science?",
-  "What internship opportunities are available?",
-  "What are the degree requirements?",
-  "What research areas exist in CS?"
+  "What degrees does the CS department offer?",
+  "What are the prerequisites for COSC 220 Data Structures?",
+  "Who are the faculty in the CS department?",
+  "How many credits do I need to graduate with a B.S. in CS?",
+  "What's the 4+1 accelerated B.S./M.S. program?",
+  "Where can I find tutoring and academic support?"
 ];
 
-// --- SMART API SWITCHING ---
-const hostname = window.location.hostname;
-const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-  ? "http://127.0.0.1:8000"
-  : "http://100.48.56.24:5000";
+import { getApiBase } from "../lib/apiBase";
+const API_BASE = getApiBase();
 
 // Session duration: 15 minutes in milliseconds
 const GUEST_SESSION_DURATION = 15 * 60 * 1000;
 const MAX_INPUT_LENGTH = 500;
 
-// Auto-generated guest profile
+// Guest profile - no fake academic data to prevent false answers
 const generateGuestProfile = () => {
-  const saved = localStorage.getItem("guest_profile");
-  if (saved) {
-    return JSON.parse(saved);
-  }
-
-  const classifications = ["Freshman", "Sophomore", "Junior", "Senior"];
-  const majors = ["Computer Science", "Undeclared", "Information Systems", "Engineering"];
-  const gpaOptions = ["2.85", "3.02", "3.24", "3.45", "3.67", "2.95", "3.12", "3.38"];
-
-  const profile = {
-    name: "Guest User",
-    gpa: gpaOptions[Math.floor(Math.random() * gpaOptions.length)],
-    classification: classifications[Math.floor(Math.random() * classifications.length)],
-    major: majors[Math.floor(Math.random() * majors.length)]
-  };
-
-  localStorage.setItem("guest_profile", JSON.stringify(profile));
-  return profile;
+  localStorage.removeItem("guest_profile"); // clean up old fake profiles
+  return { name: "Guest User" };
 };
 
 // Format time remaining as MM:SS
@@ -80,6 +61,7 @@ export default function GuestChatbox() {
   });
   const [timeRemaining, setTimeRemaining] = useState(GUEST_SESSION_DURATION);
   const [showSignUpModal, setShowSignUpModal] = useState(false);
+  const [bonusUsed, setBonusUsed] = useState(() => localStorage.getItem("guest_bonus_used") === "true");
 
   // Refs
   const messagesEndRef = useRef(null);
@@ -139,8 +121,30 @@ export default function GuestChatbox() {
   // Handle suggestion click
   const handleSuggestion = (text) => {
     if (!isLoading && !isSessionExpired) {
-      setInput(text);
-      inputRef.current?.focus();
+      // Directly send instead of just filling input
+      setInput('');
+      startSession();
+
+      const userMessage = text.trim();
+      setMessages(prev => [...prev, { text: userMessage, sender: "user", time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
+      setIsLoading(true);
+
+      (async () => {
+        try {
+          const res = await fetch(`${API_BASE}/chat/guest`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: userMessage, guestProfile: guestProfile || {} }),
+          });
+          const data = await res.json();
+          const botReply = data.response || "I couldn't process that. Please try again.";
+          setMessages(prev => [...prev, { text: botReply, sender: "bot", time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
+        } catch {
+          setMessages(prev => [...prev, { text: "Something went wrong. Please try again.", sender: "bot", time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }]);
+        } finally {
+          setIsLoading(false);
+        }
+      })();
     }
   };
 
@@ -209,7 +213,7 @@ export default function GuestChatbox() {
               </div>
               <span className="trial-divider">|</span>
               <button onClick={() => navigate("/signup")} className="trial-link">
-                Create an account for unlimited
+                Create an account for unlimited access
               </button>
             </>
           ) : (
@@ -219,7 +223,7 @@ export default function GuestChatbox() {
               </span>
               <span className="trial-divider">|</span>
               <button onClick={() => navigate("/signup")} className="trial-link">
-                Create an account for unlimited
+                Create an account for unlimited access
               </button>
             </>
           )}
@@ -229,7 +233,7 @@ export default function GuestChatbox() {
       <div className="guest-chat-messages">
         {messages.length === 0 ? (
           <div className="guest-welcome-container">
-            <img src="/msu_logo.png" alt="MSU Logo" className="guest-welcome-logo" />
+            <img src="/msu_logo.webp" alt="MSU Logo" className="guest-welcome-logo" />
             <h1 className="guest-welcome-title">Morgan State CS Navigator</h1>
             <p className="guest-welcome-subtitle">How can I assist with your academic journey today?</p>
             <div className="guest-suggestions">
@@ -249,7 +253,7 @@ export default function GuestChatbox() {
           messages.map((msg, i) => (
             <div key={i} className={`guest-message ${msg.sender}`}>
               <img
-                src={msg.sender === "user" ? "/user_icon.jpg" : "/bot_avatar.jpg"}
+                src={msg.sender === "user" ? "/user_icon.webp" : "/bot_avatar.webp"}
                 alt={msg.sender}
                 className="guest-avatar-img"
                 onError={(e) => {
@@ -275,7 +279,7 @@ export default function GuestChatbox() {
         {isLoading && (
           <div className="guest-message bot">
             <img
-              src="/bot_avatar.jpg"
+              src="/bot_avatar.webp"
               alt="Bot"
               className="guest-avatar-img"
               onError={(e) => {
@@ -325,6 +329,10 @@ export default function GuestChatbox() {
         )}
       </div>
 
+      <div style={{ textAlign: 'center', padding: '6px 0 10px', fontSize: '0.7rem', color: 'var(--text-tertiary, #94a3b8)', letterSpacing: '0.02em' }}>
+        CS Navigator {new Date().getFullYear()} | Morgan State University Department of Computer Science
+      </div>
+
       {/* Sign-up Modal */}
       {showSignUpModal && (
         <div className="signup-modal-overlay" onClick={() => setShowSignUpModal(false)}>
@@ -368,9 +376,21 @@ export default function GuestChatbox() {
             <div className="signup-modal-footer">
               <button
                 className="signup-modal-btn secondary"
-                onClick={() => setShowSignUpModal(false)}
+                onClick={() => {
+                  if (!bonusUsed) {
+                    // Grant 5 bonus minutes by pushing session start forward
+                    const bonus = 5 * 60 * 1000;
+                    const newStart = Date.now() - (GUEST_SESSION_DURATION - bonus);
+                    setSessionStartTime(newStart);
+                    localStorage.setItem("guest_session_start", newStart.toString());
+                    setTimeRemaining(bonus);
+                    setBonusUsed(true);
+                    localStorage.setItem("guest_bonus_used", "true");
+                  }
+                  setShowSignUpModal(false);
+                }}
               >
-                Maybe Later
+                {bonusUsed ? "Close" : "5 More Minutes"}
               </button>
               <button
                 className="signup-modal-btn primary"

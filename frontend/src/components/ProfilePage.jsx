@@ -12,24 +12,33 @@ import { FaGraduationCap } from "@react-icons/all-files/fa/FaGraduationCap";
 import { FaCheckCircle } from "@react-icons/all-files/fa/FaCheckCircle";
 import { FaTimes } from "@react-icons/all-files/fa/FaTimes";
 import { FaSync } from "@react-icons/all-files/fa/FaSync";
-import { FaBookmark } from "@react-icons/all-files/fa/FaBookmark";
 import { FaChartLine } from "@react-icons/all-files/fa/FaChartLine";
 import { FaBook } from "@react-icons/all-files/fa/FaBook";
 import { FaExternalLinkAlt } from "@react-icons/all-files/fa/FaExternalLinkAlt";
 import { FaCog } from "@react-icons/all-files/fa/FaCog";
 import { FaShieldAlt } from "@react-icons/all-files/fa/FaShieldAlt";
+import { FaClock } from "@react-icons/all-files/fa/FaClock";
+import { FaExclamationTriangle } from "@react-icons/all-files/fa/FaExclamationTriangle";
 import "./ProfilePage.css";
 
-// 🔥 Smart API switching - same logic as Chatbox.jsx
-const hostname = window.location.hostname;
-const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-  ? "http://127.0.0.1:8000"           // Local development
-  : "http://100.48.56.24:5000";     // AWS production
+import { getApiBase } from "../lib/apiBase";
+const API_BASE = getApiBase();
 
 export default function ProfilePage({ userEmail, onLogout }) {
   const navigate = useNavigate();
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [pendingResearch, setPendingResearch] = useState(0);
+
+  // Canvas State
+  const [showCanvasModal, setShowCanvasModal] = useState(false);
+  const [canvasConnected, setCanvasConnected] = useState(false);
+  const [canvasSyncTime, setCanvasSyncTime] = useState(null);
+  const [canvasCreds, setCanvasCreds] = useState({ username: "", password: "" });
+  const [canvasSyncing, setCanvasSyncing] = useState(false);
+  const [canvasProgress, setCanvasProgress] = useState([]);
+  const [canvasSummary, setCanvasSummary] = useState(null);
+  const [canvasError, setCanvasError] = useState("");
   const [message, setMessage] = useState({ type: "", text: "" });
   
   const [profile, setProfile] = useState({
@@ -37,7 +46,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
     email: userEmail || "",
     studentId: "",
     major: "Computer Science",
-    profilePicture: "/user_icon.jpg",
+    profilePicture: "/user_icon.webp",
     morganConnected: false,
     role: "student"
   });
@@ -49,16 +58,44 @@ export default function ProfilePage({ userEmail, onLogout }) {
   });
 
   const [showPasswordForm, setShowPasswordForm] = useState(false);
+  const [showPwFields, setShowPwFields] = useState({ current: false, new: false, confirm: false });
 
   // DegreeWorks Modal State
   const [showMorganModal, setShowMorganModal] = useState(false);
   const [degreeWorksData, setDegreeWorksData] = useState(null);
   const [syncStep, setSyncStep] = useState(1); // 1=instructions, 2=syncing, 3=success
 
+  // Banner Auto-Sync State
+  const [bannerCreds, setBannerCreds] = useState({ username: "", password: "" });
+  const [bannerSyncing, setBannerSyncing] = useState(false);
+  const [bannerProgress, setBannerProgress] = useState([]);
+  const [bannerSummary, setBannerSummary] = useState(null);
+  const [bannerError, setBannerError] = useState("");
+
   // Fetch profile data on mount
   useEffect(() => {
     fetchProfile();
     fetchDegreeWorksData();
+    // Fetch Canvas connection status
+    const token = localStorage.getItem("token");
+    if (token) {
+      fetch(`${API_BASE}/api/canvas`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          if (d && d.connected) {
+            setCanvasConnected(true);
+            setCanvasSyncTime(d.updated_at);
+          }
+        })
+        .catch(() => {});
+    }
+    // Fetch pending research suggestions count for admin badge
+    if (token) {
+      fetch(`${API_BASE}/api/admin/research/stats`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d) setPendingResearch(d.pending_suggestions || 0); })
+        .catch(() => {});
+    }
   }, []);
 
   const fetchProfile = async () => {
@@ -134,57 +171,6 @@ export default function ProfilePage({ userEmail, onLogout }) {
     } finally {
       setLoading(false);
     }
-  };
-
-  // Generate the bookmarklet code - sends HTML to backend for parsing
-  const getBookmarkletCode = () => {
-    const token = localStorage.getItem("token");
-    return `javascript:(function(){
-      const API='${API_BASE}';
-      const TOKEN='${token}';
-
-      // Show loading message
-      const msg=document.createElement('div');
-      msg.style.cssText='position:fixed;top:20px;right:20px;background:#333;color:#fff;padding:20px;border-radius:10px;z-index:999999;font-family:Arial;';
-      msg.innerHTML='<strong>CS Navigator</strong><br>Syncing your DegreeWorks data...';
-      document.body.appendChild(msg);
-
-      // Get the page HTML
-      const html=document.documentElement.outerHTML;
-
-      fetch(API+'/api/degreeworks/scrape-html',{
-        method:'POST',
-        headers:{
-          'Content-Type':'application/json',
-          'Authorization':'Bearer '+TOKEN
-        },
-        body:JSON.stringify({html:html})
-      })
-      .then(r=>r.json())
-      .then(d=>{
-        msg.remove();
-        if(d.success){
-          const info=d.data||{};
-          let details='';
-          if(info.overall_gpa) details+='GPA: '+info.overall_gpa+'\\n';
-          if(info.classification) details+='Classification: '+info.classification+'\\n';
-          if(info.total_credits_earned) details+='Credits: '+info.total_credits_earned+'\\n';
-          if(info.courses_count) details+='Courses found: '+info.courses_count+'\\n';
-          alert('✅ DegreeWorks synced successfully!\\n\\n'+details+'\\nYou can now close this tab and return to CS Navigator.');
-        }else{
-          alert('❌ Sync failed: '+(d.detail||d.message||'Unknown error')+'\\n\\nTry using manual entry instead.');
-        }
-      })
-      .catch(e=>{
-        msg.remove();
-        alert('❌ Error: '+e.message+'\\n\\nTry using manual entry instead.');
-      });
-    })();`;
-  };
-
-  const copyBookmarklet = () => {
-    navigator.clipboard.writeText(getBookmarkletCode());
-    setMessage({ type: "success", text: "Bookmarklet code copied! Paste it as the URL of a new bookmark." });
   };
 
   const handleUpdateProfile = async (e) => {
@@ -314,56 +300,144 @@ export default function ProfilePage({ userEmail, onLogout }) {
     window.open("https://morgan.edu", "_blank");
   };
 
-  // Manual entry state
-  const [showManualEntry, setShowManualEntry] = useState(false);
-  const [showPdfUpload, setShowPdfUpload] = useState(false);
-  const [pdfUploading, setPdfUploading] = useState(false);
+  const handleBannerSync = async () => {
+    if (!bannerCreds.username || !bannerCreds.password) {
+      setBannerError("Please enter your MSU username and password.");
+      return;
+    }
 
-  // 🔥 Ref for PDF file input (more reliable than label htmlFor)
-  const pdfInputRef = React.useRef(null);
+    setBannerSyncing(true);
+    setBannerProgress([]);
+    setBannerSummary(null);
+    setBannerError("");
 
-  const [manualData, setManualData] = useState({
-    student_name: "",
-    classification: "Freshman",
-    degree_program: "Bachelor of Science in Computer Science",
-    overall_gpa: "",
-    total_credits_earned: "",
-    credits_remaining: ""
-  });
-
-  const handleManualSubmit = async () => {
-    setLoading(true);
     try {
       const token = localStorage.getItem("token");
-      const response = await fetch(`${API_BASE}/api/degreeworks/sync`, {
+      const response = await fetch(`${API_BASE}/api/banner/sync`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${token}`
         },
         body: JSON.stringify({
-          ...manualData,
-          overall_gpa: manualData.overall_gpa ? parseFloat(manualData.overall_gpa) : null,
-          total_credits_earned: manualData.total_credits_earned ? parseFloat(manualData.total_credits_earned) : null,
-          credits_remaining: manualData.credits_remaining ? parseFloat(manualData.credits_remaining) : null
+          username: bannerCreds.username,
+          password: bannerCreds.password
         })
       });
 
-      if (response.ok) {
-        setProfile({ ...profile, morganConnected: true });
-        setMessage({ type: "success", text: "Academic data saved successfully!" });
-        setShowMorganModal(false);
-        setShowManualEntry(false);
-        fetchDegreeWorksData();
-      } else {
-        setMessage({ type: "error", text: "Failed to save data. Please try again." });
+      if (!response.ok && response.status === 429) {
+        setBannerError("Rate limit exceeded. Maximum 3 syncs per hour.");
+        setBannerSyncing(false);
+        return;
+      }
+
+      // Read SSE stream
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+
+            if (event.type === "progress") {
+              setBannerProgress(prev => [...prev, event.detail]);
+            } else if (event.type === "done") {
+              setBannerSummary(event.summary);
+              setProfile(prev => ({ ...prev, morganConnected: true }));
+              fetchDegreeWorksData();
+              fetchProfile();
+            } else if (event.type === "error") {
+              setBannerError(event.detail);
+            }
+          } catch (e) {
+            // Skip malformed SSE lines
+          }
+        }
       }
     } catch (error) {
-      setMessage({ type: "error", text: "Network error. Please try again." });
+      setBannerError("Connection failed: " + error.message);
     } finally {
-      setLoading(false);
+      setBannerSyncing(false);
+      // Clear password from memory
+      setBannerCreds(prev => ({ ...prev, password: "" }));
     }
   };
+
+  // Canvas Sync Handler
+  const handleCanvasSync = async () => {
+    if (!canvasCreds.username || !canvasCreds.password) {
+      setCanvasError("Please enter your MSU username and password.");
+      return;
+    }
+    setCanvasSyncing(true);
+    setCanvasProgress([]);
+    setCanvasSummary(null);
+    setCanvasError("");
+
+    try {
+      const token = localStorage.getItem("token");
+      const response = await fetch(`${API_BASE}/api/canvas/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ username: canvasCreds.username, password: canvasCreds.password }),
+      });
+
+      if (!response.ok && response.status === 429) {
+        setCanvasError("Rate limit exceeded. Maximum 3 syncs per hour.");
+        setCanvasSyncing(false);
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            if (event.type === "progress") {
+              setCanvasProgress(prev => [...prev, event.detail]);
+            } else if (event.type === "done") {
+              setCanvasSummary(event.summary);
+              setCanvasConnected(true);
+              setCanvasSyncTime(new Date().toISOString());
+            } else if (event.type === "error") {
+              setCanvasError(event.detail);
+            }
+          } catch (e) {}
+        }
+      }
+    } catch (error) {
+      setCanvasError("Connection failed: " + error.message);
+    } finally {
+      setCanvasSyncing(false);
+      setCanvasCreds(prev => ({ ...prev, password: "" }));
+    }
+  };
+
+  const [showPdfUpload, setShowPdfUpload] = useState(false);
+  const [pdfUploading, setPdfUploading] = useState(false);
+
+  // Ref for PDF file input (more reliable than label htmlFor)
+  const pdfInputRef = React.useRef(null);
 
   const handlePdfUpload = async (e) => {
     console.log("📄 PDF Upload triggered", e);
@@ -375,8 +449,10 @@ export default function ProfilePage({ userEmail, onLogout }) {
       return;
     }
 
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      setMessage({ type: "error", text: "Please upload a PDF file" });
+    const allowedExts = ['.pdf', '.docx'];
+    const fileName = file.name.toLowerCase();
+    if (!allowedExts.some(ext => fileName.endsWith(ext))) {
+      setMessage({ type: "error", text: "Please upload a PDF or DOCX file." });
       return;
     }
 
@@ -411,7 +487,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
         fetchDegreeWorksData();
       } else {
         console.error("❌ Upload failed:", data);
-        setMessage({ type: "error", text: data.detail || data.message || "Failed to parse PDF. Please try manual entry instead." });
+        setMessage({ type: "error", text: data.detail || data.message || "Failed to parse PDF. Please try again or use Banner Auto-Sync." });
       }
     } catch (error) {
       console.error("❌ Upload error:", error);
@@ -456,7 +532,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
               src={profile.profilePicture} 
               alt="Profile" 
               className="profile-picture"
-              onError={(e) => e.target.src = "/user_icon.jpg"}
+              onError={(e) => e.target.src = "/user_icon.webp"}
             />
             <label className="upload-overlay">
               <FaCamera size={24} />
@@ -515,10 +591,16 @@ export default function ProfilePage({ userEmail, onLogout }) {
               </label>
               <input
                 type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={8}
                 value={profile.studentId || ""}
-                onChange={(e) => setProfile({ ...profile, studentId: e.target.value })}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/\D/g, '');
+                  setProfile({ ...profile, studentId: val });
+                }}
                 disabled={!isEditing}
-                placeholder="Enter your student ID"
+                placeholder="e.g. 00367844"
               />
             </div>
 
@@ -576,36 +658,57 @@ export default function ProfilePage({ userEmail, onLogout }) {
                 <label>
                   <FaLock /> Current Password
                 </label>
-                <input
-                  type="password"
-                  value={passwords.currentPassword}
-                  onChange={(e) => setPasswords({ ...passwords, currentPassword: e.target.value })}
-                  required
-                />
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showPwFields.current ? "text" : "password"}
+                    value={passwords.currentPassword}
+                    onChange={(e) => setPasswords({ ...passwords, currentPassword: e.target.value })}
+                    required
+                    style={{ paddingRight: '60px' }}
+                  />
+                  <button type="button" onClick={() => setShowPwFields(s => ({ ...s, current: !s.current }))}
+                    style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--msu-blue)', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}>
+                    {showPwFields.current ? "Hide" : "Show"}
+                  </button>
+                </div>
               </div>
 
               <div className="form-group">
                 <label>
                   <FaLock /> New Password
                 </label>
-                <input
-                  type="password"
-                  value={passwords.newPassword}
-                  onChange={(e) => setPasswords({ ...passwords, newPassword: e.target.value })}
-                  required
-                />
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showPwFields.new ? "text" : "password"}
+                    value={passwords.newPassword}
+                    onChange={(e) => setPasswords({ ...passwords, newPassword: e.target.value })}
+                    required
+                    style={{ paddingRight: '60px' }}
+                  />
+                  <button type="button" onClick={() => setShowPwFields(s => ({ ...s, new: !s.new }))}
+                    style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--msu-blue)', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}>
+                    {showPwFields.new ? "Hide" : "Show"}
+                  </button>
+                </div>
               </div>
 
               <div className="form-group">
                 <label>
                   <FaLock /> Confirm New Password
                 </label>
-                <input
-                  type="password"
-                  value={passwords.confirmPassword}
-                  onChange={(e) => setPasswords({ ...passwords, confirmPassword: e.target.value })}
-                  required
-                />
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showPwFields.confirm ? "text" : "password"}
+                    value={passwords.confirmPassword}
+                    onChange={(e) => setPasswords({ ...passwords, confirmPassword: e.target.value })}
+                    required
+                    style={{ paddingRight: '60px' }}
+                  />
+                  <button type="button" onClick={() => setShowPwFields(s => ({ ...s, confirm: !s.confirm }))}
+                    style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--msu-blue)', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}>
+                    {showPwFields.confirm ? "Hide" : "Show"}
+                  </button>
+                </div>
               </div>
 
               <div className="form-actions">
@@ -695,8 +798,8 @@ export default function ProfilePage({ userEmail, onLogout }) {
 
               {(!degreeWorksData.overall_gpa || !degreeWorksData.classification) && (
                 <div className="dw-warning">
-                  <p>Some data couldn't be extracted from your PDF. Use <strong>Quick Manual Entry</strong> to add missing info.</p>
-                  <button className="text-btn" onClick={() => { setShowManualEntry(true); setShowMorganModal(true); }}>Add Missing Data</button>
+                  <p>Some data couldn't be extracted. Please try uploading again or use Banner Auto-Sync.</p>
+                  <button className="text-btn" onClick={() => { setShowPdfUpload(false); setShowMorganModal(true); }}>Re-sync Data</button>
                 </div>
               )}
             </div>
@@ -716,6 +819,68 @@ export default function ProfilePage({ userEmail, onLogout }) {
           )}
         </div>
 
+        {/* Canvas Sync */}
+        <div className="profile-section">
+          <div className="section-header">
+            <h3><FaBook /> Canvas LMS</h3>
+          </div>
+          <div className="admin-access-content">
+            {canvasConnected ? (
+              <>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
+                <FaCheckCircle style={{ color: "#34a853", fontSize: "1.2rem" }} />
+                <div>
+                  <p style={{ margin: 0, fontWeight: 500 }}>Connected to Canvas</p>
+                  <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--text-secondary)" }}>
+                    Last synced: {canvasSyncTime ? new Date(canvasSyncTime).toLocaleDateString() : "Recently"}
+                  </p>
+                </div>
+                <div style={{ marginLeft: "auto", display: "flex", gap: "6px" }}>
+                  <button onClick={() => setShowCanvasModal(true)} style={{
+                    padding: "6px 14px", borderRadius: "8px",
+                    border: "1px solid var(--border-color)", background: "transparent",
+                    color: "var(--text-secondary)", cursor: "pointer", fontSize: "0.85rem"
+                  }}>
+                    <FaSync style={{ marginRight: "4px" }} /> Re-sync
+                  </button>
+                  <button onClick={async () => {
+                    if (!window.confirm("Disconnect Canvas? Your synced data will be removed.")) return;
+                    const token = localStorage.getItem("token");
+                    await fetch(`${API_BASE}/api/canvas/disconnect`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+                    setCanvasConnected(false);
+                    setCanvasSyncTime(null);
+                  }} style={{
+                    padding: "6px 14px", borderRadius: "8px",
+                    border: "1px solid rgba(234,67,53,0.3)", background: "transparent",
+                    color: "#EA4335", cursor: "pointer", fontSize: "0.85rem"
+                  }}>
+                    Disconnect
+                  </button>
+                </div>
+              </div>
+              <p style={{
+                margin: "0 0 8px", fontSize: "0.78rem", color: "var(--text-tertiary, #999)",
+                lineHeight: 1.4, paddingLeft: "36px"
+              }}>
+                <span style={{ color: "#d93025", fontWeight: 500 }}>Re-sync weekly</span> for the most accurate grades, assignments, and deadlines in chat.
+              </p>
+              </>
+            ) : (
+              <>
+                <p>Connect your Canvas account to see courses, assignments, grades, and deadlines in one place.</p>
+                <button className="connect-btn" onClick={() => setShowCanvasModal(true)} style={{
+                  display: "flex", alignItems: "center", gap: "8px", width: "100%",
+                  padding: "12px", borderRadius: "10px", border: "none",
+                  background: "#e65100", color: "white", fontWeight: 600,
+                  cursor: "pointer", justifyContent: "center", fontSize: "0.95rem"
+                }}>
+                  <FaSync /> Sync Canvas
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
         {/* Admin Access - Only show for admins */}
         {profile.role === "admin" && (
           <div className="profile-section admin-section">
@@ -724,9 +889,22 @@ export default function ProfilePage({ userEmail, onLogout }) {
             </div>
             <div className="admin-access-content">
               <p>You have administrator privileges. Access the admin dashboard to manage tickets and curriculum.</p>
-              <button className="admin-access-btn" onClick={() => navigate("/admin")}>
-                <FaCog /> Open Admin Dashboard
-              </button>
+              <div style={{ position: "relative", display: "inline-block", width: "100%" }}>
+                <button className="admin-access-btn" onClick={() => navigate("/admin")}>
+                  <FaCog /> Open Admin Dashboard
+                </button>
+                {pendingResearch > 0 && (
+                  <span style={{
+                    position: "absolute", top: "-8px", right: "-4px",
+                    background: "#ef4444", color: "white", borderRadius: "50%",
+                    width: "22px", height: "22px", display: "flex", alignItems: "center",
+                    justifyContent: "center", fontSize: "11px", fontWeight: 700,
+                    boxShadow: "0 2px 6px rgba(239,68,68,0.4)", border: "2px solid var(--bg-card)"
+                  }}>
+                    {pendingResearch}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -745,7 +923,6 @@ export default function ProfilePage({ userEmail, onLogout }) {
           <div className="modal-content degreeworks-modal" onClick={(e) => e.stopPropagation()}>
             <button className="modal-close" onClick={() => {
               setShowMorganModal(false);
-              setShowManualEntry(false);
               setShowPdfUpload(false);
             }}>
               <FaTimes />
@@ -758,18 +935,18 @@ export default function ProfilePage({ userEmail, onLogout }) {
             </div>
 
             <div className="modal-body">
-              {!showManualEntry && !showPdfUpload ? (
+              {!showPdfUpload ? (
                 <>
                   {/* Option Selection */}
                   <div className="sync-options">
-                    {/* Option 1: One-Click Sync via Bookmarklet */}
-                    <div className="sync-option highlighted" onClick={() => setShowPdfUpload('bookmarklet')}>
+                    {/* Option 1: Auto-Sync from Banner */}
+                    <div className="sync-option highlighted" onClick={() => setShowPdfUpload('banner')}>
                       <div className="option-icon sync-icon">
                         <FaSync />
                       </div>
                       <div className="option-content">
-                        <h4>One-Click Sync (Recommended)</h4>
-                        <p>Already on DegreeWorks? Use our sync button to instantly import your data.</p>
+                        <h4>Auto-Sync from Banner (Recommended)</h4>
+                        <p>Log in with your MSU credentials to automatically pull all your academic data.</p>
                       </div>
                       <FaExternalLinkAlt className="option-arrow" />
                     </div>
@@ -780,74 +957,157 @@ export default function ProfilePage({ userEmail, onLogout }) {
                         <FaBook />
                       </div>
                       <div className="option-content">
-                        <h4>Upload DegreeWorks PDF</h4>
-                        <p>Save your DegreeWorks as PDF and upload it here.</p>
-                      </div>
-                      <FaExternalLinkAlt className="option-arrow" />
-                    </div>
-
-                    {/* Option 3: Manual Entry */}
-                    <div className="sync-option" onClick={() => setShowManualEntry(true)}>
-                      <div className="option-icon">
-                        <FaUser />
-                      </div>
-                      <div className="option-content">
-                        <h4>Quick Manual Entry</h4>
-                        <p>Type in your GPA, classification, and credits manually.</p>
+                        <h4>Upload DegreeWorks Document</h4>
+                        <p>Upload a PDF, screenshot, or DOCX of your DegreeWorks page.</p>
                       </div>
                       <FaExternalLinkAlt className="option-arrow" />
                     </div>
                   </div>
                 </>
-              ) : showPdfUpload === 'bookmarklet' ? (
-                /* One-Click Sync Instructions */
+              ) : showPdfUpload === 'banner' ? (
+                /* Banner Auto-Sync */
                 <div className="pdf-upload-section">
-                  <button className="back-to-options" onClick={() => setShowPdfUpload(false)}>
+                  <button className="back-to-options" onClick={() => {
+                    setShowPdfUpload(false);
+                    setBannerError("");
+                    setBannerProgress([]);
+                    setBannerSummary(null);
+                  }}>
                     <FaArrowLeft /> Back to options
                   </button>
 
-                  <h3>One-Click Sync</h3>
+                  <h3>Auto-Sync from Banner</h3>
 
-                  <div className="pdf-instructions">
-                    <div className="instruction-step">
-                      <span className="step-num">1</span>
-                      <div>
-                        <strong>Open DegreeWorks</strong>
-                        <p>Go to your DegreeWorks page in MyMSU Banner (if not already there)</p>
-                        <button className="step-action-btn small" onClick={openMorganPortal}>
-                          <FaExternalLinkAlt /> Open Morgan State
-                        </button>
+                  {!bannerSyncing && !bannerSummary ? (
+                    <>
+                      <p className="form-subtitle">
+                        Enter your MSU credentials to automatically sync your profile, registration, and grades.
+                      </p>
+
+                      <div className="manual-form-grid">
+                        <div className="form-group">
+                          <label>MSU Username</label>
+                          <input
+                            type="text"
+                            placeholder="e.g., jsmith1"
+                            value={bannerCreds.username}
+                            onChange={(e) => setBannerCreds({ ...bannerCreds, username: e.target.value })}
+                            autoComplete="username"
+                          />
+                          <span style={{ fontSize: "0.75rem", color: "#888", marginTop: 2 }}>Username only, not your full email</span>
+                        </div>
+                        <div className="form-group">
+                          <label>MSU Password</label>
+                          <input
+                            type="password"
+                            placeholder="Your MSU password"
+                            value={bannerCreds.password}
+                            onChange={(e) => setBannerCreds({ ...bannerCreds, password: e.target.value })}
+                            autoComplete="current-password"
+                            onKeyDown={(e) => e.key === "Enter" && handleBannerSync()}
+                          />
+                        </div>
                       </div>
-                    </div>
-                    <div className="instruction-step">
-                      <span className="step-num">2</span>
-                      <div>
-                        <strong>Create Sync Bookmark</strong>
-                        <p>Click the button below to copy the sync code, then create a new bookmark and paste it as the URL:</p>
-                        <button className="bookmarklet-copy-btn" onClick={copyBookmarklet}>
-                          <FaBookmark /> Copy Sync Code
-                        </button>
-                        <div className="bookmark-instructions">
-                          <small>
-                            <strong>Chrome:</strong> Right-click bookmarks bar → Add page → Paste code as URL<br/>
-                            <strong>Firefox:</strong> Ctrl+Shift+B → Right-click → New Bookmark → Paste code as URL
-                          </small>
+
+                      {bannerError && (
+                        <div className="message error" style={{ marginBottom: 12 }}>
+                          {bannerError}
+                        </div>
+                      )}
+
+                      <div className="security-note" style={{ marginBottom: 16 }}>
+                        <FaShieldAlt />
+                        <div>
+                          <strong>Your credentials are never stored</strong>
+                          <p>Your password is used once to authenticate with MSU and is immediately discarded. It is never saved to our servers.</p>
+                        </div>
+                      </div>
+
+                      <button
+                        className="modal-primary-btn submit-manual"
+                        onClick={handleBannerSync}
+                        disabled={bannerSyncing || !bannerCreds.username || !bannerCreds.password}
+                      >
+                        <FaSync /> Sync My Data
+                      </button>
+                    </>
+                  ) : bannerSyncing ? (
+                    <div className="banner-progress">
+                      <div className="progress-steps">
+                        {bannerProgress.map((step, i) => (
+                          <div key={i} className="progress-step completed">
+                            <FaCheckCircle className="step-check" />
+                            <span>{step}</span>
+                          </div>
+                        ))}
+                        <div className="progress-step active">
+                          <FaSync className="spinning" />
+                          <span>Working...</span>
                         </div>
                       </div>
                     </div>
-                    <div className="instruction-step">
-                      <span className="step-num">3</span>
-                      <div>
-                        <strong>Click the Bookmark</strong>
-                        <p>While on your DegreeWorks page, click the bookmark you just created. Your data will sync automatically!</p>
+                  ) : bannerSummary ? (
+                    <div className="banner-success">
+                      <div className="success-header">
+                        <FaCheckCircle className="success-icon large" />
+                        <h4>Sync Complete!</h4>
                       </div>
-                    </div>
-                  </div>
 
-                  <div className="info-box">
-                    <FaCheckCircle />
-                    <p>After syncing, refresh this page to see your updated academic data.</p>
-                  </div>
+                      <div className="dw-stats-grid" style={{ marginTop: 16 }}>
+                        {bannerSummary.cumulative_gpa ? (
+                          <div className="dw-stat-card">
+                            <FaChartLine className="stat-icon" />
+                            <div className="stat-value">{Number(bannerSummary.cumulative_gpa).toFixed(2)}</div>
+                            <div className="stat-label">Overall GPA</div>
+                          </div>
+                        ) : null}
+                        {bannerSummary.total_credits > 0 ? (
+                          <div className="dw-stat-card">
+                            <FaBook className="stat-icon" />
+                            <div className="stat-value">{bannerSummary.total_credits}</div>
+                            <div className="stat-label">Credits Earned</div>
+                          </div>
+                        ) : null}
+                        {bannerSummary.classification ? (
+                          <div className="dw-stat-card">
+                            <FaGraduationCap className="stat-icon" />
+                            <div className="stat-value">{bannerSummary.classification}</div>
+                            <div className="stat-label">Classification</div>
+                          </div>
+                        ) : null}
+                        {bannerSummary.courses_count > 0 ? (
+                          <div className="dw-stat-card">
+                            <FaBook className="stat-icon" />
+                            <div className="stat-value">{bannerSummary.courses_count}</div>
+                            <div className="stat-label">Courses Found</div>
+                          </div>
+                        ) : null}
+                      </div>
+                      <div style={{ marginTop: 12, fontSize: '0.9rem', color: 'var(--text-secondary, #666)' }}>
+                        {bannerSummary.name && <div><strong>Name:</strong> {bannerSummary.name}</div>}
+                        {bannerSummary.major && <div><strong>Program:</strong> {bannerSummary.major}</div>}
+                        {bannerSummary.advisor && <div><strong>Advisor:</strong> {bannerSummary.advisor}</div>}
+                        {bannerSummary.student_id && <div><strong>ID:</strong> {bannerSummary.student_id}</div>}
+                        {bannerSummary.courses_completed > 0 && <div><strong>Courses completed:</strong> {bannerSummary.courses_completed}</div>}
+                        {bannerSummary.courses_in_progress > 0 && <div><strong>In progress:</strong> {bannerSummary.courses_in_progress}</div>}
+                        {bannerSummary.degreeworks_synced && <div style={{color: '#34a853', marginTop: 4}}>DegreeWorks data synced</div>}
+                        {bannerSummary.profile_synced && <div style={{color: '#34a853'}}>Student Profile synced</div>}
+                      </div>
+
+                      <button
+                        className="modal-primary-btn submit-manual"
+                        style={{ marginTop: 16 }}
+                        onClick={() => {
+                          setShowMorganModal(false);
+                          setShowPdfUpload(false);
+                          setBannerSummary(null);
+                          setBannerProgress([]);
+                        }}
+                      >
+                        Done
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ) : showPdfUpload === 'pdf' ? (
                 /* PDF Upload Section */
@@ -856,7 +1116,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
                     <FaArrowLeft /> Back to options
                   </button>
 
-                  <h3>Upload DegreeWorks PDF</h3>
+                  <h3>Upload DegreeWorks Document</h3>
 
                   <div className="pdf-instructions">
                     <div className="instruction-step">
@@ -889,7 +1149,7 @@ export default function ProfilePage({ userEmail, onLogout }) {
                     {/* Hidden file input with ref */}
                     <input
                       type="file"
-                      accept=".pdf,application/pdf"
+                      accept=".pdf,.docx,.png,.jpg,.jpeg,.gif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*"
                       ref={pdfInputRef}
                       onChange={handlePdfUpload}
                       disabled={pdfUploading}
@@ -904,111 +1164,18 @@ export default function ProfilePage({ userEmail, onLogout }) {
                     >
                       {pdfUploading ? (
                         <>
-                          <FaSync className="spinning" /> Uploading PDF...
+                          <FaSync className="spinning" /> Uploading document...
                         </>
                       ) : (
                         <>
-                          <FaBook /> Click to Upload DegreeWorks PDF
+                          <FaBook /> Click to Upload DegreeWorks Document
                         </>
                       )}
                     </button>
-                    <p className="upload-hint">Supports PDF files exported from DegreeWorks</p>
+                    <p className="upload-hint">Supports PDF, DOCX, and images (PNG, JPG, GIF) from DegreeWorks</p>
                   </div>
                 </div>
-              ) : (
-                /* Manual Entry Form */
-                <div className="manual-entry-form">
-                  <button className="back-to-options" onClick={() => setShowManualEntry(false)}>
-                    <FaArrowLeft /> Back to options
-                  </button>
-
-                  <h3>Enter Your Academic Info</h3>
-                  <p className="form-subtitle">This helps us give you personalized recommendations</p>
-
-                  <div className="manual-form-grid">
-                    <div className="form-group">
-                      <label>Full Name</label>
-                      <input
-                        type="text"
-                        placeholder="e.g., John Smith"
-                        value={manualData.student_name}
-                        onChange={(e) => setManualData({...manualData, student_name: e.target.value})}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label>Classification</label>
-                      <select
-                        value={manualData.classification}
-                        onChange={(e) => setManualData({...manualData, classification: e.target.value})}
-                      >
-                        <option value="Freshman">Freshman</option>
-                        <option value="Sophomore">Sophomore</option>
-                        <option value="Junior">Junior</option>
-                        <option value="Senior">Senior</option>
-                        <option value="Graduate">Graduate</option>
-                      </select>
-                    </div>
-
-                    <div className="form-group">
-                      <label>Degree Program</label>
-                      <select
-                        value={manualData.degree_program}
-                        onChange={(e) => setManualData({...manualData, degree_program: e.target.value})}
-                      >
-                        <option value="Bachelor of Science in Computer Science">B.S. Computer Science</option>
-                        <option value="Bachelor of Science in Information Systems">B.S. Information Systems</option>
-                        <option value="Bachelor of Science in Cybersecurity">B.S. Cybersecurity</option>
-                        <option value="Master of Science in Computer Science">M.S. Computer Science</option>
-                        <option value="Other">Other</option>
-                      </select>
-                    </div>
-
-                    <div className="form-group">
-                      <label>Overall GPA</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        max="4"
-                        placeholder="e.g., 3.50"
-                        value={manualData.overall_gpa}
-                        onChange={(e) => setManualData({...manualData, overall_gpa: e.target.value})}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label>Credits Earned</label>
-                      <input
-                        type="number"
-                        min="0"
-                        placeholder="e.g., 60"
-                        value={manualData.total_credits_earned}
-                        onChange={(e) => setManualData({...manualData, total_credits_earned: e.target.value})}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label>Credits Remaining</label>
-                      <input
-                        type="number"
-                        min="0"
-                        placeholder="e.g., 60"
-                        value={manualData.credits_remaining}
-                        onChange={(e) => setManualData({...manualData, credits_remaining: e.target.value})}
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    className="modal-primary-btn submit-manual"
-                    onClick={handleManualSubmit}
-                    disabled={loading}
-                  >
-                    {loading ? "Saving..." : "Save Academic Data"}
-                  </button>
-                </div>
-              )}
+              ) : null}
 
               <div className="security-note">
                 <FaLock />
@@ -1022,11 +1189,128 @@ export default function ProfilePage({ userEmail, onLogout }) {
             <div className="modal-footer">
               <button className="modal-secondary-btn" onClick={() => {
                 setShowMorganModal(false);
-                setShowManualEntry(false);
                 setShowPdfUpload(false);
               }}>
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Canvas Sync Modal */}
+      {showCanvasModal && (
+        <div className="modal-overlay" onClick={() => !canvasSyncing && setShowCanvasModal(false)}>
+          <div className="modal-content degreeworks-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <FaBook className="modal-icon" />
+              <h2>Sync Canvas LMS</h2>
+              <p>Pull your courses, assignments, and grades</p>
+            </div>
+
+            <div className="modal-body">
+              {!canvasSyncing && !canvasSummary ? (
+                <>
+                  <p className="form-subtitle">
+                    Enter your Morgan State credentials to sync your Canvas data. Same credentials you use for DegreeWorks.
+                  </p>
+
+                  <div className="manual-form-grid">
+                    <div className="form-group">
+                      <label>MSU Username</label>
+                      <input
+                        type="text"
+                        placeholder="e.g., jsmith1"
+                        value={canvasCreds.username}
+                        onChange={(e) => setCanvasCreds({ ...canvasCreds, username: e.target.value })}
+                        autoComplete="username"
+                      />
+                      <span style={{ fontSize: "0.75rem", color: "#888", marginTop: 2 }}>Username only, not your full email</span>
+                    </div>
+                    <div className="form-group">
+                      <label>MSU Password</label>
+                      <input
+                        type="password"
+                        placeholder="Your MSU password"
+                        value={canvasCreds.password}
+                        onChange={(e) => setCanvasCreds({ ...canvasCreds, password: e.target.value })}
+                        autoComplete="current-password"
+                        onKeyDown={(e) => e.key === "Enter" && handleCanvasSync()}
+                      />
+                    </div>
+                  </div>
+
+                  {canvasError && (
+                    <div className="message error" style={{ marginBottom: 12 }}>{canvasError}</div>
+                  )}
+
+                  <div className="security-note" style={{ marginBottom: 16 }}>
+                    <FaShieldAlt />
+                    <div>
+                      <strong>Your credentials are never stored</strong>
+                      <p>Used once to authenticate with Canvas, then immediately discarded. Read-only access only.</p>
+                    </div>
+                  </div>
+
+                  <button
+                    className="modal-primary-btn submit-manual"
+                    onClick={handleCanvasSync}
+                    disabled={!canvasCreds.username || !canvasCreds.password}
+                  >
+                    <FaSync /> Sync Canvas
+                  </button>
+                </>
+              ) : canvasSyncing ? (
+                <div className="banner-progress">
+                  <div className="progress-steps">
+                    {canvasProgress.map((step, i) => (
+                      <div key={i} className="progress-step completed">
+                        <FaCheckCircle className="step-check" />
+                        <span>{step}</span>
+                      </div>
+                    ))}
+                    <div className="progress-step active">
+                      <FaSync className="spinning" />
+                      <span>Working...</span>
+                    </div>
+                  </div>
+                </div>
+              ) : canvasSummary ? (
+                <div className="banner-success">
+                  <div className="success-header">
+                    <FaCheckCircle className="success-icon large" />
+                    <h4>Canvas Synced!</h4>
+                  </div>
+
+                  <div className="dw-stats-grid" style={{ marginTop: 16 }}>
+                    <div className="dw-stat-card">
+                      <FaBook className="stat-icon" />
+                      <div className="stat-value">{canvasSummary.courses_count}</div>
+                      <div className="stat-label">Courses</div>
+                    </div>
+                    <div className="dw-stat-card">
+                      <FaClock className="stat-icon" />
+                      <div className="stat-value">{canvasSummary.upcoming_count}</div>
+                      <div className="stat-label">Upcoming</div>
+                    </div>
+                    {canvasSummary.missing_count > 0 && (
+                      <div className="dw-stat-card">
+                        <FaExclamationTriangle className="stat-icon" style={{ color: "#e65100" }} />
+                        <div className="stat-value" style={{ color: "#e65100" }}>{canvasSummary.missing_count}</div>
+                        <div className="stat-label">Missing</div>
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    className="modal-primary-btn"
+                    style={{ marginTop: 16 }}
+                    onClick={() => { setShowCanvasModal(false); navigate("/my-classes"); }}
+                  >
+                    View My Classes
+                  </button>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

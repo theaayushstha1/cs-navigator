@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import AuthLayout from "./components/auth/AuthLayout";
+import { getApiBase } from "./lib/apiBase";
 
 // Icons with explicit dimensions for proper rendering
 const EnvelopeIcon = (props) => (
@@ -66,17 +67,13 @@ export default function Signup({ onRegistered }) {
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
 
-  // Smart API switching
-  const hostname = window.location.hostname;
-  const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-    ? "http://127.0.0.1:8000"
-    : "http://100.48.56.24:5000";
+  const API_BASE = getApiBase();
 
   const passwordStrength = useMemo(() => getPasswordStrength(password), [password]);
   const passwordsMatch = password && confirmPassword && password === confirmPassword;
   const passwordsMismatch = confirmPassword && password !== confirmPassword;
 
-  const canSubmit = email.trim() && password.length >= 6 && passwordsMatch && !submitting;
+  const canSubmit = email.trim() && password.length >= 8 && passwordsMatch && !submitting;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -87,8 +84,8 @@ export default function Signup({ onRegistered }) {
       return;
     }
 
-    if (password.length < 6) {
-      setError("Password must be at least 6 characters");
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters");
       return;
     }
 
@@ -130,7 +127,7 @@ export default function Signup({ onRegistered }) {
 
       <form onSubmit={handleSubmit}>
         <div className="field">
-          <label htmlFor="signup-email">Email Address</label>
+          <label htmlFor="signup-email">Morgan State Email <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", fontWeight: 400 }}>(@morgan.edu only)</span></label>
           <div className="field__control">
             <EnvelopeIcon className="field__icon" aria-hidden="true" />
             <input
@@ -168,16 +165,27 @@ export default function Signup({ onRegistered }) {
             </button>
           </div>
 
-          {/* Password Strength Indicator */}
+          {/* Password Requirements + Strength Indicator */}
           {password && (
-            <div className="password-strength">
-              <div className="password-strength__bar">
-                <div className={`password-strength__fill password-strength__fill--${passwordStrength.class}`} />
+            <>
+              <div className="password-strength">
+                <div className="password-strength__bar">
+                  <div className={`password-strength__fill password-strength__fill--${passwordStrength.class}`} />
+                </div>
+                <span className={`password-strength__text password-strength__text--${passwordStrength.class}`}>
+                  {passwordStrength.label} password
+                </span>
               </div>
-              <span className={`password-strength__text password-strength__text--${passwordStrength.class}`}>
-                {passwordStrength.label} password
-              </span>
-            </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '4px', lineHeight: '1.6' }}>
+                <span style={{ color: password.length >= 8 ? '#22c55e' : '#94a3b8' }}>8+ characters</span>
+                {' \u00B7 '}
+                <span style={{ color: /[A-Z]/.test(password) ? '#22c55e' : '#94a3b8' }}>uppercase</span>
+                {' \u00B7 '}
+                <span style={{ color: /[0-9]/.test(password) ? '#22c55e' : '#94a3b8' }}>number</span>
+                {' \u00B7 '}
+                <span style={{ color: /[^A-Za-z0-9]/.test(password) ? '#22c55e' : '#94a3b8' }}>symbol</span>
+              </div>
+            </>
           )}
         </div>
 
@@ -199,13 +207,16 @@ export default function Signup({ onRegistered }) {
             />
             {passwordsMatch && (
               <CheckIcon
-                className="field__icon"
                 style={{
+                  position: 'absolute',
                   left: 'auto',
-                  right: '60px',
+                  right: '70px',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
                   color: '#22c55e',
-                  width: '20px',
-                  height: '20px'
+                  width: '18px',
+                  height: '18px',
+                  pointerEvents: 'none',
                 }}
               />
             )}

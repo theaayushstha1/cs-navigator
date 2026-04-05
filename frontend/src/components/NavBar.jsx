@@ -5,15 +5,11 @@ import { FaUser } from "@react-icons/all-files/fa/FaUser";
 import "../index.css";
 import "./NavBar.css";
 
-// --- SMART API SWITCHING ---
-// 🔥 SMART CONFIG: Check the browser URL to pick the right backend
-const hostname = window.location.hostname;
-const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-  ? "http://127.0.0.1:8000"           // If on Laptop -> Use Local Backend (8000)
-  : "http://100.48.56.24:5000";     // If on AWS -> Use AWS Backend (5000)
+import { getApiBase } from "../lib/apiBase";
+const API_BASE = getApiBase();
 export default function NavBar({ role, onToggleSidebar }) {
   const [scrolled, setScrolled] = useState(false);
-  const [profilePicture, setProfilePicture] = useState("/user_icon.jpg");
+  const [profilePicture, setProfilePicture] = useState("/user_icon.webp");
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -43,13 +39,13 @@ export default function NavBar({ role, onToggleSidebar }) {
         const data = await response.json();
 
         // 🔥 FIXED: Handle base64 data URLs, full URLs, and relative paths
-        let pictureUrl = data.profilePicture || "/user_icon.jpg";
+        let pictureUrl = data.profilePicture || "/user_icon.webp";
         if (pictureUrl) {
           if (pictureUrl.startsWith('data:')) {
             // Base64 data URL - use directly
           } else if (pictureUrl.startsWith('http')) {
             // Full URL - use directly
-          } else if (pictureUrl.startsWith('/user_icon')) {
+          } else if (pictureUrl.startsWith('/user_icon.webp')) {
             // Default icon - use directly
           } else {
             // Relative path - prepend API base
@@ -90,7 +86,7 @@ export default function NavBar({ role, onToggleSidebar }) {
               aria-label="Toggle sidebar"
             >
               <img 
-                src="/msu_logo.png" 
+                src="/msu_logo.webp" 
                 alt="Morgan State University" 
                 className="nav-logo-image"
               />
@@ -102,7 +98,7 @@ export default function NavBar({ role, onToggleSidebar }) {
           
           {!isAuthed && (
             <img 
-              src="/msu_logo.png" 
+              src="/msu_logo.webp" 
               alt="Morgan State University" 
               className="nav-logo" 
               title="Return to Home" // 🔥 NEW: Hover Text

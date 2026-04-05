@@ -18,11 +18,12 @@
       "email": "provost@morgan.edu"
     },
     "scmns_dean": {
-      "name": "Hongtao Yu",
+      "name": "Paul Tchounwou",
       "title": "Dean, School of Computer, Mathematical, and Natural Sciences (SCMNS)",
-      "full_description": "The Dean of the School of Computer, Mathematical, and Natural Sciences (SCMNS) oversees the Computer Science Department along with Mathematics, Biology, Chemistry, and Physics departments. The SCMNS office is located in Spencer Hall.",
-      "office": "Spencer Hall",
-      "email": "scmns@morgan.edu"
+      "full_description": "The Dean of the School of Computer, Mathematical, and Natural Sciences (SCMNS) is Dr. Paul Tchounwou. He oversees the Computer Science Department along with Mathematics, Biology, Chemistry, and Physics departments. The SCMNS Dean's office is located in Dixon Science Research Center, Room 200.",
+      "office": "Dixon Science Research Center, Room 200",
+      "phone": "443-885-4515",
+      "email": "scmns-deans-office@morgan.edu"
     }
   },
   "about_department": {
@@ -67,7 +68,7 @@
           },
           {
             "name": "Md Rahman",
-            "title": "Professor, Associate Chair",
+            "title": "Professor, Associate Chair, Director of PhD in Advanced Computing",
             "office": "McMechen 629",
             "phone": "(443) 885-1056",
             "email": "Md.Rahman@morgan.edu",
@@ -85,7 +86,7 @@
           },
           {
             "name": "Radhouane Chouchane (Radwan Shushane)",
-            "title": "Associate Professor",
+            "title": "Associate Professor, Director of Undergraduate Studies",
             "office": "McMechen Hall 624",
             "phone": "(443) 885-3745",
             "email": "Radwan.Shushane@morgan.edu",
@@ -184,8 +185,9 @@
           },
           {
             "name": "Guobin Xu",
-            "title": "Associate Professor",
+            "title": "Associate Professor, Director of MS in Advanced Computing",
             "office": "McMechen Hall 615",
+            "phone": "(443) 885-3371",
             "email": "guobin.xu@morgan.edu",
             "research_interest": "Research interests include machine learning, computer vision, robotics, and the development of intelligent systems for healthcare applications."
           }
@@ -213,7 +215,13 @@
           }
         ],
         "engineers_in_residence": {
-          "description": "Every Fall Semester, there is a Google Engineer in Residence through the Google in Residence (GIR) program. Launched in 2013, this program aims to increase diversity in the tech industry by partnering with Historically Black Colleges and Universities (HBCUs) and Hispanic-Serving Institutions (HSIs). Experienced Googlers teach introductory computer science courses and provide career guidance."
+          "description": "Every Fall Semester, there is a Google Engineer in Residence through the Google in Residence (GIR) program. Launched in 2013, this program aims to increase diversity in the tech industry by partnering with Historically Black Colleges and Universities (HBCUs) and Hispanic-Serving Institutions (HSIs). Experienced Googlers teach introductory computer science courses and provide career guidance.",
+          "current_engineer": {
+            "name": "Rahmel Bailey",
+            "title": "Engineer in Residence (CodePath/Google)",
+            "office": "McMechen Hall 618",
+            "email": "rahmel.bailey@codepath.org"
+          }
         },
         "administrative_staff": [
           {

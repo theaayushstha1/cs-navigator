@@ -1,6 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { toast } from 'sonner';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { motion, AnimatePresence } from 'framer-motion';
 
 import { FaMicrophone } from "@react-icons/all-files/fa/FaMicrophone";
 import { FaPaperclip } from "@react-icons/all-files/fa/FaPaperclip";
@@ -21,21 +25,20 @@ import { FaFileImage } from "@react-icons/all-files/fa/FaFileImage";
 
 import "./Chatbox.css";
 
-// Default suggestions (fallback) - 6 questions
-const DEFAULT_SUGGESTIONS = [
-  "Who is the chair of Computer Science?",
-  "What are the prerequisites for COSC 311?",
-  "What internship opportunities are available?",
-  "How do I contact my academic advisor?",
-  "What courses should I take for cybersecurity?",
-  "What research opportunities exist in CS?"
+// Featured questions that showcase chatbot capabilities
+const FEATURED_QUESTIONS = [
+  "What's the difference between the B.S. in CS and Cloud Computing?",
+  "What are the prerequisites for COSC 220 Data Structures?",
+  "Who is the chair of the CS department and how do I contact them?",
+  "How do I request a course override or substitute a requirement?",
+  "What Group A and Group B electives should I take as a junior?",
+  "Tell me about the 4+1 accelerated B.S./M.S. program",
+  "Where can I get tutoring for intro CS courses like COSC 111?",
+  "What scholarships are available for CS majors at Morgan State?",
 ];
 
-// --- SMART API SWITCHING ---
-const hostname = window.location.hostname;
-const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-  ? "http://127.0.0.1:8000"           // If on Laptop -> Use Local Backend (8000)
-  : "http://100.48.56.24:5000";     // If on AWS -> Use AWS Backend (5000)
+import { getApiBase } from "../lib/apiBase";
+const API_BASE = getApiBase();
 
 // Helper for icons
 const getFileIcon = (filename) => {
@@ -55,13 +58,13 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const [userProfilePicture, setUserProfilePicture] = useState("/user_icon.jpg");
+  const [userProfilePicture, setUserProfilePicture] = useState("/user_icon.webp");
 
   // 🔥 Staging State for File Uploads
   const [pendingFile, setPendingFile] = useState(null);
 
   // 🔥 Dynamic Suggestions State
-  const [suggestions, setSuggestions] = useState(DEFAULT_SUGGESTIONS);
+  const [suggestions, setSuggestions] = useState(FEATURED_QUESTIONS);
   const [suggestionsLoading, setSuggestionsLoading] = useState(true);
 
   // 🔥 Voice Mode State
@@ -69,11 +72,66 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("idle"); // idle, listening, processing, speaking
 
+  // Model selector state
+  const [selectedModel, setSelectedModel] = useState("inav-1.0"); // "inav-1.0" (quick, default) or "inav-1.1" (pro)
+
   // 🔥 Feedback State
   const [feedbackMenuOpen, setFeedbackMenuOpen] = useState(null); // index of message with open menu
   const [feedbackGiven, setFeedbackGiven] = useState({}); // {messageIndex: 'helpful' | 'not_helpful' | 'reported'}
   const [reportModal, setReportModal] = useState(null); // index of message being reported
   const [reportText, setReportText] = useState("");
+
+  // 🔥 Drag-and-drop state
+  const [isDragging, setIsDragging] = useState(false);
+
+  // Thinking status - step index drives everything
+  const [thinkingStepIndex, setThinkingStepIndex] = useState(0);
+  const [thinkingTimer, setThinkingTimer] = useState(0);
+  const thinkingMessages = [
+    "Understanding your question",
+    "Searching knowledge base",
+    "Analyzing results",
+    "Preparing response"
+  ];
+  // Derived: completed steps are all before current index, active is current
+  const thinkingStatus = thinkingMessages[thinkingStepIndex] || thinkingMessages[0];
+
+  // Map status text to contextual SVG icon
+  const getStatusIcon = (status) => {
+    const s = (status || "").toLowerCase();
+    if (s.includes("search") || s.includes("knowledge"))
+      return ( // magnifying glass
+        <svg viewBox="0 0 20 20" fill="none" className="status-icon icon-search"><circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" strokeWidth="1.8"/><path d="M12.5 12.5L17 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+      );
+    if (s.includes("understand") || s.includes("analyz") || s.includes("question"))
+      return ( // brain / lightbulb
+        <svg viewBox="0 0 20 20" fill="none" className="status-icon icon-think"><path d="M10 2a5.5 5.5 0 00-2 10.63V15a1 1 0 001 1h2a1 1 0 001-1v-2.37A5.5 5.5 0 0010 2z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/><path d="M8 17h4M9 19h2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+      );
+    if (s.includes("consult") || s.includes("specialist") || s.includes("agent"))
+      return ( // people / transfer
+        <svg viewBox="0 0 20 20" fill="none" className="status-icon icon-consult"><circle cx="7" cy="6" r="3" stroke="currentColor" strokeWidth="1.5"/><path d="M1 17c0-3.3 2.7-6 6-6s6 2.7 6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="15" cy="6" r="2" stroke="currentColor" strokeWidth="1.3"/><path d="M19 15c0-2.2-1.8-4-4-4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
+      );
+    if (s.includes("process") || s.includes("compil") || s.includes("generat"))
+      return ( // gear
+        <svg viewBox="0 0 20 20" fill="none" className="status-icon icon-process"><path d="M10 13a3 3 0 100-6 3 3 0 000 6z" stroke="currentColor" strokeWidth="1.5"/><path d="M10 1v2M10 17v2M1 10h2M17 10h2M3.93 3.93l1.41 1.41M14.66 14.66l1.41 1.41M16.07 3.93l-1.41 1.41M5.34 14.66l-1.41 1.41" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
+      );
+    if (s.includes("prepar") || s.includes("writing") || s.includes("response"))
+      return ( // pen / writing
+        <svg viewBox="0 0 20 20" fill="none" className="status-icon icon-write"><path d="M13.586 3.586a2 2 0 012.828 2.828l-9.5 9.5-3.5 1 1-3.5 9.172-9.828z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/><path d="M12 5l3 3" stroke="currentColor" strokeWidth="1.3"/></svg>
+      );
+    if (s.includes("review") || s.includes("catalog") || s.includes("course"))
+      return ( // book
+        <svg viewBox="0 0 20 20" fill="none" className="status-icon icon-book"><path d="M3 4a1 1 0 011-1h4a3 3 0 013 3v11a2 2 0 00-2-2H4a1 1 0 01-1-1V4zM17 4a1 1 0 00-1-1h-4a3 3 0 00-3 3v11a2 2 0 012-2h4a1 1 0 001-1V4z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/></svg>
+      );
+    if (s.includes("department") || s.includes("info") || s.includes("check"))
+      return ( // info/clipboard
+        <svg viewBox="0 0 20 20" fill="none" className="status-icon icon-info"><rect x="4" y="2" width="12" height="16" rx="2" stroke="currentColor" strokeWidth="1.5"/><path d="M8 6h4M8 10h4M8 14h2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
+      );
+    // Default: sparkle
+    return (
+      <svg viewBox="0 0 20 20" fill="none" className="status-icon icon-default"><path d="M10 2l1.5 5L17 8.5l-5 2L10 16l-2-5.5L3 8.5l5-1L10 2z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/></svg>
+    );
+  };
 
   // --- REFS ---
   const messagesEndRef = useRef(null);
@@ -150,7 +208,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
     fetchUserProfile();
   }, []);
 
-  // 6. Fetch Dynamic Suggestions
+  // 6. Fetch randomized featured questions from backend
   useEffect(() => {
     const fetchSuggestions = async () => {
       if (messages.length > 0) {
@@ -158,12 +216,11 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
         return;
       }
       try {
-        setSuggestionsLoading(true);
         const response = await fetch(`${API_BASE}/api/popular-questions`);
         if (response.ok) {
           const data = await response.json();
           if (data.questions && data.questions.length > 0) {
-            setSuggestions(data.questions.slice(0, 6)); // Show 6 suggestions
+            setSuggestions(data.questions.slice(0, 8));
           }
         }
       } catch (error) {
@@ -187,6 +244,37 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
       window.speechSynthesis?.cancel();
     };
   }, []);
+
+  // 8. Cycle through thinking steps while waiting for response
+  const streamingNoText = messages.some(m => m.isStreaming && !m.text);
+  const showThinking = isLoading || streamingNoText;
+
+  useEffect(() => {
+    if (!showThinking) {
+      setThinkingTimer(0);
+      return;
+    }
+
+    setThinkingTimer(0);
+
+    // Advance to next step every 1.8s
+    const statusInterval = setInterval(() => {
+      setThinkingStepIndex(prev => {
+        if (prev < thinkingMessages.length - 1) return prev + 1;
+        return prev; // Stay on last step until text arrives
+      });
+    }, 1800);
+
+    // Timer
+    const timerInterval = setInterval(() => {
+      setThinkingTimer(prev => prev + 1);
+    }, 1000);
+
+    return () => {
+      clearInterval(statusInterval);
+      clearInterval(timerInterval);
+    };
+  }, [showThinking]);
 
   // --- HANDLERS ---
 
@@ -269,18 +357,38 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   };
 
   // Simple TTS for manual speaker button (uses browser TTS)
+  // Click once to play, click again to stop
   const speak = (text) => {
-    if (!window.speechSynthesis) return alert("Text-to-speech not supported.");
+    if (!window.speechSynthesis) return toast.warning("Text-to-speech not supported in this browser.");
+    if (window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+      if (audioRef.current) audioRef.current.pause();
+      setIsSpeaking(false);
+      return;
+    }
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1.05;
+    utterance.onend = () => setIsSpeaking(false);
+    setIsSpeaking(true);
     window.speechSynthesis.speak(utterance);
   };
 
   // Handle File Selection (Staging)
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+  const ALLOWED_FILE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'application/pdf', 'text/plain', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
   const handleFileSelect = (e) => {
     if (e.target.files && e.target.files[0]) {
-      setPendingFile(e.target.files[0]);
+      const file = e.target.files[0];
+      if (file.size > MAX_FILE_SIZE) {
+        toast.error("File too large. Maximum size is 10MB.");
+        return;
+      }
+      if (!ALLOWED_FILE_TYPES.includes(file.type)) {
+        toast.error("Unsupported file type.");
+        return;
+      }
+      setPendingFile(file);
     }
     // Reset value so onChange triggers again if same file selected
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -301,7 +409,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
 
     const SpeechAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechAPI) {
-      alert("Speech recognition not supported. Try Chrome or Edge.");
+      toast.warning("Speech recognition not supported. Try Chrome or Edge.");
       return;
     }
 
@@ -397,7 +505,8 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
         },
         body: JSON.stringify({
           query: transcript,
-          session_id: sessionId || "default"
+          session_id: sessionId || "default",
+          model: selectedModel
         })
       });
 
@@ -406,10 +515,28 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
       const data = await res.json();
       const botResponse = data.response || data.message || "No response.";
 
-      addMessage(botResponse, "bot");
-
-      // Speak the response with OpenAI TTS
-      await speakWithTTS(botResponse);
+      const isOutage = botResponse.includes("temporarily") && botResponse.includes("knowledge base");
+      if (isOutage) {
+        toast("Hang tight! We're pushing an update. Try again in a moment.", {
+          duration: 6000,
+          style: {
+            background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
+            color: "#f1f5f9",
+            border: "1px solid rgba(99, 102, 241, 0.3)",
+            borderRadius: "14px",
+            padding: "14px 18px",
+            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(99, 102, 241, 0.1)",
+            backdropFilter: "blur(12px)",
+            fontSize: "0.88rem",
+            fontWeight: 500,
+            letterSpacing: "0.01em",
+          },
+          icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="url(#tg2)" strokeWidth="2" strokeLinecap="round"/><path d="M12 7v5l3 3" stroke="url(#tg2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><defs><linearGradient id="tg2" x1="3" y1="3" x2="21" y2="21"><stop stopColor="#818cf8"/><stop offset="1" stopColor="#6366f1"/></linearGradient></defs></svg>,
+        });
+      } else {
+        addMessage(botResponse, "bot");
+        await speakWithTTS(botResponse);
+      }
 
     } catch (err) {
       console.error("🎤 Voice send error:", err);
@@ -461,7 +588,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
 
     const SpeechAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechAPI) {
-      alert("Speech recognition not supported. Try Chrome or Edge.");
+      toast.warning("Speech recognition not supported. Try Chrome or Edge.");
       return;
     }
 
@@ -491,7 +618,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
       if (e.error === "no-speech") {
         // User was silent, just stop quietly
       } else if (e.error !== "aborted") {
-        alert("Voice input error: " + e.error);
+        toast.error("Voice input error: " + e.error);
       }
     };
 
@@ -505,7 +632,11 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const handleSuggestion = (text) => {
       if (!isLoading) {
           setInput(text);
-          inputRef.current?.focus();
+          // Auto-send the suggestion instead of just filling the input
+          setTimeout(() => {
+              const form = document.querySelector('.chat-input-wrapper');
+              if (form) form.requestSubmit();
+          }, 50);
       }
   };
 
@@ -562,19 +693,29 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
     return () => document.removeEventListener('click', handleClickOutside);
   }, [feedbackMenuOpen]);
 
-  // 🔥 MAIN SEND LOGIC
-  const handleSend = async (e) => {
-    e.preventDefault();
-    if ((!input.trim() && !pendingFile) || isLoading) return;
+  // Auto-resize textarea
+  const resizeTextarea = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 150) + 'px';
+  }, []);
+
+  // 🔥 MAIN SEND LOGIC - With Streaming Support
+  const handleSend = async (e, overrideText = null, skipCache = false) => {
+    if (e) e.preventDefault();
+    const sendText = overrideText || input.trim();
+    if ((!sendText && !pendingFile) || isLoading) return;
 
     setIsLoading(true);
-    let finalMessage = input.trim();
+    setInput("");  // Clear input immediately to prevent concatenation with next typed message
+    let finalMessage = sendText;
 
     try {
         const token = localStorage.getItem("token");
 
-        // 1. Upload File (if exists)
-        if (pendingFile) {
+        // 1. Upload File (if exists, only for non-override sends)
+        if (pendingFile && !overrideText) {
             const formData = new FormData();
             formData.append("file", pendingFile);
 
@@ -587,53 +728,212 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
             if (uploadRes.ok) {
                 const data = await uploadRes.json();
                 const fullUrl = data.url.startsWith("http") ? data.url : `${API_BASE}${data.url}`;
-                
-                // Create Markdown Link: [filename](url)
+
                 const fileMarkdown = `[${data.filename}](${fullUrl})`;
-                
-                // Append to message
+
                 if (finalMessage) {
                     finalMessage = `${fileMarkdown}\n${finalMessage}`;
                 } else {
                     finalMessage = fileMarkdown;
                 }
             } else {
-                alert("File upload failed. Sending text only.");
+                toast.error("File upload failed. Sending text only.");
             }
         }
 
         // 2. Optimistic UI Update
         addMessage(finalMessage, "user");
-        setInput("");
-        setPendingFile(null);
+        if (!overrideText) {
+            setInput("");
+            setPendingFile(null);
+            // Reset textarea height
+            if (inputRef.current) inputRef.current.style.height = 'auto';
+        }
 
-        // 3. Send to Chat API
-        const res = await fetch(`${API_BASE}/chat`, {
+        // 3. Add placeholder bot message for streaming
+        const botMessageIndex = messages.length + 1; // Index after user message
+        const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        setThinkingStepIndex(0);
+        setMessages((prev) => [...prev, { text: "", sender: "bot", time, isStreaming: true }]);
+
+        // 4. Stream from Chat API using fetch with ReadableStream
+        const res = await fetch(`${API_BASE}/chat/stream`, {
             method: "POST",
-            headers: { 
-                "Content-Type": "application/json", 
-                "Authorization": `Bearer ${token}` 
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${token}`
             },
-            body: JSON.stringify({ 
-                query: finalMessage, 
-                session_id: sessionId || "default" 
+            body: JSON.stringify({
+                query: finalMessage,
+                session_id: sessionId || "default",
+                skip_cache: skipCache,
+                model: selectedModel
             }),
         });
 
         if (res.status === 401 || res.status === 403) {
-            addMessage("⚠️ Session expired. Please log in again.", "bot");
+            setMessages((prev) => {
+                const newMessages = [...prev];
+                newMessages[newMessages.length - 1] = {
+                    ...newMessages[newMessages.length - 1],
+                    text: "Session expired. Please log in again.",
+                    isStreaming: false
+                };
+                return newMessages;
+            });
+            setIsLoading(false);
             return;
         }
-        
+
         if (!res.ok) throw new Error(res.statusText);
-        
-        const data = await res.json();
-        const botResponse = data.response || data.message || "No response.";
-        
-        addMessage(botResponse, "bot");
+
+        // 5. Read SSE stream
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let fullText = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || ""; // Keep incomplete line in buffer
+
+            for (const line of lines) {
+                if (line.startsWith("data: ")) {
+                    try {
+                        const event = JSON.parse(line.slice(6));
+
+                        if (event.type === "status") {
+                            // Real-time status from ADK tool calls - advance step
+                            setThinkingStepIndex(prev => Math.min(prev + 1, thinkingMessages.length - 1));
+                        } else if (event.type === "chunk") {
+                            fullText += event.content;
+                            // Update the streaming message
+                            setMessages((prev) => {
+                                const newMessages = [...prev];
+                                newMessages[newMessages.length - 1] = {
+                                    ...newMessages[newMessages.length - 1],
+                                    text: fullText
+                                };
+                                return newMessages;
+                            });
+                        } else if (event.type === "done") {
+                            // Finalize the message
+                            fullText = event.content || fullText;
+                            setMessages((prev) => {
+                                const newMessages = [...prev];
+                                newMessages[newMessages.length - 1] = {
+                                    ...newMessages[newMessages.length - 1],
+                                    text: fullText,
+                                    isStreaming: false
+                                };
+                                return newMessages;
+                            });
+                        } else if (event.type === "error") {
+                            const errMsg = event.content || "An error occurred.";
+                            const isOutage = errMsg.includes("temporarily") || errMsg.includes("knowledge base") || errMsg.includes("system issue");
+
+                            if (isOutage) {
+                                // Show toast notification instead of polluting the chat
+                                toast("Hang tight! We're pushing an update. Try again in a moment.", {
+                                    duration: 6000,
+                                    style: {
+                                      background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
+                                      color: "#f1f5f9",
+                                      border: "1px solid rgba(99, 102, 241, 0.3)",
+                                      borderRadius: "14px",
+                                      padding: "14px 18px",
+                                      boxShadow: "0 8px 32px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(99, 102, 241, 0.1)",
+                                      backdropFilter: "blur(12px)",
+                                      fontSize: "0.88rem",
+                                      fontWeight: 500,
+                                      letterSpacing: "0.01em",
+                                    },
+                                    icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="url(#tg)" strokeWidth="2" strokeLinecap="round"/><path d="M12 7v5l3 3" stroke="url(#tg)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><defs><linearGradient id="tg" x1="3" y1="3" x2="21" y2="21"><stop stopColor="#818cf8"/><stop offset="1" stopColor="#6366f1"/></linearGradient></defs></svg>,
+                                });
+                                // Remove the placeholder bot message
+                                setMessages((prev) => prev.slice(0, -1));
+                            } else {
+                                setMessages((prev) => {
+                                    const newMessages = [...prev];
+                                    newMessages[newMessages.length - 1] = {
+                                        ...newMessages[newMessages.length - 1],
+                                        text: errMsg,
+                                        isStreaming: false
+                                    };
+                                    return newMessages;
+                                });
+                            }
+                        }
+                    } catch (parseErr) {
+                        console.warn("SSE parse error:", parseErr);
+                    }
+                }
+            }
+        }
+
+        // Finalize if stream ended without explicit done
+        setMessages((prev) => {
+            const newMessages = [...prev];
+            const lastMsg = newMessages[newMessages.length - 1];
+            if (lastMsg.isStreaming) {
+                const cleanText = (lastMsg.text || "").replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/g, "").trim();
+                newMessages[newMessages.length - 1] = {
+                    ...lastMsg,
+                    text: cleanText || "I'm sorry, I couldn't generate a response. Please try rephrasing your question.",
+                    isStreaming: false
+                };
+            }
+            return newMessages;
+        });
 
     } catch (err) {
-        addMessage("Error: " + err.message, "bot");
+        console.error("Send error:", err);
+        const isNetworkDown = err.message?.includes("Failed to fetch") || err.message?.includes("NetworkError") || err.message?.includes("network");
+
+        if (isNetworkDown) {
+            // Backend unreachable: show deploy toast, remove placeholder bot message
+            toast("We're deploying updates right now. Give it a moment and try again.", {
+                duration: 6000,
+                style: {
+                    background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
+                    color: "#f1f5f9",
+                    border: "1px solid rgba(99, 102, 241, 0.3)",
+                    borderRadius: "14px",
+                    padding: "14px 18px",
+                    boxShadow: "0 8px 32px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(99, 102, 241, 0.1)",
+                    backdropFilter: "blur(12px)",
+                    fontSize: "0.88rem",
+                    fontWeight: 500,
+                },
+                icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M21 12a9 9 0 11-6.22-8.56" stroke="url(#dg)" strokeWidth="2" strokeLinecap="round"/><path d="M21 3v5h-5" stroke="url(#dg)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><defs><linearGradient id="dg" x1="3" y1="3" x2="21" y2="21"><stop stopColor="#818cf8"/><stop offset="1" stopColor="#6366f1"/></linearGradient></defs></svg>,
+            });
+            // Remove the placeholder bot message
+            setMessages((prev) => {
+                const last = prev[prev.length - 1];
+                if (last && last.sender === "bot" && last.isStreaming) {
+                    return prev.slice(0, -1);
+                }
+                return prev;
+            });
+        } else {
+            setMessages((prev) => {
+                const newMessages = [...prev];
+                if (newMessages.length > 0 && newMessages[newMessages.length - 1].sender === "bot") {
+                    newMessages[newMessages.length - 1] = {
+                        ...newMessages[newMessages.length - 1],
+                        text: "Something went wrong. Please try again.",
+                        isStreaming: false
+                    };
+                } else {
+                    newMessages.push({ text: "Something went wrong. Please try again.", sender: "bot", time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) });
+                }
+                return newMessages;
+            });
+        }
     } finally {
         setIsLoading(false);
         // Regain focus
@@ -641,15 +941,115 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
     }
   };
 
+  // Regenerate last response
+  const handleRegenerate = () => {
+    const lastUserMsg = [...messages].reverse().find(m => m.sender === "user");
+    if (!lastUserMsg) return;
+    // Remove last bot message
+    setMessages(prev => {
+      const copy = [...prev];
+      if (copy.length > 0 && copy[copy.length - 1].sender === "bot") {
+        copy.pop();
+      }
+      return copy;
+    });
+    setTimeout(() => handleSend(null, lastUserMsg.text, true), 50);
+  };
+
+  // Drag and drop handlers
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      setIsDragging(false);
+    }
+  };
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      setPendingFile(e.dataTransfer.files[0]);
+    }
+  };
+
+  // Message animation variants
+  const messageVariants = {
+    hidden: { opacity: 0, y: 20 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: [0.34, 1.56, 0.64, 1] } },
+  };
+
+  // Code block renderer for ReactMarkdown
+  const codeRenderer = ({ node, className, children, ...props }) => {
+    const match = /language-(\w+)/.exec(className || '');
+    const codeString = String(children).replace(/\n$/, '');
+    const isBlock = match || codeString.includes('\n');
+
+    if (isBlock) {
+      const language = match ? match[1] : 'text';
+      return (
+        <div className="code-block-wrapper">
+          <div className="code-block-header">
+            <span className="code-lang">{language}</span>
+            <button
+              className="code-copy-btn"
+              onClick={() => {
+                navigator.clipboard.writeText(codeString);
+                toast.success("Copied to clipboard");
+              }}
+            >
+              Copy
+            </button>
+          </div>
+          <SyntaxHighlighter
+            style={oneDark}
+            language={language}
+            PreTag="div"
+            customStyle={{ margin: 0, borderRadius: '0 0 8px 8px', fontSize: '0.85rem' }}
+          >
+            {codeString}
+          </SyntaxHighlighter>
+        </div>
+      );
+    }
+    return <code className={className} {...props}>{children}</code>;
+  };
+
   return (
-    <div className="chat-main">
+    <div
+      className={`chat-main ${isDragging ? 'drag-active' : ''}`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {/* Hidden audio element for TTS playback */}
       <audio ref={audioRef} style={{ display: 'none' }} />
 
+      {/* Drag overlay */}
+      {isDragging && (
+        <div className="drag-overlay">
+          <div className="drag-overlay-content">
+            <FaPaperclip size={32} />
+            <span>Drop file here</span>
+          </div>
+        </div>
+      )}
+
       <div className="chat-messages">
+        <AnimatePresence initial={false}>
         {messages.length === 0 ? (
-          <div className="welcome-container">
-            <img src="/msu_logo.png" alt="MSU Logo" className="welcome-logo" />
+          <motion.div
+            className="welcome-container"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, ease: [0.34, 1.56, 0.64, 1] }}
+          >
+            <img src="/msu_logo.webp" alt="MSU Logo" className="welcome-logo" />
             <h1 className="welcome-title">Morgan State CS Navigator</h1>
             <p className="welcome-subtitle">How can I assist with your academic journey today?</p>
             <div className="suggestions">
@@ -667,27 +1067,32 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 ))
               )}
             </div>
-          </div>
+          </motion.div>
         ) : (
           messages.map((msg, i) => (
-            <div key={i} className={`message ${msg.sender}`}>
+            <motion.div
+              key={i}
+              className={`message ${msg.sender}`}
+              variants={messageVariants}
+              initial="hidden"
+              animate="visible"
+            >
               <img
-                src={msg.sender === "user" ? userProfilePicture : "/bot_avatar.jpg"}
+                src={msg.sender === "user" ? userProfilePicture : "/bot_avatar.webp"}
                 alt={msg.sender}
                 className="avatar-img"
-                onError={(e) => { if (msg.sender === "user") e.target.src = "/user_icon.jpg"; }}
+                onError={(e) => { if (msg.sender === "user") e.target.src = "/user_icon.webp"; }}
               />
               <div className="message-content">
                 <div className="message-bubble-wrapper">
                   <div className="message-bubble">
 
-                    {/* 🔥 UPDATED: Use ReactMarkdown for Bullets, Bold, & File Cards */}
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{
-                          // Custom Renderer for Links to handle File Cards
+                          code: codeRenderer,
                           a: ({node, href, children, ...props}) => {
-                              const isFile = href.includes("uploads/chat_files") || href.includes("uploads/profile_pictures");
+                              const isFile = href && (href.includes("uploads/chat_files") || href.includes("uploads/profile_pictures"));
 
                               if (isFile) {
                                   return (
@@ -709,14 +1114,50 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                       {msg.text}
                     </ReactMarkdown>
 
-                    {msg.sender === "bot" && (
-                      <button
-                        className="tts-btn"
-                        onClick={() => speak(msg.text)}
-                        title="Read response aloud"
-                      >
-                        <FaVolumeUp size={14}/>
-                      </button>
+                    {/* Streaming indicator - show steps when no text, cursor when text is streaming */}
+                    {msg.isStreaming && !msg.text && (
+                      <div className="stream-status-container">
+                        {thinkingMessages.slice(0, thinkingStepIndex).map((step, si) => (
+                          <div key={si} className="stream-step completed">
+                            <div className="step-icon-wrap done">
+                              <svg className="step-check" viewBox="0 0 16 16" fill="none"><path d="M4 8.5l3 3 5-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                            </div>
+                            <span>{step}</span>
+                          </div>
+                        ))}
+                        <div className="stream-step active">
+                          <div className="step-icon-wrap active-icon">
+                            {getStatusIcon(thinkingMessages[thinkingStepIndex])}
+                          </div>
+                          <span className="thinking-text-shimmer">{thinkingMessages[thinkingStepIndex]}</span>
+                        </div>
+                      </div>
+                    )}
+                    {msg.isStreaming && msg.text && (
+                      <span className="streaming-cursor" aria-hidden="true">
+                        <span className="cursor-bar"></span>
+                      </span>
+                    )}
+
+                    {msg.sender === "bot" && !msg.isStreaming && (
+                      <div className="bot-action-row">
+                        <button
+                          className={`tts-btn${isSpeaking ? ' tts-active' : ''}`}
+                          onClick={() => speak(msg.text)}
+                          title={isSpeaking ? "Stop speaking" : "Read response aloud"}
+                        >
+                          {isSpeaking ? <FaStop size={14}/> : <FaVolumeUp size={14}/>}
+                        </button>
+                        {i === messages.length - 1 && !isLoading && (
+                          <button
+                            className="regen-icon-btn"
+                            onClick={handleRegenerate}
+                            title="Regenerate response"
+                          >
+                            <svg viewBox="0 0 16 16" fill="none" width="14" height="14"><path d="M13.5 8a5.5 5.5 0 11-1.3-3.56" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/><path d="M13.5 2.5v2.5H11" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
 
@@ -777,17 +1218,36 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 </div>
                 <div className="timestamp">{msg.time}</div>
               </div>
-            </div>
+            </motion.div>
           ))
         )}
-        
-        {/* Typing Indicator */}
-        {isLoading && (
+        </AnimatePresence>
+
+        {/* Old regenerate button removed - now inline with bot message actions */}
+
+        {/* Thinking Indicator - shown before streaming starts */}
+        {isLoading && !messages.some(m => m.isStreaming) && (
           <div className="message bot">
-            <img src="/bot_avatar.jpg" alt="Bot" className="avatar-img" />
+            <img src="/bot_avatar.webp" alt="Bot" className="avatar-img" />
             <div className="message-content">
-              <div className="message-bubble typing-bubble">
-                <div className="dot"></div><div className="dot"></div><div className="dot"></div>
+              <div className="message-bubble thinking-bubble">
+                <div className="stream-status-container">
+                  {thinkingMessages.slice(0, thinkingStepIndex).map((step, si) => (
+                    <div key={si} className="stream-step completed">
+                      <div className="step-icon-wrap done">
+                        <svg className="step-check" viewBox="0 0 16 16" fill="none"><path d="M4 8.5l3 3 5-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      </div>
+                      <span>{step}</span>
+                    </div>
+                  ))}
+                  <div className="stream-step active">
+                    <div className="step-icon-wrap active-icon">
+                      {getStatusIcon(thinkingMessages[thinkingStepIndex])}
+                    </div>
+                    <span className="thinking-text-shimmer">{thinkingMessages[thinkingStepIndex]}</span>
+                    <span className="thinking-timer">{thinkingTimer}s</span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -895,6 +1355,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 type="file"
                 ref={fileInputRef}
                 style={{ display: 'none' }}
+                accept=".png,.jpg,.jpeg,.gif,.pdf,.txt,.doc,.docx"
                 onChange={handleFileSelect}
             />
 
@@ -908,12 +1369,19 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 <FaMicrophone size={18} />
             </button>
 
-            <input
-                type="text"
+            <textarea
+                rows={1}
                 ref={inputRef}
                 className="chat-input-field"
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                maxLength={2000}
+                onChange={(e) => { setInput(e.target.value.slice(0, 2000)); resizeTextarea(); }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend(e);
+                  }
+                }}
                 placeholder={isVoiceMode ? (voiceStatus === "listening" ? "Listening..." : voiceStatus === "speaking" ? "Speaking..." : "Speak now...") : pendingFile ? "Add a message..." : "Type your message..."}
                 disabled={isLoading || isVoiceMode}
             />
@@ -927,7 +1395,18 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 <BsArrowUpCircleFill size={24} />
             </button>
 
-            {/* 🔥 Live Voice Mode Button */}
+            {/* Model toggle */}
+            <button
+                type="button"
+                className={`model-toggle ${selectedModel === 'inav-1.1' ? 'pro' : ''}`}
+                onClick={() => setSelectedModel(prev => prev === 'inav-1.0' ? 'inav-1.1' : 'inav-1.0')}
+                disabled={isLoading}
+                title={selectedModel === 'inav-1.0' ? 'iNav 1.0 (Quick) — click for Pro' : 'iNav 1.1 (Pro) — click for Quick'}
+            >
+                <span className="model-toggle-label">{selectedModel === 'inav-1.0' ? '1.0' : '1.1'}</span>
+            </button>
+
+            {/* Live Voice Mode Button */}
             <button
                 type="button"
                 className={`live-mode-btn ${isVoiceMode ? 'active' : ''}`}

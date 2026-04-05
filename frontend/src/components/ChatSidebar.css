@@ -1,27 +1,120 @@
-/* Chat Sidebar - Fixed height and background */
+/* Chat Sidebar - Theme-aware */
 .chat-sidebar {
   position: fixed;
   top: 70px;
   left: 0;
   width: 280px;
   height: calc(100vh - 70px);
-  background: #0F172A;
-  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--bg-card);
+  border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   z-index: 500;
-  color: #E2E8F0;
+  color: var(--text-main);
+  overflow: hidden;
 }
 
+/* ─── COLLAPSED STATE ─── */
 body.sidebar-collapsed .chat-sidebar {
-  transform: translateX(-280px);
+  width: 64px;
+}
+
+/* Hide everything except icons */
+body.sidebar-collapsed .sidebar-action-btn span,
+body.sidebar-collapsed .search-container,
+body.sidebar-collapsed .chat-history-list,
+body.sidebar-collapsed .chat-history-section,
+body.sidebar-collapsed .section-header,
+body.sidebar-collapsed .empty-state,
+body.sidebar-collapsed .sidebar-settings-wrapper,
+body.sidebar-collapsed .user-info,
+body.sidebar-collapsed .logout-icon-btn,
+body.sidebar-collapsed .sidebar-dev-credit,
+body.sidebar-collapsed .archived-toggle,
+body.sidebar-collapsed .sidebar-middle,
+body.sidebar-collapsed .context-menu,
+body.sidebar-collapsed .setting-btn span,
+body.sidebar-collapsed .support-btn span {
+  display: none !important;
+}
+
+/* Top section */
+body.sidebar-collapsed .sidebar-top {
+  padding: 10px 11px;
+  align-items: center;
+  gap: 2px;
+  border-bottom: none;
+}
+
+body.sidebar-collapsed .sidebar-top-row {
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  align-items: center;
+}
+
+/* All nav buttons: icon-only */
+body.sidebar-collapsed .sidebar-action-btn {
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 10px;
+  gap: 0;
+}
+
+body.sidebar-collapsed .sidebar-action-btn.new-chat {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  margin-bottom: 2px;
+}
+
+body.sidebar-collapsed .sidebar-toggle-btn {
+  width: 40px;
+  height: 40px;
+}
+
+/* Bottom: profile avatar only, pinned to bottom */
+body.sidebar-collapsed .sidebar-bottom {
+  padding: 12px 0;
+  align-items: center;
+  margin-top: auto;
+}
+
+body.sidebar-collapsed .user-profile {
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  overflow: hidden;
+  margin: 0 auto;
+}
+
+body.sidebar-collapsed .user-avatar {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+}
+
+body.sidebar-collapsed .chat-sidebar .profile-picture,
+body.sidebar-collapsed .user-avatar img {
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 50% !important;
+  object-fit: cover;
 }
 
 /* Top Section - Actions */
 .sidebar-top {
   padding: 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -31,39 +124,48 @@ body.sidebar-collapsed .chat-sidebar {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 16px;
+  padding: 10px 12px;
   background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 8px;
-  color: #E2E8F0;
-  font-size: 0.9rem;
+  border: none;
+  border-radius: 10px;
+  color: var(--text-primary, #333);
+  font-size: 0.88rem;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.15s;
   width: 100%;
 }
 
 .sidebar-action-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+body.dark .sidebar-action-btn:hover {
   background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.25);
 }
 
 .sidebar-action-btn.new-chat {
   background: var(--msu-blue);
-  border-color: var(--msu-blue);
   color: white;
   font-weight: 600;
+  border-radius: var(--radius-full, 9999px);
+  padding: 12px 16px;
+  margin-bottom: 4px;
 }
 
 .sidebar-action-btn.new-chat:hover {
   background: var(--msu-blue-hover);
-  border-color: var(--msu-blue-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(66, 133, 244, 0.3);
 }
 
 .sidebar-action-btn.curriculum-link {
   position: relative;
   z-index: 10;
   pointer-events: auto;
+  color: var(--text-secondary, #666);
+  font-size: 0.85rem;
+  padding: 9px 12px;
 }
 
 /* Search Container */
@@ -77,38 +179,42 @@ body.sidebar-collapsed .chat-sidebar {
   left: 14px;
   top: 50%;
   transform: translateY(-50%);
-  color: #64748B;
+  color: var(--text-tertiary);
   pointer-events: none;
 }
 
 .search-input {
   width: 100%;
   padding: 10px 14px 10px 38px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-color);
   border-radius: 8px;
-  color: #E2E8F0;
+  color: var(--text-main);
   font-size: 0.875rem;
   transition: all 0.2s;
 }
 
 .search-input::placeholder {
-  color: #64748B;
+  color: var(--text-tertiary);
 }
 
 .search-input:focus {
   outline: none;
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.3);
+  background: var(--bg-card);
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--msu-blue-50);
 }
 
 /* Middle Section - Chat History */
 .sidebar-middle {
   flex: 1;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   padding: 16px 0;
+  min-height: 0;
 }
 
 .section-header {
@@ -117,8 +223,18 @@ body.sidebar-collapsed .chat-sidebar {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #64748B;
+  color: var(--text-tertiary);
   margin-bottom: 4px;
+}
+
+/* Date group headers */
+.date-group-header {
+  padding: 10px 16px 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
 }
 
 .chat-history-section {
@@ -141,19 +257,25 @@ body.sidebar-collapsed .chat-sidebar {
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s;
-  color: #CBD5E1;
+  color: var(--text-secondary);
   font-size: 0.875rem;
   position: relative;
 }
 
 .chat-history-item:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--bg-card-hover);
 }
 
 .chat-history-item.active {
-  background: rgba(0, 82, 204, 0.2);
-  color: white;
+  background: linear-gradient(90deg, rgba(66,133,244,0.12), rgba(66,133,244,0.04));
+  color: var(--msu-blue);
   font-weight: 600;
+  border-left: 3px solid var(--msu-blue);
+  padding-left: 9px;
+}
+
+.chat-history-item:not(.active):hover {
+  transform: translateX(2px);
 }
 
 .pin-icon {
@@ -171,7 +293,7 @@ body.sidebar-collapsed .chat-sidebar {
 .chat-menu-btn {
   background: transparent;
   border: none;
-  color: #64748B;
+  color: var(--text-tertiary);
   cursor: pointer;
   padding: 6px;
   border-radius: 4px;
@@ -188,17 +310,17 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 .chat-menu-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #E2E8F0;
+  background: var(--bg-card-hover);
+  color: var(--text-main);
 }
 
 .rename-input {
   flex: 1;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: var(--bg-input);
+  border: 1px solid var(--border-focus);
   border-radius: 4px;
   padding: 6px 8px;
-  color: #E2E8F0;
+  color: var(--text-main);
   font-size: 0.875rem;
   outline: none;
 }
@@ -206,12 +328,12 @@ body.sidebar-collapsed .chat-sidebar {
 /* Context Menu */
 .context-menu {
   position: fixed;
-  background: #1E293B;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 4px;
   min-width: 200px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-xl);
   z-index: 10000 !important;
 }
 
@@ -224,7 +346,7 @@ body.sidebar-collapsed .chat-sidebar {
   background: transparent;
   border: none;
   border-radius: 6px;
-  color: #E2E8F0;
+  color: var(--text-main);
   font-size: 0.875rem;
   cursor: pointer;
   transition: all 0.2s;
@@ -232,7 +354,7 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 .context-menu-item:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--bg-card-hover);
 }
 
 .context-menu-item.danger {
@@ -240,19 +362,19 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 .context-menu-item.danger:hover {
-  background: rgba(239, 68, 68, 0.2);
+  background: rgba(239, 68, 68, 0.1);
 }
 
 .context-menu-divider {
   height: 1px;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--border-subtle);
   margin: 4px 0;
 }
 
 .empty-state {
   padding: 20px 16px;
   text-align: center;
-  color: #64748B;
+  color: var(--text-tertiary);
   font-size: 0.875rem;
 }
 
@@ -260,7 +382,7 @@ body.sidebar-collapsed .chat-sidebar {
 .archived-section-container {
   margin-top: 16px;
   padding: 0 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid var(--border-subtle);
   padding-top: 12px;
 }
 
@@ -273,7 +395,7 @@ body.sidebar-collapsed .chat-sidebar {
   background: transparent;
   border: none;
   border-radius: 8px;
-  color: #64748B;
+  color: var(--text-tertiary);
   font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
@@ -282,8 +404,8 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 .archived-header:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #E2E8F0;
+  background: var(--bg-card-hover);
+  color: var(--text-main);
 }
 
 .archived-header .chevron-icon {
@@ -322,8 +444,8 @@ body.sidebar-collapsed .chat-sidebar {
 /* Bottom Section - Settings & Profile */
 .sidebar-bottom {
   padding: 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(0, 0, 0, 0.2);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-body);
 }
 
 /* Settings Wrapper - Two Rows */
@@ -332,7 +454,7 @@ body.sidebar-collapsed .chat-sidebar {
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .sidebar-settings-row {
@@ -345,7 +467,7 @@ body.sidebar-collapsed .chat-sidebar {
   display: flex;
   gap: 8px;
   padding: 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .setting-btn {
@@ -355,10 +477,10 @@ body.sidebar-collapsed .chat-sidebar {
   justify-content: center;
   gap: 8px;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
-  color: #E2E8F0;
+  color: var(--text-secondary);
   font-size: 0.85rem;
   font-weight: 500;
   cursor: pointer;
@@ -366,18 +488,19 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 .setting-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.25);
+  background: var(--bg-card-hover);
+  border-color: var(--border-color);
+  color: var(--text-main);
 }
 
 .setting-btn.install-app-btn {
-  border-color: var(--msu-gold);
-  color: var(--msu-gold);
+  border-color: var(--msu-blue);
+  color: var(--msu-blue);
 }
 
 .setting-btn.install-app-btn:hover {
-  background: rgba(255, 183, 3, 0.1);
-  border-color: var(--msu-gold);
+  background: var(--msu-blue-50);
+  border-color: var(--msu-blue);
 }
 
 /* User Profile - Clickable */
@@ -392,15 +515,14 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 .user-profile:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--bg-card-hover);
 }
 
-/* 🔥 FIXED: User Avatar with proper fallback */
 .user-avatar {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--msu-blue), var(--msu-gold));
+  background: var(--gradient-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -439,7 +561,7 @@ body.sidebar-collapsed .chat-sidebar {
 .user-email {
   font-size: 0.875rem;
   font-weight: 600;
-  color: #E2E8F0;
+  color: var(--text-main);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -447,13 +569,13 @@ body.sidebar-collapsed .chat-sidebar {
 
 .user-status {
   font-size: 0.75rem;
-  color: #64748B;
+  color: var(--text-tertiary);
 }
 
 .logout-icon-btn {
   background: transparent;
   border: none;
-  color: #64748B;
+  color: var(--text-tertiary);
   cursor: pointer;
   padding: 8px;
   border-radius: 6px;
@@ -464,7 +586,7 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 .logout-icon-btn:hover {
-  background: rgba(239, 68, 68, 0.2);
+  background: rgba(239, 68, 68, 0.1);
   color: #EF4444;
 }
 
@@ -478,37 +600,36 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 .chat-history-list::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--border-color);
   border-radius: 3px;
 }
 
 .chat-history-list::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: var(--text-tertiary);
 }
 
 /* Documentation Button Style */
 .setting-btn.doc-btn {
-  border-color: #667eea;
-  color: #E2E8F0;
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
+  border-color: var(--msu-blue);
+  color: var(--text-secondary);
 }
 
 .setting-btn.doc-btn:hover {
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.2) 100%);
-  border-color: #667eea;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+  background: var(--msu-blue-50);
+  border-color: var(--msu-blue);
+  color: var(--msu-blue);
 }
 
 /* Support Button Style */
 .setting-btn.support-btn {
   border-color: var(--msu-blue);
-  color: #E2E8F0;
+  color: var(--text-secondary);
 }
 
 .setting-btn.support-btn:hover {
-  background: rgba(0, 82, 204, 0.2);
+  background: var(--msu-blue-50);
   border-color: var(--msu-blue);
+  color: var(--msu-blue);
 }
 
 .setting-btn.full-width {
@@ -517,7 +638,7 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 /* ========================================
-   🎫 SUPPORT TICKET MODAL - Professional Design
+   Support Ticket Modal
    ======================================== */
 
 .ticket-modal-overlay {
@@ -526,7 +647,7 @@ body.sidebar-collapsed .chat-sidebar {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -541,14 +662,14 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 .ticket-modal {
-  background: #1E293B;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
   border-radius: 16px;
   width: 90%;
   max-width: 480px;
   max-height: 90vh;
   overflow-y: auto;
-  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-2xl);
   animation: slideUp 0.3s ease;
 }
 
@@ -569,20 +690,20 @@ body.sidebar-collapsed .chat-sidebar {
   align-items: center;
   justify-content: space-between;
   padding: 20px 24px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .ticket-header h2 {
   margin: 0;
   font-size: 1.25rem;
   font-weight: 600;
-  color: #F8FAFC;
+  color: var(--text-main);
 }
 
 .ticket-close-btn {
   background: transparent;
   border: none;
-  color: #64748B;
+  color: var(--text-tertiary);
   cursor: pointer;
   padding: 8px;
   border-radius: 8px;
@@ -593,8 +714,8 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 .ticket-close-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #E2E8F0;
+  background: var(--bg-card-hover);
+  color: var(--text-main);
 }
 
 /* Form */
@@ -614,7 +735,7 @@ body.sidebar-collapsed .chat-sidebar {
 .ticket-field label {
   font-size: 0.875rem;
   font-weight: 500;
-  color: #94A3B8;
+  color: var(--text-secondary);
 }
 
 /* Category Buttons */
@@ -630,10 +751,10 @@ body.sidebar-collapsed .chat-sidebar {
   align-items: center;
   gap: 6px;
   padding: 12px 8px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 10px;
-  color: #94A3B8;
+  color: var(--text-secondary);
   font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
@@ -641,14 +762,14 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 .category-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.25);
+  background: var(--bg-card-hover);
+  border-color: var(--border-color);
 }
 
 .category-btn.active {
-  background: rgba(0, 82, 204, 0.2);
+  background: var(--msu-blue-50);
   border-color: var(--msu-blue);
-  color: #E2E8F0;
+  color: var(--msu-blue);
 }
 
 .category-btn svg {
@@ -658,11 +779,11 @@ body.sidebar-collapsed .chat-sidebar {
 /* Input & Textarea */
 .ticket-field input,
 .ticket-field textarea {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
   border-radius: 10px;
   padding: 12px 16px;
-  color: #F8FAFC;
+  color: var(--text-main);
   font-size: 0.9rem;
   font-family: inherit;
   transition: all 0.2s;
@@ -671,14 +792,15 @@ body.sidebar-collapsed .chat-sidebar {
 
 .ticket-field input::placeholder,
 .ticket-field textarea::placeholder {
-  color: #64748B;
+  color: var(--text-tertiary);
 }
 
 .ticket-field input:focus,
 .ticket-field textarea:focus {
   outline: none;
-  border-color: var(--msu-blue);
-  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-focus);
+  background: var(--bg-card);
+  box-shadow: 0 0 0 3px var(--msu-blue-50);
 }
 
 /* Attachment Area */
@@ -693,10 +815,10 @@ body.sidebar-collapsed .chat-sidebar {
   align-items: center;
   gap: 8px;
   padding: 10px 16px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px dashed rgba(255, 255, 255, 0.2);
+  background: var(--bg-input);
+  border: 1px dashed var(--border-color);
   border-radius: 10px;
-  color: #94A3B8;
+  color: var(--text-secondary);
   font-size: 0.85rem;
   cursor: pointer;
   transition: all 0.2s;
@@ -704,13 +826,13 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 .attachment-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.3);
-  color: #E2E8F0;
+  background: var(--bg-card-hover);
+  border-color: var(--text-tertiary);
+  color: var(--text-main);
 }
 
 .remove-attachment {
-  background: rgba(239, 68, 68, 0.2);
+  background: rgba(239, 68, 68, 0.1);
   border: none;
   color: #EF4444;
   padding: 8px;
@@ -723,7 +845,7 @@ body.sidebar-collapsed .chat-sidebar {
 }
 
 .remove-attachment:hover {
-  background: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.2);
 }
 
 /* Submit Button */
@@ -781,13 +903,20 @@ body.sidebar-collapsed .chat-sidebar {
   margin: 0;
   font-size: 1.25rem;
   font-weight: 600;
-  color: #F8FAFC;
+  color: var(--text-main);
 }
 
 .ticket-success p {
   margin: 0;
-  color: #94A3B8;
+  color: var(--text-secondary);
   font-size: 0.9rem;
+}
+
+/* Dark mode sidebar active state */
+body.dark .chat-history-item.active {
+  background: linear-gradient(90deg, rgba(138,180,248,0.14), rgba(138,180,248,0.04));
+  color: #8ab4f8;
+  border-left-color: #8ab4f8;
 }
 
 /* Mobile - Tablet */
@@ -994,4 +1123,33 @@ body.sidebar-collapsed .chat-sidebar {
   .user-email {
     font-size: 0.75rem;
   }
+}
+
+/* Sidebar top row - New Chat + toggle */
+.sidebar-top-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.sidebar-toggle-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  color: var(--text-secondary, #888);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.sidebar-toggle-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text-primary, #333);
+}
+body.dark .sidebar-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ddd;
 }

@@ -1,6 +1,7 @@
 // src/components/AdminDashboard.jsx
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import { FaCog } from "@react-icons/all-files/fa/FaCog";
 import { FaTicketAlt } from "@react-icons/all-files/fa/FaTicketAlt";
 import { FaBug } from "@react-icons/all-files/fa/FaBug";
@@ -37,21 +38,24 @@ import { FaThumbsUp } from "@react-icons/all-files/fa/FaThumbsUp";
 import { FaThumbsDown } from "@react-icons/all-files/fa/FaThumbsDown";
 import { FaFlag } from "@react-icons/all-files/fa/FaFlag";
 import { FaSmile } from "@react-icons/all-files/fa/FaSmile";
+import { FaCloudUploadAlt } from "@react-icons/all-files/fa/FaCloudUploadAlt";
+import { FaTachometerAlt } from "@react-icons/all-files/fa/FaTachometerAlt";
 import DocumentationViewer from "./DocumentationViewer";
 import "./AdminDashboard.css";
 
-// API Base URL - Smart switching
-const hostname = window.location.hostname;
-const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-  ? "http://127.0.0.1:8000"
-  : "http://100.48.56.24:5000";
+import { getApiBase } from "../lib/apiBase";
+const API_BASE = getApiBase();
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
   const token = localStorage.getItem("token");
 
   // Tab state
-  const [activeTab, setActiveTab] = useState("users");
+  const [activeTab, setActiveTab] = useState("overview");
+
+  // Overview State
+  const [overviewData, setOverviewData] = useState(null);
+  const [overviewLoading, setOverviewLoading] = useState(false);
 
   // Course state
   const [course, setCourse] = useState({
@@ -91,6 +95,39 @@ export default function AdminDashboard() {
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [highlightTerm, setHighlightTerm] = useState("");
 
+  // Format doc ID into a clean readable title
+  // "academic_11_course_prerequisites" -> "Course Prerequisites"
+  // "financial_aid_fafsa_requirements" -> "FAFSA Requirements"
+  const formatDocName = (id) => {
+    if (!id) return "";
+    // Remove category prefix and numeric prefixes
+    let clean = id
+      .replace(/^(academic|career|financial|general)_/, "")
+      .replace(/^\d+_/, "");
+    // Convert underscores to spaces and title case
+    return clean
+      .split("_")
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+  };
+
+  // Get category badge color
+  const getCategoryColor = (id) => {
+    if (id.startsWith("academic")) return { bg: "#e8f5e9", color: "#2e7d32", label: "Academic" };
+    if (id.startsWith("career")) return { bg: "#e3f2fd", color: "#1565c0", label: "Career" };
+    if (id.startsWith("financial")) return { bg: "#fff3e0", color: "#e65100", label: "Financial" };
+    return { bg: "#f3e5f5", color: "#6a1b9a", label: "General" };
+  };
+
+  // Research Agent State
+  const [researchStats, setResearchStats] = useState({ total_failed: 0, pending_suggestions: 0, approved: 0, pushed: 0 });
+  const [suggestions, setSuggestions] = useState([]);
+  const [researchRunning, setResearchRunning] = useState(false);
+  const [suggestionFilter, setSuggestionFilter] = useState("pending");
+  const [failedQueries, setFailedQueries] = useState([]);
+  const [showFailedQueries, setShowFailedQueries] = useState(false);
+  const [expandedSuggestion, setExpandedSuggestion] = useState(null);
+
   // Find & Replace State
   const [findText, setFindText] = useState("");
   const [replaceText, setReplaceText] = useState("");
@@ -105,6 +142,27 @@ export default function AdminDashboard() {
   // Analytics State
   const [analytics, setAnalytics] = useState(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+
+  // Cloud KB State
+  const [cloudKbDocs, setCloudKbDocs] = useState([]);
+  const [cloudKbLoading, setCloudKbLoading] = useState(false);
+  const [cloudKbSelected, setCloudKbSelected] = useState(null);
+  const [cloudKbContent, setCloudKbContent] = useState("");
+  const [cloudKbEditing, setCloudKbEditing] = useState(false);
+  const [cloudKbEditContent, setCloudKbEditContent] = useState("");
+  const [cloudKbSyncing, setCloudKbSyncing] = useState(false);
+  const [cloudKbUploading, setCloudKbUploading] = useState(false);
+  const [cloudKbSearchResults, setCloudKbSearchResults] = useState(null); // null = no search, [] = no results
+  const [cloudKbSearching, setCloudKbSearching] = useState(false);
+  const [cloudKbStats, setCloudKbStats] = useState({ total_documents: 0, total_size: 0, last_modified: "" });
+  const [cloudKbDragActive, setCloudKbDragActive] = useState(false);
+  const cloudKbFileRef = useRef(null);
+  const cloudKbSearchTimer = useRef(null);
+
+  // Cache Management State
+  const [cacheStats, setCacheStats] = useState(null);
+  const [cacheLoading, setCacheLoading] = useState(false);
+  const [cacheClearing, setCacheClearing] = useState(false);
 
   // Documentation Viewer State
   const [showDocViewer, setShowDocViewer] = useState(false);
@@ -217,6 +275,235 @@ export default function AdminDashboard() {
     finally { setAnalyticsLoading(false); }
   };
 
+  // Overview data loader
+  const loadOverview = async () => {
+    setOverviewLoading(true);
+    try {
+      const [usersRes, healthRes, cacheRes, kbStatsRes] = await Promise.allSettled([
+        fetch(`${API_BASE}/api/admin/users/stats`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${API_BASE}/api/admin/health`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${API_BASE}/api/admin/cache/stats`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${API_BASE}/api/admin/cloud-kb/stats`, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+      const overview = {};
+      if (usersRes.status === "fulfilled" && usersRes.value.ok) overview.users = await usersRes.value.json();
+      if (healthRes.status === "fulfilled" && healthRes.value.ok) overview.health = await healthRes.value.json();
+      if (cacheRes.status === "fulfilled" && cacheRes.value.ok) overview.cache = await cacheRes.value.json();
+      if (kbStatsRes.status === "fulfilled" && kbStatsRes.value.ok) overview.kbStats = await kbStatsRes.value.json();
+      setOverviewData(overview);
+    } catch (err) { console.error("Failed to load overview:", err); }
+    finally { setOverviewLoading(false); }
+  };
+
+  // Cloud KB Functions
+  const loadCloudKbDocs = async () => {
+    setCloudKbLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/documents`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const data = await res.json();
+        setCloudKbDocs(data.documents || []);
+      }
+    } catch (err) { console.error("Failed to load cloud KB:", err); }
+    finally { setCloudKbLoading(false); }
+  };
+
+  const loadCloudKbStats = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/stats`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) setCloudKbStats(await res.json());
+    } catch (err) { console.error("Failed to load cloud KB stats:", err); }
+  };
+
+  // Cache Management Functions
+  const loadCacheStats = async () => {
+    setCacheLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cache/stats`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) setCacheStats(await res.json());
+    } catch (err) { console.error("Failed to load cache stats:", err); }
+    finally { setCacheLoading(false); }
+  };
+
+  const handleClearCache = async () => {
+    setCacheClearing(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cache/clear`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success("Cache cleared successfully", { description: `Cleared: L1=${data.message?.l1_cleared || 0}, L2=${data.message?.l2_cleared || 0}, Semantic=${data.message?.semantic_cleared || 0}` });
+        loadCacheStats();
+      } else {
+        toast.error("Failed to clear cache");
+      }
+    } catch (err) { toast.error("Cache clear error: " + err.message); }
+    finally { setCacheClearing(false); }
+  };
+
+  const loadCloudKbContent = async (doc) => {
+    setCloudKbSelected(doc);
+    setCloudKbEditing(false);
+    setCloudKbContent("Loading...");
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/documents/${doc.id}/content`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCloudKbContent(data.content || "");
+      } else {
+        setCloudKbContent("Failed to load content.");
+      }
+    } catch (err) { setCloudKbContent("Error loading content."); }
+  };
+
+  const searchCloudKb = async (query) => {
+    if (!query || query.length < 2) {
+      setCloudKbSearchResults(null);
+      return;
+    }
+    setCloudKbSearching(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/search?q=${encodeURIComponent(query)}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCloudKbSearchResults(data.results || []);
+      }
+    } catch (err) { console.error("Cloud KB search failed:", err); }
+    finally { setCloudKbSearching(false); }
+  };
+
+  const handleCloudKbSearch = (value) => {
+    setKbSearch(value);
+    // Debounce both highlighting and API search to prevent cursor jumping
+    if (cloudKbSearchTimer.current) clearTimeout(cloudKbSearchTimer.current);
+    cloudKbSearchTimer.current = setTimeout(() => {
+      if (value.length >= 2) {
+        setFindText(value);
+      } else {
+        setFindText("");
+      }
+      searchCloudKb(value);
+    }, 300);
+  };
+
+  const handleCloudKbUpload = async (e) => {
+    const files = e.target.files || e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    setCloudKbUploading(true);
+    let successCount = 0;
+    let failCount = 0;
+    for (const file of files) {
+      const formData = new FormData();
+      formData.append("file", file);
+      try {
+        const res = await fetch(`${API_BASE}/api/admin/cloud-kb/upload`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData
+        });
+        if (res.ok) {
+          successCount++;
+        } else {
+          failCount++;
+          const data = await res.json();
+          toast.error(`Failed: ${file.name}`, { description: data.detail || "Unknown error" });
+        }
+      } catch (err) {
+        failCount++;
+        toast.error(`Upload error: ${file.name}`);
+      }
+    }
+    if (successCount > 0) {
+      toast.success(`Uploaded ${successCount} file${successCount > 1 ? "s" : ""}`, {
+        description: "Cache auto-cleared. Chatbot will use fresh data."
+      });
+      loadCloudKbDocs();
+      loadCloudKbStats();
+    }
+    setCloudKbUploading(false);
+    if (cloudKbFileRef.current) cloudKbFileRef.current.value = "";
+  };
+
+  // Drag and drop handlers
+  const handleDragOver = useCallback((e) => { e.preventDefault(); e.stopPropagation(); setCloudKbDragActive(true); }, []);
+  const handleDragLeave = useCallback((e) => { e.preventDefault(); e.stopPropagation(); setCloudKbDragActive(false); }, []);
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCloudKbDragActive(false);
+    handleCloudKbUpload(e);
+  }, [token]);
+
+  const handleCloudKbSave = async () => {
+    if (!cloudKbSelected) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/documents/${cloudKbSelected.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ content: cloudKbEditContent })
+      });
+      if (res.ok) {
+        toast.success("Document updated", { description: `${formatDocName(cloudKbSelected.filename)} saved. Instantly indexed.` });
+        setCloudKbContent(cloudKbEditContent);
+        setCloudKbEditing(false);
+        loadCloudKbDocs();
+        loadCloudKbStats();
+      } else {
+        const data = await res.json();
+        toast.error("Save failed", { description: data.detail || "Unknown error" });
+      }
+    } catch (err) { toast.error("Save error: " + err.message); }
+  };
+
+  const handleCloudKbDelete = async (doc) => {
+    if (!window.confirm(`Delete "${doc.filename}"? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/documents/${doc.id}?uri=${encodeURIComponent(doc.uri)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        toast.success("Deleted", { description: `${doc.filename} removed. Cache auto-cleared.` });
+        if (cloudKbSelected?.id === doc.id) {
+          setCloudKbSelected(null);
+          setCloudKbContent("");
+        }
+        loadCloudKbDocs();
+        loadCloudKbStats();
+      } else {
+        const data = await res.json();
+        toast.error("Delete failed", { description: data.detail || "Unknown error" });
+      }
+    } catch (err) { toast.error("Delete error: " + err.message); }
+  };
+
+  const handleCloudKbSync = async () => {
+    if (!window.confirm("Re-sync all documents from GCS into the datastore?")) return;
+    setCloudKbSyncing(true);
+    toast.loading("Syncing datastore...", { id: "sync" });
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/cloud-kb/sync`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success("Sync started", { id: "sync", description: "Documents will be re-indexed shortly. Cache cleared." });
+        loadCloudKbDocs();
+        loadCloudKbStats();
+      } else {
+        toast.error("Sync failed", { id: "sync", description: data.detail || "Unknown error" });
+      }
+    } catch (err) { toast.error("Sync error", { id: "sync", description: err.message }); }
+    finally { setCloudKbSyncing(false); }
+  };
+
   const loadFeedbackStats = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/feedback/stats`, { headers: { Authorization: `Bearer ${token}` } });
@@ -281,7 +568,7 @@ export default function AdminDashboard() {
   const startVoiceSearch = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      alert("Voice search is not supported in your browser. Please use Chrome or Edge.");
+      toast.error("Voice search is not supported in your browser. Please use Chrome or Edge.");
       return;
     }
 
@@ -310,7 +597,7 @@ export default function AdminDashboard() {
       console.error("Voice recognition error:", event.error);
       setIsListening(false);
       if (event.error === 'not-allowed') {
-        alert("Microphone access denied. Please allow microphone access to use voice search.");
+        toast.error("Microphone access denied. Please allow microphone access.");
       }
     };
 
@@ -370,6 +657,62 @@ export default function AdminDashboard() {
     setVoiceSupported(!!SpeechRecognition);
   }, []);
 
+  // Research Agent Functions
+  const loadResearchStats = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/research/stats`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) setResearchStats(await res.json());
+    } catch (err) { console.error("Failed to load research stats:", err); }
+  };
+
+  const loadSuggestions = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/research/suggestions?status=${suggestionFilter}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) { const data = await res.json(); setSuggestions(data.suggestions || []); }
+    } catch (err) { console.error("Failed to load suggestions:", err); }
+  };
+
+  const loadFailedQueries = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/research/failed-queries`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) { const data = await res.json(); setFailedQueries(data.queries || []); }
+    } catch (err) { console.error("Failed to load failed queries:", err); }
+  };
+
+  const handleRunResearch = async () => {
+    setResearchRunning(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/research/run`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success("Research complete", { description: `Clustered ${data.clustered} queries, researched ${data.researched} topics` });
+        loadResearchStats(); loadSuggestions();
+      } else { toast.error("Research failed"); }
+    } catch (err) { toast.error("Research error: " + err.message); }
+    finally { setResearchRunning(false); }
+  };
+
+  const handleSuggestionAction = async (id, action, extra = {}) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/research/suggestions/${id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action, ...extra })
+      });
+      if (res.ok) { toast.success(`Suggestion ${action}ed`); loadSuggestions(); loadResearchStats(); }
+    } catch (err) { toast.error("Action failed: " + err.message); }
+  };
+
+  const handlePushSuggestion = async (id) => {
+    if (!window.confirm("Push this suggestion to the live knowledge base?")) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/research/suggestions/${id}/push`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) { toast.success("Pushed to KB!"); loadSuggestions(); loadResearchStats(); }
+      else { const data = await res.json(); toast.error(data.detail || "Push failed"); }
+    } catch (err) { toast.error("Push error: " + err.message); }
+  };
+
   useEffect(() => {
     loadCourses();
     loadTickets();
@@ -379,10 +722,16 @@ export default function AdminDashboard() {
   }, []);
 
   useEffect(() => {
-    if (activeTab === "system") loadHealth();
+    if (activeTab === "overview") { loadOverview(); loadAnalytics(); }
+    if (activeTab === "system") { loadHealth(); loadCacheStats(); }
     if (activeTab === "knowledge") loadKbFiles();
-    if (activeTab === "analytics") loadAnalytics();
     if (activeTab === "feedback") loadFeedbackStats();
+    if (activeTab === "research") { loadResearchStats(); loadSuggestions(); }
+    if (activeTab === "cloud-kb") { loadCloudKbDocs(); loadCloudKbStats(); }
+    // Preload cloud KB docs in background on first render so Datastore tab is instant
+    if (activeTab !== "cloud-kb" && cloudKbDocs.length === 0) {
+      fetch(`${API_BASE}/api/admin/cloud-kb/documents`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+    }
   }, [activeTab]);
 
   useEffect(() => {
@@ -523,14 +872,14 @@ export default function AdminDashboard() {
         body: JSON.stringify(content)
       });
       if (res.ok) {
-        alert("File saved successfully!");
+        toast.success("File saved successfully!");
         loadKbFiles();
       } else {
         const data = await res.json();
         throw new Error(data.detail);
       }
     } catch (err) {
-      alert(`Error: ${err.message}`);
+      toast.error(`Error: ${err.message}`);
     } finally { setKbLoading(false); }
   };
 
@@ -542,9 +891,9 @@ export default function AdminDashboard() {
         headers: { Authorization: `Bearer ${token}` }
       });
       const data = await res.json();
-      if (res.ok) alert("Ingestion completed successfully!");
+      if (res.ok) toast.success("Ingestion completed!");
       else throw new Error(data.detail);
-    } catch (err) { alert(`Ingestion failed: ${err.message}`); }
+    } catch (err) { toast.error(`Ingestion failed: ${err.message}`); }
     finally { setIngesting(false); }
   };
 
@@ -552,158 +901,117 @@ export default function AdminDashboard() {
   // FIND & REPLACE FUNCTIONS
   // ===========================================
 
-  // Count matches when findText changes
+  // Count matches when findText changes (word-boundary matching to match backend)
   useEffect(() => {
-    if (findText && kbContent) {
-      const regex = new RegExp(findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-      const matches = kbContent.match(regex);
+    const content = cloudKbEditing ? cloudKbEditContent : cloudKbContent;
+    if (findText && content && content !== "Loading...") {
+      const escaped = findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp('\\b' + escaped + '\\b', 'gi');
+      const matches = content.match(regex);
       setMatchCount(matches ? matches.length : 0);
       setCurrentMatchIndex(0);
     } else {
       setMatchCount(0);
       setCurrentMatchIndex(0);
     }
-  }, [findText, kbContent]);
+  }, [findText, cloudKbContent, cloudKbEditContent, cloudKbEditing]);
 
   // Auto-scroll to first match when opening Find & Replace from search
+  // Only auto-scroll to first match when Find & Replace panel is first opened,
+  // NOT on every keystroke in the search box
   useEffect(() => {
-    if (showFindReplace && findText && kbContent && textareaRef.current && !kbLoading) {
-      // Small delay to ensure textarea is rendered
-      const timer = setTimeout(() => {
-        const textarea = textareaRef.current;
-        if (textarea) {
-          const text = kbContent.toLowerCase();
-          const searchTerm = findText.toLowerCase();
-          const foundIndex = text.indexOf(searchTerm);
-          if (foundIndex !== -1) {
-            textarea.focus();
-            textarea.setSelectionRange(foundIndex, foundIndex + findText.length);
-            // Scroll to position
-            const lineHeight = 20;
-            const linesBeforeMatch = kbContent.substring(0, foundIndex).split('\n').length - 1;
-            textarea.scrollTop = Math.max(0, linesBeforeMatch * lineHeight - 100);
-            setCurrentMatchIndex(1);
-          }
-        }
-      }, 100);
-      return () => clearTimeout(timer);
+    const content = cloudKbEditing ? cloudKbEditContent : cloudKbContent;
+    if (showFindReplace && findText && content && textareaRef.current) {
+      setCurrentMatchIndex(1);
+      // Don't auto-scroll - let user navigate with next/prev buttons
     }
-  }, [showFindReplace, kbContent, kbLoading]);
+  }, [showFindReplace]);
+
+  // Get the active content for find/replace (cloud KB editing or viewing)
+  const getActiveContent = () => cloudKbEditing ? cloudKbEditContent : cloudKbContent;
+
+  // Scroll to a specific <mark> element by index inside the viewer/editor
+  const scrollToMatch = (matchIdx) => {
+    const container = textareaRef.current;
+    if (!container) return;
+
+    // For view mode: find <mark> elements in the rendered HTML
+    if (!cloudKbEditing) {
+      const marks = container.querySelectorAll("mark.highlight-match");
+      if (marks.length > 0) {
+        const idx = Math.max(0, Math.min(matchIdx, marks.length - 1));
+        marks.forEach(m => m.classList.remove("active-match"));
+        marks[idx].classList.add("active-match");
+        // Scroll the container, not the viewport
+        const containerRect = container.getBoundingClientRect();
+        const markRect = marks[idx].getBoundingClientRect();
+        const scrollTarget = container.scrollTop + (markRect.top - containerRect.top) - container.clientHeight / 3;
+        container.scrollTo({ top: Math.max(0, scrollTarget), behavior: "smooth" });
+      }
+      return;
+    }
+
+    // For edit mode: scroll textarea to match without stealing focus
+    const content = cloudKbEditContent;
+    const text = content.toLowerCase();
+    const searchTerm = findText.toLowerCase();
+    let pos = -1;
+    for (let i = 0; i <= matchIdx; i++) {
+      pos = text.indexOf(searchTerm, pos + 1);
+      if (pos === -1) break;
+    }
+    if (pos !== -1) {
+      // Scroll textarea to the match position without focusing it
+      const textBefore = content.substring(0, pos);
+      const lines = textBefore.split("\n").length - 1;
+      const lineH = parseFloat(getComputedStyle(container).lineHeight) || 20;
+      container.scrollTop = Math.max(0, lines * lineH - container.clientHeight / 3);
+    }
+  };
 
   const findNextMatch = () => {
-    if (!findText || !textareaRef.current) return;
-
-    const textarea = textareaRef.current;
-    const text = kbContent.toLowerCase();
-    const searchTerm = findText.toLowerCase();
-
-    // Start searching from current cursor position
-    let startPos = textarea.selectionEnd || 0;
-    let foundIndex = text.indexOf(searchTerm, startPos);
-
-    // Wrap around if not found
-    if (foundIndex === -1) {
-      foundIndex = text.indexOf(searchTerm, 0);
-    }
-
-    if (foundIndex !== -1) {
-      textarea.focus();
-      textarea.setSelectionRange(foundIndex, foundIndex + findText.length);
-
-      // Scroll to make selection visible
-      const lineHeight = 20;
-      const linesBeforeMatch = kbContent.substring(0, foundIndex).split('\n').length - 1;
-      textarea.scrollTop = linesBeforeMatch * lineHeight - 100;
-
-      setCurrentMatchIndex(prev => (prev % matchCount) + 1);
-    }
+    if (!findText || matchCount === 0) return;
+    const next = currentMatchIndex % matchCount; // 0-indexed
+    setCurrentMatchIndex(next + 1); // 1-indexed display
+    scrollToMatch(next);
   };
 
   const findPrevMatch = () => {
-    if (!findText || !textareaRef.current) return;
-
-    const textarea = textareaRef.current;
-    const text = kbContent.toLowerCase();
-    const searchTerm = findText.toLowerCase();
-
-    // Start searching backwards from current cursor position
-    let startPos = Math.max(0, textarea.selectionStart - 1);
-    let foundIndex = text.lastIndexOf(searchTerm, startPos);
-
-    // Wrap around if not found
-    if (foundIndex === -1) {
-      foundIndex = text.lastIndexOf(searchTerm);
-    }
-
-    if (foundIndex !== -1) {
-      textarea.focus();
-      textarea.setSelectionRange(foundIndex, foundIndex + findText.length);
-
-      const lineHeight = 20;
-      const linesBeforeMatch = kbContent.substring(0, foundIndex).split('\n').length - 1;
-      textarea.scrollTop = linesBeforeMatch * lineHeight - 100;
-
-      setCurrentMatchIndex(prev => prev > 1 ? prev - 1 : matchCount);
-    }
+    if (!findText || matchCount === 0) return;
+    const prev = currentMatchIndex - 2 < 0 ? matchCount - 1 : currentMatchIndex - 2;
+    setCurrentMatchIndex(prev + 1);
+    scrollToMatch(prev);
   };
 
   const replaceCurrentMatch = () => {
-    if (!findText || !textareaRef.current) return;
+    if (!findText || !textareaRef.current || !cloudKbEditing) return;
 
     const textarea = textareaRef.current;
     const selStart = textarea.selectionStart;
     const selEnd = textarea.selectionEnd;
-    const selectedText = kbContent.substring(selStart, selEnd);
+    const selectedText = cloudKbEditContent.substring(selStart, selEnd);
 
-    // Only replace if the selected text matches the find text (case insensitive)
     if (selectedText.toLowerCase() === findText.toLowerCase()) {
-      const newContent = kbContent.substring(0, selStart) + replaceText + kbContent.substring(selEnd);
-      setKbContent(newContent);
-
-      // Move cursor after replacement
+      const newContent = cloudKbEditContent.substring(0, selStart) + replaceText + cloudKbEditContent.substring(selEnd);
+      setCloudKbEditContent(newContent);
       setTimeout(() => {
         textarea.focus();
         textarea.setSelectionRange(selStart + replaceText.length, selStart + replaceText.length);
         findNextMatch();
       }, 10);
     } else {
-      // If nothing is selected, find the next match first
       findNextMatch();
     }
   };
 
   const replaceAllMatches = () => {
-    if (!findText) return;
-
-    const regex = new RegExp(findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-    const newContent = kbContent.replace(regex, replaceText);
+    if (!findText || !cloudKbEditing) return;
+    const escaped = findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp('\\b' + escaped + '\\b', 'gi');
+    const newContent = cloudKbEditContent.replace(regex, replaceText);
     const replacedCount = matchCount;
-    setKbContent(newContent);
-    alert(`Replaced ${replacedCount} occurrence(s)`);
-  };
-
-  const openFindReplaceFromSearch = (filename, searchTerm, position) => {
-    setSelectedKbFile(filename);
-    setFindText(searchTerm);
-    setShowFindReplace(true);
-
-    // Load the file and then scroll to position
-    loadKbFileContent(filename).then(() => {
-      setTimeout(() => {
-        if (textareaRef.current) {
-          const textarea = textareaRef.current;
-          const text = kbContent.toLowerCase();
-          const foundIndex = text.indexOf(searchTerm.toLowerCase(), position > 100 ? position - 100 : 0);
-          if (foundIndex !== -1) {
-            textarea.focus();
-            textarea.setSelectionRange(foundIndex, foundIndex + searchTerm.length);
-            const lineHeight = 20;
-            const linesBeforeMatch = kbContent.substring(0, foundIndex).split('\n').length - 1;
-            textarea.scrollTop = linesBeforeMatch * lineHeight - 100;
-          }
-        }
-      }, 300);
-    });
+    setCloudKbEditContent(newContent);
+    toast.success(`Replaced ${replacedCount} occurrence(s)`);
   };
 
   // ===========================================
@@ -745,13 +1053,13 @@ export default function AdminDashboard() {
 
   // Generate highlighted HTML content for preview
   const getHighlightedContent = () => {
-    if (!findText || !kbContent) return kbContent;
+    const content = getActiveContent();
+    if (!findText || !content) return content;
 
     const escapedSearch = findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`(${escapedSearch})`, 'gi');
+    const regex = new RegExp(`(\\b${escapedSearch}\\b)`, 'gi');
 
-    // Escape HTML and then highlight matches
-    const escaped = kbContent
+    const escaped = content
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
@@ -794,30 +1102,163 @@ export default function AdminDashboard() {
 
       {/* Tab Navigation */}
       <div className="admin-tabs">
-        <button className={`admin-tab ${activeTab === "users" ? "active" : ""}`} onClick={() => setActiveTab("users")}>
-          <FaUsers size={16} /><span>Users</span>
+        <button className={`admin-tab ${activeTab === "overview" ? "active" : ""}`} onClick={() => setActiveTab("overview")}>
+          <FaTachometerAlt size={14} /><span>Home</span>
         </button>
-        <button className={`admin-tab ${activeTab === "courses" ? "active" : ""}`} onClick={() => setActiveTab("courses")}>
-          <FaCog size={16} /><span>Curriculum</span>
+        <button className={`admin-tab ${activeTab === "cloud-kb" ? "active" : ""}`} onClick={() => setActiveTab("cloud-kb")}>
+          <FaDatabase size={14} /><span>Database</span>
+        </button>
+        <button className={`admin-tab ${activeTab === "users" ? "active" : ""}`} onClick={() => setActiveTab("users")}>
+          <FaUsers size={14} /><span>Users</span>
         </button>
         <button className={`admin-tab ${activeTab === "tickets" ? "active" : ""}`} onClick={() => setActiveTab("tickets")}>
-          <FaTicketAlt size={16} /><span>Tickets</span>
+          <FaTicketAlt size={14} /><span>Tickets</span>
           {ticketStats.open > 0 && <span className="ticket-badge">{ticketStats.open}</span>}
         </button>
-        <button className={`admin-tab ${activeTab === "knowledge" ? "active" : ""}`} onClick={() => setActiveTab("knowledge")}>
-          <FaDatabase size={16} /><span>Knowledge Base</span>
-        </button>
-        <button className={`admin-tab ${activeTab === "analytics" ? "active" : ""}`} onClick={() => setActiveTab("analytics")}>
-          <FaChartBar size={16} /><span>Analytics</span>
-        </button>
         <button className={`admin-tab ${activeTab === "feedback" ? "active" : ""}`} onClick={() => setActiveTab("feedback")}>
-          <FaSmile size={16} /><span>Feedback</span>
+          <FaSmile size={14} /><span>Reviews</span>
           {feedbackStats.reports > 0 && <span className="ticket-badge">{feedbackStats.reports}</span>}
         </button>
+        <button className={`admin-tab ${activeTab === "research" ? "active" : ""}`} onClick={() => setActiveTab("research")}>
+          <FaSearch size={14} /><span>Research</span>
+          {researchStats.pending_suggestions > 0 && <span className="ticket-badge">{researchStats.pending_suggestions}</span>}
+        </button>
+        <button className={`admin-tab ${activeTab === "courses" ? "active" : ""}`} onClick={() => setActiveTab("courses")}>
+          <FaCog size={14} /><span>Courses</span>
+        </button>
         <button className={`admin-tab ${activeTab === "system" ? "active" : ""}`} onClick={() => setActiveTab("system")}>
-          <FaServer size={16} /><span>System</span>
+          <FaServer size={14} /><span>System</span>
         </button>
       </div>
+
+      {/* =================== OVERVIEW TAB =================== */}
+      {activeTab === "overview" && (
+        <div className="tab-content">
+          {overviewLoading ? (
+            <div className="loading-state">Loading dashboard...</div>
+          ) : overviewData ? (
+            <>
+              {/* Quick Stats Row */}
+              <div className="ticket-stats">
+                <div className="stat-card total" onClick={() => setActiveTab("users")} style={{ cursor: "pointer" }}>
+                  <FaUsers className="stat-icon" />
+                  <span className="stat-number">{overviewData.users?.total || 0}</span>
+                  <span className="stat-label">Total Users</span>
+                </div>
+                <div className="stat-card progress" onClick={() => setActiveTab("cloud-kb")} style={{ cursor: "pointer" }}>
+                  <FaDatabase className="stat-icon" />
+                  <span className="stat-number">{overviewData.kbStats?.total_documents || 0}</span>
+                  <span className="stat-label">KB Documents</span>
+                </div>
+                <div className="stat-card open">
+                  <FaRobot className="stat-icon" />
+                  <span className="stat-number">
+                    {overviewData.cache?.cache_stats?.overall?.hit_rate || "0%"}
+                  </span>
+                  <span className="stat-label">Cache Hit Rate</span>
+                </div>
+                <div className="stat-card resolved">
+                  <FaCheckCircle className="stat-icon" />
+                  <span className="stat-number">
+                    {overviewData.health?.database?.status === "connected" &&
+                     overviewData.health?.vertex_agent?.status === "connected"
+                      ? "All Good" : "Check"}
+                  </span>
+                  <span className="stat-label">System Health</span>
+                </div>
+              </div>
+
+              {/* System Health Cards */}
+              <div className="overview-section">
+                <h3>System Status</h3>
+                <div className="health-cards">
+                  <div className={`health-card ${overviewData.health?.database?.status === "connected" ? "healthy" : "error"}`}>
+                    <FaDatabase className="health-icon" />
+                    <div className="health-info">
+                      <h4>Database</h4>
+                      <span className="health-status">{overviewData.health?.database?.status || "unknown"}</span>
+                    </div>
+                  </div>
+                  <div className={`health-card ${overviewData.health?.vertex_agent?.status === "connected" ? "healthy" : "warning"}`}>
+                    <FaRobot className="health-icon" />
+                    <div className="health-info">
+                      <h4>AI Agent</h4>
+                      <span className="health-status">{overviewData.health?.vertex_agent?.status || "unknown"}</span>
+                    </div>
+                  </div>
+                  <div className={`health-card ${overviewData.cache?.cache_stats?.l2_redis?.connected ? "healthy" : "warning"}`}>
+                    <FaServer className="health-icon" />
+                    <div className="health-info">
+                      <h4>Redis Cache</h4>
+                      <span className="health-status">{overviewData.cache?.cache_stats?.l2_redis?.connected ? "connected" : "offline"}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick Actions */}
+              <div className="overview-section">
+                <h3>Quick Actions</h3>
+                <div className="overview-actions">
+                  <button className="action-btn" onClick={() => setActiveTab("cloud-kb")}>
+                    <FaDatabase size={14} /> Manage Datastore
+                  </button>
+                  <button className="action-btn secondary" onClick={() => { handleClearCache(); }}>
+                    <FaTrash size={14} /> Clear Cache
+                  </button>
+                  <button className="action-btn" onClick={() => { setActiveTab("cloud-kb"); setTimeout(() => handleCloudKbSync(), 100); }}>
+                    <FaSync size={14} /> Sync Datastore
+                  </button>
+                </div>
+              </div>
+
+              {/* Knowledge Base Summary */}
+              {overviewData.kbStats && (
+                <div className="overview-section">
+                  <h3>Knowledge Base</h3>
+                  <div className="kb-stats-row">
+                    <div className="kb-stat-item">
+                      <span className="kb-stat-value">{overviewData.kbStats.total_documents}</span>
+                      <span className="kb-stat-label">Documents</span>
+                    </div>
+                    <div className="kb-stat-item">
+                      <span className="kb-stat-value">{formatBytes(overviewData.kbStats.total_size)}</span>
+                      <span className="kb-stat-label">Total Size</span>
+                    </div>
+                    <div className="kb-stat-item">
+                      <span className="kb-stat-value">
+                        {overviewData.kbStats.last_modified
+                          ? formatDate(overviewData.kbStats.last_modified)
+                          : "N/A"}
+                      </span>
+                      <span className="kb-stat-label">Last Updated</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* User Signups Chart (moved from Analytics) */}
+              {analytics && analytics.signups_by_day && (
+                <div className="overview-section">
+                  <h3>User Signups (Last 7 Days)</h3>
+                  <div className="chart-container">
+                    {analytics.signups_by_day.map((day, i) => (
+                      <div key={i} className="chart-bar-wrapper">
+                        <div className="chart-bar" style={{ height: `${Math.max(day.count * 30, 5)}px` }}>
+                          <span className="chart-value">{day.count}</span>
+                        </div>
+                        <span className="chart-label">{day.day}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="empty-state">Unable to load overview data</div>
+          )}
+        </div>
+      )}
 
       {/* =================== USERS TAB =================== */}
       {activeTab === "users" && (
@@ -907,6 +1348,159 @@ export default function AdminDashboard() {
                   ))}
                 </tbody>
               </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* =================== RESEARCH TAB =================== */}
+      {activeTab === "research" && (
+        <div className="tab-content">
+          <h2 style={{ marginBottom: "8px" }}>Auto-Research Agent</h2>
+          <p style={{ color: "var(--text-secondary)", marginBottom: "20px" }}>
+            Tracks questions the chatbot can't answer, researches answers from morgan.edu, and suggests KB updates.
+          </p>
+
+          {/* Stats */}
+          <div className="stats-grid" style={{ marginBottom: "20px" }}>
+            <div className="stat-card"><div className="stat-number">{researchStats.total_failed || 0}</div><div className="stat-label">Failed Queries</div></div>
+            <div className="stat-card"><div className="stat-number">{researchStats.pending_suggestions || 0}</div><div className="stat-label">Pending Review</div></div>
+            <div className="stat-card"><div className="stat-number">{researchStats.approved || 0}</div><div className="stat-label">Approved</div></div>
+            <div className="stat-card"><div className="stat-number">{researchStats.pushed || 0}</div><div className="stat-label">Pushed to KB</div></div>
+          </div>
+
+          {/* Actions */}
+          <div style={{ display: "flex", gap: "10px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
+            <button className="btn-primary" onClick={handleRunResearch} disabled={researchRunning} style={{ padding: "8px 20px" }}>
+              {researchRunning ? "Researching..." : "Run Research Now"}
+            </button>
+            <select value={suggestionFilter} onChange={(e) => { setSuggestionFilter(e.target.value); setTimeout(() => loadSuggestions(), 50); }} style={{ padding: "8px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", background: "var(--bg-body)", color: "var(--text-main)" }}>
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="rejected">Rejected</option>
+              <option value="pushed">Pushed to KB</option>
+              <option value="all">All</option>
+            </select>
+            <button onClick={() => { loadSuggestions(); loadResearchStats(); }} style={{ padding: "8px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", background: "transparent", color: "var(--text-main)", cursor: "pointer" }}>
+              Refresh
+            </button>
+            <button onClick={() => { setShowFailedQueries(!showFailedQueries); if (!showFailedQueries) loadFailedQueries(); }} style={{ padding: "8px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", marginLeft: "auto" }}>
+              {showFailedQueries ? "Hide" : "Show"} Failed Queries ({researchStats.total_failed || 0})
+            </button>
+          </div>
+
+          {/* Failed Queries (collapsible) */}
+          {showFailedQueries && (
+            <div style={{ marginBottom: "20px", background: "var(--bg-elevated)", borderRadius: "12px", padding: "16px", maxHeight: "300px", overflow: "auto" }}>
+              <h4 style={{ marginBottom: "10px" }}>Recent Failed Queries</h4>
+              {failedQueries.length === 0 ? <p style={{ color: "var(--text-secondary)" }}>No failed queries yet. Students haven't asked anything the bot couldn't answer.</p> :
+                failedQueries.map(q => (
+                  <div key={q.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--border-color)" }}>
+                    <div style={{ fontWeight: 500 }}>{q.user_query}</div>
+                    <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                      {q.status} | {new Date(q.created_at).toLocaleDateString()}
+                    </div>
+                  </div>
+                ))
+              }
+            </div>
+          )}
+
+          {/* Suggestions */}
+          <div>
+            <h3 style={{ marginBottom: "12px" }}>
+              KB Suggestions ({suggestions.length})
+            </h3>
+            {suggestions.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "40px", color: "var(--text-secondary)" }}>
+                {suggestionFilter === "pending" ? "No pending suggestions. Run research to generate some." : `No ${suggestionFilter} suggestions.`}
+              </div>
+            ) : (
+              suggestions.map(s => (
+                <div key={s.id} style={{ background: "var(--bg-elevated)", borderRadius: "12px", padding: "16px", marginBottom: "12px", border: "1px solid var(--border-color)" }}>
+                  {/* Header */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <h4 style={{ margin: 0 }}>{s.topic}</h4>
+                      <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "10px", background: s.confidence === "high" ? "#e8f5e9" : s.confidence === "medium" ? "#fff3e0" : "#ffebee", color: s.confidence === "high" ? "#2e7d32" : s.confidence === "medium" ? "#e65100" : "#c62828", fontWeight: 600 }}>
+                        {s.confidence} confidence
+                      </span>
+                      <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "10px", background: "#e3f2fd", color: "#1565c0", fontWeight: 600 }}>
+                        {s.query_count} student{s.query_count !== 1 ? "s" : ""} asked
+                      </span>
+                    </div>
+                    <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>{new Date(s.created_at).toLocaleDateString()}</span>
+                  </div>
+
+                  {/* Representative query */}
+                  <div style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "8px", fontStyle: "italic" }}>
+                    "{s.representative_query}"
+                  </div>
+
+                  {/* Researched answer (collapsible) */}
+                  <div style={{ marginBottom: "8px" }}>
+                    <button onClick={() => setExpandedSuggestion(expandedSuggestion === s.id ? null : s.id)} style={{ fontSize: "13px", color: "var(--accent-blue)", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                      {expandedSuggestion === s.id ? "Hide" : "Show"} researched answer
+                    </button>
+                    {expandedSuggestion === s.id && (
+                      <div style={{ marginTop: "8px", padding: "12px", background: "var(--bg-body)", borderRadius: "8px", fontSize: "13px", whiteSpace: "pre-wrap", maxHeight: "300px", overflow: "auto" }}>
+                        {s.researched_answer}
+                        {s.sources && s.sources.length > 0 && (
+                          <div style={{ marginTop: "10px", paddingTop: "8px", borderTop: "1px solid var(--border-color)" }}>
+                            <strong>Sources:</strong>
+                            {s.sources.map((url, i) => <div key={i}><a href={url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "12px", color: "var(--accent-blue)" }}>{url}</a></div>)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Target doc */}
+                  <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "10px" }}>
+                    Target KB doc: <strong>{s.suggested_doc_id || "new document"}</strong>
+                  </div>
+
+                  {/* Content Preview (editable before push) */}
+                  {(s.status === "pending" || s.status === "approved") && (
+                    <div style={{ marginBottom: "10px" }}>
+                      <div style={{ fontSize: "12px", fontWeight: 600, marginBottom: "4px", color: "var(--text-secondary)" }}>
+                        Content to be pushed to KB (editable):
+                      </div>
+                      <textarea
+                        defaultValue={s.suggested_content}
+                        id={`suggestion-content-${s.id}`}
+                        style={{
+                          width: "100%", minHeight: "120px", padding: "10px", borderRadius: "8px",
+                          border: "1px solid var(--border-color)", background: "var(--bg-body)",
+                          color: "var(--text-main)", fontSize: "13px", fontFamily: "monospace",
+                          resize: "vertical"
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {/* Actions */}
+                  {s.status === "pending" && (
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button onClick={() => {
+                        const content = document.getElementById(`suggestion-content-${s.id}`)?.value;
+                        if (content) handleSuggestionAction(s.id, "edit", { content });
+                        handleSuggestionAction(s.id, "approve");
+                      }} style={{ padding: "6px 16px", borderRadius: "8px", border: "none", background: "#4caf50", color: "white", cursor: "pointer", fontWeight: 500 }}>Approve</button>
+                      <button onClick={() => handleSuggestionAction(s.id, "reject")} style={{ padding: "6px 16px", borderRadius: "8px", border: "1px solid #ef5350", background: "transparent", color: "#ef5350", cursor: "pointer" }}>Reject</button>
+                    </div>
+                  )}
+                  {s.status === "approved" && (
+                    <button onClick={() => {
+                      const content = document.getElementById(`suggestion-content-${s.id}`)?.value;
+                      if (content) handleSuggestionAction(s.id, "edit", { content });
+                      setTimeout(() => handlePushSuggestion(s.id), 300);
+                    }} style={{ padding: "6px 16px", borderRadius: "8px", border: "none", background: "var(--accent-blue)", color: "white", cursor: "pointer", fontWeight: 500 }}>Push to KB</button>
+                  )}
+                  {s.status === "pushed" && <span style={{ color: "#4caf50", fontWeight: 500 }}>Pushed to KB</span>}
+                  {s.status === "rejected" && <span style={{ color: "#ef5350" }}>Rejected</span>}
+                </div>
+              ))
             )}
           </div>
         </div>
@@ -1011,259 +1605,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* =================== KNOWLEDGE BASE TAB =================== */}
-      {activeTab === "knowledge" && (
-        <div className="tab-content">
-          <div className="kb-header">
-            <h2>Knowledge Base Files</h2>
-            <p>Edit JSON files that power the chatbot's knowledge. Changes require re-ingestion.</p>
-          </div>
-
-          {/* Search Bar with Voice */}
-          <div className="kb-search-bar">
-            <div className="search-box-with-voice">
-              <div className="search-box">
-                <FaSearch size={14} />
-                <input
-                  type="text"
-                  placeholder="Search across all knowledge base files..."
-                  value={kbSearch}
-                  onChange={(e) => {
-                    setKbSearch(e.target.value);
-                    searchKnowledgeBase(e.target.value);
-                  }}
-                />
-                {kbSearch && (
-                  <button className="clear-search" onClick={() => { setKbSearch(""); setKbSearchResults([]); setHighlightTerm(""); }}>
-                    <FaTimes size={12} />
-                  </button>
-                )}
-              </div>
-              {voiceSupported && (
-                <button
-                  className={`voice-search-btn ${isListening ? "listening" : ""}`}
-                  onClick={isListening ? stopVoiceSearch : startVoiceSearch}
-                  title={isListening ? "Stop listening" : "Voice search - speak to search"}
-                >
-                  {isListening ? (
-                    <>
-                      <FaStop size={18} />
-                      <span>Listening...</span>
-                    </>
-                  ) : (
-                    <>
-                      <FaMicrophone size={18} />
-                      <span>Voice Search</span>
-                    </>
-                  )}
-                </button>
-              )}
-            </div>
-            {isListening && (
-              <div className="voice-listening-indicator">
-                <span className="pulse-dot"></span>
-                <span>Speak now... (e.g., "Find Paul Wang phone number")</span>
-              </div>
-            )}
-          </div>
-
-          {/* Search Results Summary */}
-          {kbSearchResults.length > 0 && (
-            <div className="kb-search-summary">
-              <span className="search-summary-text">
-                Found <strong>{kbSearchResults.length}</strong> matches in <strong>{matchedFiles.length}</strong> files for "<strong>{kbSearch}</strong>"
-              </span>
-              <button className="clear-search-btn" onClick={() => {
-                setKbSearch("");
-                setKbSearchResults([]);
-                setMatchedFiles([]);
-                setShowMatchedFiles(false);
-                setFindText("");
-                setShowFindReplace(false);
-              }}>
-                <FaTimes size={12} /> Clear Search
-              </button>
-            </div>
-          )}
-
-          <div className={`kb-layout ${showMatchedFiles ? "with-matches" : ""}`}>
-            {/* Matched Files Sidebar - Shows when searching */}
-            {showMatchedFiles && matchedFiles.length > 0 && (
-              <div className="kb-matched-files">
-                <h3>
-                  <FaSearch size={14} /> Matched Files ({matchedFiles.length})
-                </h3>
-                {matchedFiles.map((file) => (
-                  <div
-                    key={file.filename}
-                    className={`matched-file-item ${selectedKbFile === file.filename ? "active" : ""}`}
-                    onClick={() => {
-                      setSelectedKbFile(file.filename);
-                      setFindText(kbSearch);
-                      setShowFindReplace(true);
-                      loadKbFileContent(file.filename);
-                    }}
-                  >
-                    <span className="matched-filename">{file.filename}</span>
-                    <span className="match-badge">{file.matchCount} {file.matchCount === 1 ? 'match' : 'matches'}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Regular Files Sidebar */}
-            <div className="kb-sidebar">
-              <h3>All Files ({kbFiles.length})</h3>
-              {kbFiles.map((file) => (
-                <div
-                  key={file.filename}
-                  className={`kb-file-item ${selectedKbFile === file.filename ? "active" : ""}`}
-                  onClick={() => {
-                    setSelectedKbFile(file.filename);
-                    loadKbFileContent(file.filename);
-                    // Clear find if not from search
-                    if (!showMatchedFiles) {
-                      setFindText("");
-                      setShowFindReplace(false);
-                    }
-                  }}
-                >
-                  <span className="kb-filename">{file.filename}</span>
-                  <span className="kb-filesize">{formatBytes(file.size)}</span>
-                </div>
-              ))}
-            </div>
-
-            <div className="kb-editor">
-              {selectedKbFile ? (
-                <>
-                  <div className="kb-editor-header">
-                    <h3>{selectedKbFile}</h3>
-                    <div className="kb-editor-actions">
-                      <button
-                        className={`action-btn ${showFindReplace ? "active" : ""}`}
-                        onClick={() => setShowFindReplace(!showFindReplace)}
-                        title="Find & Replace (Ctrl+H)"
-                      >
-                        <FaSearch size={14} /> Find & Replace
-                      </button>
-                      <button className="action-btn save-btn" onClick={handleSaveKbFile} disabled={kbLoading}>
-                        <FaSave size={14} /> Save Changes
-                      </button>
-                      <button className="action-btn secondary" onClick={handleTriggerIngestion} disabled={ingesting}>
-                        <FaSync size={14} className={ingesting ? "spinning" : ""} /> {ingesting ? "Ingesting..." : "Re-ingest All"}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Find & Replace Toolbar */}
-                  {showFindReplace && (
-                    <div className="find-replace-toolbar">
-                      <div className="find-replace-row">
-                        <label>Find:</label>
-                        <input
-                          type="text"
-                          value={findText}
-                          onChange={(e) => setFindText(e.target.value)}
-                          placeholder="Search text..."
-                          onKeyDown={(e) => e.key === 'Enter' && findNextMatch()}
-                        />
-                        <span className="match-counter">
-                          {matchCount > 0 ? `${currentMatchIndex || 1} of ${matchCount}` : "No matches"}
-                        </span>
-                        <button onClick={findPrevMatch} disabled={matchCount === 0} title="Previous match">
-                          ▲
-                        </button>
-                        <button onClick={findNextMatch} disabled={matchCount === 0} title="Next match">
-                          ▼
-                        </button>
-                      </div>
-                      <div className="find-replace-row">
-                        <label>Replace:</label>
-                        <input
-                          type="text"
-                          value={replaceText}
-                          onChange={(e) => setReplaceText(e.target.value)}
-                          placeholder="Replace with..."
-                          onKeyDown={(e) => e.key === 'Enter' && replaceCurrentMatch()}
-                        />
-                        <button onClick={replaceCurrentMatch} disabled={matchCount === 0} className="replace-btn">
-                          Replace
-                        </button>
-                        <button onClick={replaceAllMatches} disabled={matchCount === 0} className="replace-all-btn">
-                          Replace All
-                        </button>
-                      </div>
-                      <button className="close-find-replace" onClick={() => setShowFindReplace(false)}>
-                        <FaTimes size={12} />
-                      </button>
-                    </div>
-                  )}
-
-                  {kbLoading ? (
-                    <div className="loading-state">Loading file...</div>
-                  ) : (
-                    <div className="kb-editor-container">
-                      {/* Highlighted backdrop - shows yellow highlights */}
-                      {findText && (
-                        <div
-                          ref={highlightRef}
-                          className="kb-highlight-backdrop"
-                          dangerouslySetInnerHTML={{ __html: getHighlightedContent() }}
-                        />
-                      )}
-                      {/* Editable textarea on top */}
-                      <textarea
-                        ref={textareaRef}
-                        className={`kb-textarea ${findText ? "with-highlights" : ""}`}
-                        value={kbContent}
-                        onChange={(e) => setKbContent(e.target.value)}
-                        onScroll={handleTextareaScroll}
-                        spellCheck={false}
-                      />
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="kb-placeholder">Select a file to edit</div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* =================== ANALYTICS TAB =================== */}
-      {activeTab === "analytics" && (
-        <div className="tab-content">
-          {analyticsLoading ? (
-            <div className="loading-state">Loading analytics...</div>
-          ) : analytics ? (
-            <>
-              <div className="ticket-stats">
-                <div className="stat-card total"><FaUsers className="stat-icon" /><span className="stat-number">{analytics.total_users}</span><span className="stat-label">Total Users</span></div>
-                <div className="stat-card open"><FaTicketAlt className="stat-icon" /><span className="stat-number">{analytics.total_tickets}</span><span className="stat-label">Total Tickets</span></div>
-                <div className="stat-card progress"><FaExclamationCircle className="stat-icon" /><span className="stat-number">{analytics.open_tickets}</span><span className="stat-label">Open Tickets</span></div>
-              </div>
-
-              <div className="analytics-section">
-                <h3>User Signups (Last 7 Days)</h3>
-                <div className="chart-container">
-                  {analytics.signups_by_day?.map((day, i) => (
-                    <div key={i} className="chart-bar-wrapper">
-                      <div className="chart-bar" style={{ height: `${Math.max(day.count * 30, 5)}px` }}>
-                        <span className="chart-value">{day.count}</span>
-                      </div>
-                      <span className="chart-label">{day.day}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="empty-state">No analytics data available</div>
-          )}
-        </div>
-      )}
+      {/* Analytics merged into Overview tab */}
 
       {/* =================== FEEDBACK TAB =================== */}
       {activeTab === "feedback" && (
@@ -1343,6 +1685,302 @@ export default function AdminDashboard() {
       )}
 
       {/* =================== SYSTEM TAB =================== */}
+      {/* =================== CLOUD KB / DATASTORE TAB =================== */}
+      {activeTab === "cloud-kb" && (
+        <div className="tab-content">
+          <div className="kb-header">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div>
+                <h2>Cloud Datastore</h2>
+                <p>Manage documents in the Vertex AI Search datastore. Changes auto-clear cache for instant sync.</p>
+              </div>
+              <div className="kb-stats-row" style={{ marginBottom: 0 }}>
+                <div className="kb-stat-item compact">
+                  <span className="kb-stat-value">{cloudKbStats.total_documents}</span>
+                  <span className="kb-stat-label">Docs</span>
+                </div>
+                <div className="kb-stat-item compact">
+                  <span className="kb-stat-value">{formatBytes(cloudKbStats.total_size)}</span>
+                  <span className="kb-stat-label">Size</span>
+                </div>
+                <div className="kb-stat-item compact">
+                  <span className="kb-stat-value">{cloudKbStats.last_modified ? new Date(cloudKbStats.last_modified).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "N/A"}</span>
+                  <span className="kb-stat-label">Updated</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Drag & Drop Zone */}
+          <div
+            className={`kb-drop-zone ${cloudKbDragActive ? "active" : ""}`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            <FaCloudUploadAlt size={24} />
+            <span>Drag & drop files here to upload to datastore</span>
+            <span className="drop-hint">.txt, .pdf, .html, .csv, .json</span>
+          </div>
+
+          {/* Search Bar */}
+          <div className="kb-search-bar">
+            <div className="search-box-with-voice">
+              <div className="search-box">
+                <FaSearch size={14} />
+                <input
+                  type="text"
+                  placeholder="Search across all cloud KB documents..."
+                  value={kbSearch}
+                  onChange={(e) => handleCloudKbSearch(e.target.value)}
+                />
+                {kbSearch && (
+                  <button className="clear-search" onClick={() => { setKbSearch(""); setFindText(""); setShowFindReplace(false); setCloudKbSearchResults(null); }}>
+                    <FaTimes size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Search Results Summary */}
+          {cloudKbSearchResults !== null && kbSearch && (
+            <div className="kb-search-summary">
+              <span className="search-summary-text">
+                {cloudKbSearching ? "Searching..." : (
+                  <>Found matches in <strong>{cloudKbSearchResults.length}</strong> files for "<strong>{kbSearch}</strong>"</>
+                )}
+              </span>
+            </div>
+          )}
+
+          {message && <p className="message" style={{ margin: "8px 0" }}>{message}</p>}
+          {cloudKbUploading && <div className="loading-state">Uploading document...</div>}
+
+          <div className="kb-layout">
+            {/* Document List Sidebar */}
+            <div className="kb-sidebar">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                <h3>{cloudKbSearchResults !== null && kbSearch
+                  ? `Matches (${cloudKbSearchResults.length})`
+                  : `Documents (${cloudKbDocs.length})`
+                }</h3>
+                <div style={{ display: "flex", gap: "4px" }}>
+                  <button className="action-btn" onClick={loadCloudKbDocs} disabled={cloudKbLoading} title="Refresh" style={{ padding: "4px 8px" }}>
+                    <FaSync size={12} className={cloudKbLoading ? "spinning" : ""} />
+                  </button>
+                  <label className="action-btn" style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "4px", padding: "4px 8px" }} title="Upload new document">
+                    <FaCalendarPlus size={12} />
+                    <input type="file" ref={cloudKbFileRef} accept=".txt,.pdf,.html,.csv,.json" onChange={handleCloudKbUpload} style={{ display: "none" }} />
+                  </label>
+                </div>
+              </div>
+              {cloudKbLoading || cloudKbSearching ? (
+                <div className="loading-state">{cloudKbSearching ? "Searching..." : "Loading..."}</div>
+              ) : cloudKbSearchResults !== null && kbSearch ? (
+                // Show only matched files when searching
+                cloudKbSearchResults.length === 0 ? (
+                  <div className="empty-state">No matches found</div>
+                ) : (
+                  cloudKbSearchResults.map((result) => {
+                    // Find matching doc from full list to get the id
+                    const doc = cloudKbDocs.find(d => d.filename === result.filename) || { id: result.filename, filename: result.filename, uri: result.uri, size: result.size };
+                    return (
+                      <div
+                        key={result.filename}
+                        className={`kb-file-item ${cloudKbSelected?.filename === result.filename ? "active" : ""}`}
+                        onClick={() => {
+                          loadCloudKbContent(doc);
+                          setFindText(kbSearch);
+                          setShowFindReplace(true);
+                        }}
+                      >
+                        <span className="kb-filename">{formatDocName(result.filename)}</span>
+                        <span className="match-badge" style={{ background: "#e8f0fe", color: "#1a73e8", borderRadius: "10px", padding: "1px 8px", fontSize: "11px", fontWeight: 600 }}>
+                          {result.match_count} {result.match_count === 1 ? "match" : "matches"}
+                        </span>
+                      </div>
+                    );
+                  })
+                )
+              ) : (
+                // Show all files when not searching
+                cloudKbDocs.map((doc) => (
+                  <div
+                    key={doc.id}
+                    className={`kb-file-item ${cloudKbSelected?.id === doc.id ? "active" : ""}`}
+                    onClick={() => loadCloudKbContent(doc)}
+                  >
+                    <div style={{ display: "flex", flexDirection: "column", gap: "2px", flex: 1, minWidth: 0 }}>
+                      <span className="kb-filename">{formatDocName(doc.filename)}</span>
+                      <span style={{
+                        fontSize: "10px",
+                        padding: "1px 6px",
+                        borderRadius: "8px",
+                        width: "fit-content",
+                        background: getCategoryColor(doc.id).bg,
+                        color: getCategoryColor(doc.id).color,
+                        fontWeight: 600
+                      }}>{getCategoryColor(doc.id).label}</span>
+                    </div>
+                    <span className="kb-filesize">{doc.size > 0 ? formatBytes(doc.size) : ""}</span>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Document Editor */}
+            <div className="kb-editor">
+              {cloudKbSelected ? (
+                <>
+                  <div className="kb-editor-header">
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <h3 style={{ margin: 0 }}>{formatDocName(cloudKbSelected.filename)}</h3>
+                      <span style={{
+                        fontSize: "11px",
+                        padding: "2px 8px",
+                        borderRadius: "10px",
+                        background: getCategoryColor(cloudKbSelected.id).bg,
+                        color: getCategoryColor(cloudKbSelected.id).color,
+                        fontWeight: 600
+                      }}>{getCategoryColor(cloudKbSelected.id).label}</span>
+                    </div>
+                    <div className="kb-editor-actions">
+                      <button
+                        className={`kb-icon-btn ${showFindReplace ? "active" : ""}`}
+                        onClick={() => setShowFindReplace(!showFindReplace)}
+                        title="Find & Replace"
+                      >
+                        <FaSearch size={13} />
+                      </button>
+                      {cloudKbEditing ? (
+                        <>
+                          <button className="kb-icon-btn save" onClick={handleCloudKbSave} title="Save to Cloud">
+                            <FaSave size={13} />
+                          </button>
+                          <button className="kb-icon-btn" onClick={() => { setCloudKbEditing(false); }} title="Cancel editing">
+                            <FaTimes size={13} />
+                          </button>
+                        </>
+                      ) : (
+                        <button className="kb-icon-btn" onClick={() => { setCloudKbEditing(true); setCloudKbEditContent(cloudKbContent); }} title="Edit document">
+                          <FaEdit size={13} />
+                        </button>
+                      )}
+                      <button className="kb-icon-btn" onClick={handleCloudKbSync} disabled={cloudKbSyncing} title="Re-sync datastore">
+                        <FaSync size={13} className={cloudKbSyncing ? "spinning" : ""} />
+                      </button>
+                      <button className="kb-icon-btn danger" onClick={() => handleCloudKbDelete(cloudKbSelected)} title="Delete document">
+                        <FaTrash size={13} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Find & Replace Toolbar */}
+                  {showFindReplace && (
+                    <div className="find-replace-toolbar">
+                      <div className="find-replace-row">
+                        <label>Find:</label>
+                        <input
+                          type="text"
+                          value={findText}
+                          onChange={(e) => setFindText(e.target.value)}
+                          placeholder="Search text..."
+                          onKeyDown={(e) => e.key === 'Enter' && findNextMatch()}
+                        />
+                        <span className="match-counter">
+                          {matchCount > 0 ? `${currentMatchIndex || 1} of ${matchCount}` : "No matches"}
+                        </span>
+                        <button onClick={findPrevMatch} disabled={matchCount === 0} title="Previous match">
+                          &#9650;
+                        </button>
+                        <button onClick={findNextMatch} disabled={matchCount === 0} title="Next match">
+                          &#9660;
+                        </button>
+                      </div>
+                      {cloudKbEditing && (
+                        <div className="find-replace-row">
+                          <label>Replace:</label>
+                          <input
+                            type="text"
+                            value={replaceText}
+                            onChange={(e) => setReplaceText(e.target.value)}
+                            placeholder="Replace with..."
+                            onKeyDown={(e) => e.key === 'Enter' && replaceCurrentMatch()}
+                          />
+                          <button onClick={replaceCurrentMatch} disabled={matchCount === 0} className="replace-btn">
+                            Replace
+                          </button>
+                          <button onClick={replaceAllMatches} disabled={matchCount === 0} className="replace-all-btn">
+                            Replace All
+                          </button>
+                        </div>
+                      )}
+                      <button className="close-find-replace" onClick={() => setShowFindReplace(false)}>
+                        <FaTimes size={12} />
+                      </button>
+                    </div>
+                  )}
+
+                  {cloudKbContent === "Loading..." ? (
+                    <div className="loading-state">Loading file...</div>
+                  ) : cloudKbEditing ? (
+                    <div className="kb-editor-container">
+                      {findText && (
+                        <div
+                          ref={highlightRef}
+                          className="kb-highlight-backdrop"
+                          dangerouslySetInnerHTML={{ __html: getHighlightedContent() }}
+                        />
+                      )}
+                      <textarea
+                        ref={textareaRef}
+                        className={`kb-textarea ${findText ? "with-highlights" : ""}`}
+                        value={cloudKbEditContent}
+                        onChange={(e) => setCloudKbEditContent(e.target.value)}
+                        onScroll={handleTextareaScroll}
+                        spellCheck={false}
+                      />
+                    </div>
+                  ) : (
+                    <div className="kb-editor-container">
+                      {findText ? (
+                        <div
+                          ref={textareaRef}
+                          className="kb-textarea"
+                          style={{
+                            whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "monospace",
+                            fontSize: "13px", background: "#f8f9fa", padding: "16px", borderRadius: "6px",
+                            border: "1px solid #e0e0e0", overflow: "auto", lineHeight: "1.5",
+                            height: "100%", margin: 0
+                          }}
+                          dangerouslySetInnerHTML={{ __html: getHighlightedContent() }}
+                        />
+                      ) : (
+                        <pre
+                          ref={textareaRef}
+                          className="kb-textarea"
+                          style={{
+                            whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "monospace",
+                            fontSize: "13px", background: "#f8f9fa", padding: "16px", borderRadius: "6px",
+                            border: "1px solid #e0e0e0", overflow: "auto", lineHeight: "1.5",
+                            height: "100%", margin: 0
+                          }}
+                        >
+                          {cloudKbContent}
+                        </pre>
+                      )}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="kb-placeholder">Select a document to view or edit</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {activeTab === "system" && (
         <div className="tab-content">
           <div className="system-header">
@@ -1364,33 +2002,131 @@ export default function AdminDashboard() {
                   </div>
                 </div>
 
-                <div className={`health-card ${healthStatus.pinecone?.status === "connected" ? "healthy" : healthStatus.pinecone?.status === "not_configured" ? "warning" : "error"}`}>
-                  <FaServer className="health-icon" />
+                <div className={`health-card ${healthStatus.vertex_agent?.status === "connected" ? "healthy" : healthStatus.vertex_agent?.status === "not_configured" ? "warning" : "error"}`}>
+                  <FaRobot className="health-icon" />
                   <div className="health-info">
-                    <h4>Pinecone Vector DB</h4>
-                    <span className="health-status">{healthStatus.pinecone?.status}</span>
-                    <p>{healthStatus.pinecone?.message}</p>
-                    {healthStatus.vector_count > 0 && <p className="vector-count">{healthStatus.vector_count.toLocaleString()} vectors</p>}
+                    <h4>Vertex AI Agent (ADK)</h4>
+                    <span className="health-status">{healthStatus.vertex_agent?.status}</span>
+                    <p>{healthStatus.vertex_agent?.message}</p>
                   </div>
                 </div>
 
-                <div className={`health-card ${healthStatus.openai?.status === "configured" ? "healthy" : "warning"}`}>
-                  <FaLightbulb className="health-icon" />
+                <div className={`health-card ${healthStatus.openai_tts?.status === "configured" ? "healthy" : "warning"}`}>
+                  <FaMicrophone className="health-icon" />
                   <div className="health-info">
-                    <h4>OpenAI API</h4>
-                    <span className="health-status">{healthStatus.openai?.status}</span>
-                    <p>{healthStatus.openai?.message}</p>
+                    <h4>OpenAI TTS</h4>
+                    <span className="health-status">{healthStatus.openai_tts?.status}</span>
+                    <p>{healthStatus.openai_tts?.message}</p>
                   </div>
                 </div>
+
+                {healthStatus.mode && (
+                  <div className="health-card healthy">
+                    <FaServer className="health-icon" />
+                    <div className="health-info">
+                      <h4>AI Mode</h4>
+                      <span className="health-status">{healthStatus.mode === "vertex_ai" ? "Google ADK" : "Legacy RAG"}</span>
+                      <p>{healthStatus.mode === "vertex_ai" ? "Vertex AI Search + Gemini 2.0 Flash" : "Pinecone + OpenAI GPT-3.5"}</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Cache Management Section */}
+              <div className="cache-management">
+                <div className="system-header" style={{ marginTop: 32 }}>
+                  <h2>Cache Management</h2>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button className="action-btn" onClick={loadCacheStats} disabled={cacheLoading}>
+                      <FaSync size={14} className={cacheLoading ? "spinning" : ""} /> Refresh
+                    </button>
+                    <button className="action-btn danger" onClick={handleClearCache} disabled={cacheClearing}>
+                      <FaTrash size={14} /> {cacheClearing ? "Clearing..." : "Clear All Cache"}
+                    </button>
+                  </div>
+                </div>
+
+                {cacheStats?.cache_stats ? (
+                  <div className="cache-stats-grid">
+                    <div className="cache-tier-card">
+                      <h4>Overall</h4>
+                      <div className="cache-stat-row">
+                        <span>Hit Rate</span>
+                        <strong>{cacheStats.cache_stats.overall?.hit_rate || "0%"}</strong>
+                      </div>
+                      <div className="cache-stat-row">
+                        <span>Total Hits</span>
+                        <strong>{cacheStats.cache_stats.overall?.total_hits || 0}</strong>
+                      </div>
+                      <div className="cache-stat-row">
+                        <span>Total Misses</span>
+                        <strong>{cacheStats.cache_stats.overall?.total_misses || 0}</strong>
+                      </div>
+                      <div className="cache-stat-row">
+                        <span>Skipped (Personal)</span>
+                        <strong>{cacheStats.cache_stats.overall?.skipped || 0}</strong>
+                      </div>
+                    </div>
+                    <div className="cache-tier-card">
+                      <h4>L1 (In-Memory)</h4>
+                      <div className="cache-stat-row">
+                        <span>Entries</span>
+                        <strong>{cacheStats.cache_stats.l1_inmemory?.size || 0} / {cacheStats.cache_stats.l1_inmemory?.max_size || 500}</strong>
+                      </div>
+                      <div className="cache-stat-row">
+                        <span>Hit Rate</span>
+                        <strong>{cacheStats.cache_stats.l1_inmemory?.hit_rate || "0%"}</strong>
+                      </div>
+                    </div>
+                    <div className="cache-tier-card">
+                      <h4>L2 (Redis)</h4>
+                      <div className="cache-stat-row">
+                        <span>Connected</span>
+                        <strong style={{ color: cacheStats.cache_stats.l2_redis?.connected ? "#22C55E" : "#EF4444" }}>
+                          {cacheStats.cache_stats.l2_redis?.connected ? "Yes" : "No"}
+                        </strong>
+                      </div>
+                      <div className="cache-stat-row">
+                        <span>Entries</span>
+                        <strong>{cacheStats.cache_stats.l2_redis?.size ?? "N/A"}</strong>
+                      </div>
+                      <div className="cache-stat-row">
+                        <span>Hit Rate</span>
+                        <strong>{cacheStats.cache_stats.l2_redis?.hit_rate || "0%"}</strong>
+                      </div>
+                    </div>
+                    <div className="cache-tier-card">
+                      <h4>Semantic</h4>
+                      <div className="cache-stat-row">
+                        <span>Available</span>
+                        <strong style={{ color: cacheStats.cache_stats.semantic?.available ? "#22C55E" : "#EF4444" }}>
+                          {cacheStats.cache_stats.semantic?.available ? "Yes" : "No"}
+                        </strong>
+                      </div>
+                      <div className="cache-stat-row">
+                        <span>Index</span>
+                        <strong>{cacheStats.cache_stats.semantic?.index_size || 0} / {cacheStats.cache_stats.semantic?.max_entries || 200}</strong>
+                      </div>
+                      <div className="cache-stat-row">
+                        <span>Hit Rate</span>
+                        <strong>{cacheStats.cache_stats.semantic?.hit_rate || "0%"}</strong>
+                      </div>
+                      <div className="cache-stat-row">
+                        <span>Threshold</span>
+                        <strong>{cacheStats.cache_stats.semantic?.threshold || 0.78}</strong>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="empty-state">No cache data. Click Refresh to load.</div>
+                )}
               </div>
 
               <div className="system-actions">
                 <h3>Quick Actions</h3>
                 <div className="action-buttons">
-                  <button className="action-btn" onClick={handleReingest}><FaSync size={14} /> Re-ingest Data</button>
-                  <button className="action-btn danger" onClick={handleClearIndex}><FaTrash size={14} /> Clear Index</button>
+                  <button className="action-btn" onClick={handleReingest}><FaSync size={14} /> Re-ingest KB Docs</button>
                 </div>
-                {message && <p className="message">{message}</p>}
               </div>
             </>
           ) : (
@@ -1454,7 +2190,31 @@ export default function AdminDashboard() {
                 <span className="ticket-date"><FaClock size={12} />{formatDateTime(selectedTicket.created_at)}</span>
               </div>
               <div className="modal-description"><h4>Description</h4><p>{selectedTicket.description}</p></div>
-              {selectedTicket.attachment_name && <div className="modal-attachment"><h4>Attachment</h4><span>{selectedTicket.attachment_name}</span></div>}
+              {selectedTicket.attachment_name && (
+                <div className="modal-attachment">
+                  <h4>Attachment</h4>
+                  {selectedTicket.attachment_data ? (
+                    <>
+                      {/\.(png|jpg|jpeg|gif|webp)$/i.test(selectedTicket.attachment_name) ? (
+                        <img
+                          src={selectedTicket.attachment_data.startsWith('data:') ? selectedTicket.attachment_data : `data:image/png;base64,${selectedTicket.attachment_data}`}
+                          alt={selectedTicket.attachment_name}
+                          style={{ maxWidth: '100%', maxHeight: '400px', borderRadius: '8px', marginBottom: '8px', border: '1px solid var(--border-color)' }}
+                        />
+                      ) : null}
+                      <a
+                        href={selectedTicket.attachment_data.startsWith('data:') ? selectedTicket.attachment_data : `data:application/octet-stream;base64,${selectedTicket.attachment_data}`}
+                        download={selectedTicket.attachment_name}
+                        style={{ display: 'inline-block', padding: '6px 14px', background: 'var(--msu-blue)', color: '#fff', borderRadius: '6px', fontSize: '0.85rem', textDecoration: 'none' }}
+                      >
+                        Download {selectedTicket.attachment_name}
+                      </a>
+                    </>
+                  ) : (
+                    <span>{selectedTicket.attachment_name}</span>
+                  )}
+                </div>
+              )}
               <div className="modal-actions">
                 <h4>Update Status</h4>
                 <div className="status-buttons">

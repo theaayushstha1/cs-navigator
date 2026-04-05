@@ -12,16 +12,16 @@ load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-print(f"📁 BASE_DIR: {BASE_DIR}")
-print(f"📁 PROJECT_ROOT: {PROJECT_ROOT}")
-print(f"🔌 CONNECTING TO DATABASE: {DATABASE_URL}")
+print(f"[DIR] BASE_DIR: {BASE_DIR}")
+print(f"[DIR] PROJECT_ROOT: {PROJECT_ROOT}")
+print(f" CONNECTING TO DATABASE: {'***' if DATABASE_URL else 'NOT SET'}")
 
 if not DATABASE_URL:
     # Fallback to SQLite if DATABASE_URL is not set
     DATABASE_URL = "sqlite:///./cs_chatbot.db"
-    print(f"❌ ERROR: DATABASE_URL is missing. Using SQLite fallback: {DATABASE_URL}")
+    print(f"[ERROR] ERROR: DATABASE_URL is missing. Using SQLite fallback: {DATABASE_URL}")
 else:
-    print(f"✅ DATABASE_URL loaded successfully!")
+    print(f"[OK] DATABASE_URL loaded successfully!")
 
 engine = create_engine(
     DATABASE_URL,

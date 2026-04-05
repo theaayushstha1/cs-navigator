@@ -1,131 +1,209 @@
-# CS Navigator
-
-**An AI-Powered Academic Assistant for University Students**
-
-CS Navigator is a full-stack RAG (Retrieval-Augmented Generation) chatbot that helps Computer Science students at Morgan State University navigate their academic journey. It answers questions about courses, degree requirements, campus resources, and career guidance using AI-powered semantic search.
-
----
-
-## Demo
-
-**Live Application:** (https://inavigator.ai/trychat)
-
----
-
-## System Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         CLIENT LAYER                                │
-│  ┌─────────────┐                                                   │
-│  │   React     │  Single Page Application (Vite + Tailwind CSS)    │
-│  │   Frontend  │  Voice input/output, Multi-session chat           │
-│  └──────┬──────┘                                                   │
-└─────────┼───────────────────────────────────────────────────────────┘
-          │ HTTPS
-┌─────────┼───────────────────────────────────────────────────────────┐
-│         ▼              APPLICATION LAYER                            │
-│  ┌─────────────┐     ┌─────────────────────────────────────────┐   │
-│  │   Nginx     │────▶│          FastAPI Backend                │   │
-│  │   Proxy     │     │  - JWT Authentication                   │   │
-│  └─────────────┘     │  - REST API (25+ endpoints)             │   │
-│                      │  - File upload handling                 │   │
-│                      └──────────────┬──────────────────────────┘   │
-└─────────────────────────────────────┼───────────────────────────────┘
-                                      │
-┌─────────────────────────────────────┼───────────────────────────────┐
-│                        AI/ML LAYER  │                               │
-│  ┌──────────────────────────────────▼─────────────────────────┐    │
-│  │                    LangChain RAG Pipeline                   │    │
-│  │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │    │
-│  │  │   Query     │───▶│   Vector    │───▶│   Context   │     │    │
-│  │  │   Embedding │    │   Search    │    │   Assembly  │     │    │
-│  │  └─────────────┘    └─────────────┘    └──────┬──────┘     │    │
-│  │                                               │             │    │
-│  │                                        ┌──────▼──────┐      │    │
-│  │                                        │   OpenAI    │      │    │
-│  │                                        │   GPT-3.5   │      │    │
-│  │                                        └─────────────┘      │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────┐
-│                          DATA LAYER                                 │
-│  ┌─────────────────┐          ┌─────────────────┐                  │
-│  │  AWS RDS MySQL  │          │ Pinecone Vector │                  │
-│  │  - Users        │          │ Database        │                  │
-│  │  - Chat History │          │ - 11 Knowledge  │                  │
-│  │  - Sessions     │          │   Sources       │                  │
-│  │  - DegreeWorks  │          │ - Semantic      │                  │
-│  └─────────────────┘          │   Embeddings    │                  │
-│                               └─────────────────┘                  │
-└─────────────────────────────────────────────────────────────────────┘
-```
+<h1 align="center">CS Navigator</h1>
+<p align="center"><strong>AI-Powered Academic Advising for Morgan State University</strong></p>
+<p align="center">
+  <a href="https://cs.inavigator.ai">Live App</a> |
+  <a href="https://api.inavigator.ai/docs">API Docs</a> |
+  <a href="#architecture">Architecture</a> |
+  <a href="#version-history">Version History</a>
+</p>
+<p align="center">
+  <img src="https://img.shields.io/badge/version-5.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/status-production-green" alt="Status">
+  <img src="https://img.shields.io/badge/tests-409%20passed%20(95.4%25)-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/deploy-Google%20Cloud%20Run-4285F4" alt="Deploy">
+  <img src="https://img.shields.io/badge/AI-Google%20ADK%20%2B%20Gemini-orange" alt="AI">
+</p>
 
 ---
 
-## How RAG Works
+CS Navigator is a production AI chatbot serving 800+ CS students at Morgan State University. Students ask questions in plain English and get personalized answers grounded in the department's knowledge base, their DegreeWorks academic record, and Canvas LMS grades.
 
-```
-User Question: "What are the prerequisites for COSC 311?"
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 1. EMBED: Convert question to 1536-dimensional vector       │
-│    using OpenAI text-embedding-3-small                      │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 2. RETRIEVE: Search Pinecone for semantically similar       │
-│    documents (top 5 matches from knowledge base)            │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 3. AUGMENT: Combine retrieved context with user question    │
-│    into a structured prompt                                 │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 4. GENERATE: Send to GPT-3.5 to produce grounded response   │
-│    based on actual university data                          │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-Answer: "COSC 311 (Data Structures) requires COSC 211
-        (Object-Oriented Programming) and MATH 241..."
+Built with Google ADK (Agent Development Kit), Gemini 2.5 Flash, and Vertex AI Search. Deployed on Google Cloud Run with multi-instance scaling, database-backed session persistence, and a 3-tier caching system.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph Client["Frontend (React 19 + Vite)"]
+        UI[Chat Interface]
+        SSE[SSE Streaming]
+    end
+
+    subgraph Backend["Backend (FastAPI)"]
+        API[REST API / 80+ endpoints]
+        QR[3-Layer Query Rewriter]
+        Cache[L1 Memory + L2 Redis + L3 Semantic]
+        CTX[Course Context Engine]
+        RES[Self-Healing Research Agent]
+    end
+
+    subgraph ADK["ADK Agent (Cloud Run)"]
+        Agent[CS Navigator Agent]
+        VAS[Vertex AI Search]
+        KB[(Knowledge Base\n51 JSON docs)]
+        SDB[(Session DB\nRDS MySQL)]
+    end
+
+    subgraph Data["Data Layer"]
+        RDS[(AWS RDS MySQL\nUsers, Chat, DW)]
+        Redis[(Redis Cloud\n24hr Cache)]
+        Canvas[Canvas LMS API]
+        DW[DegreeWorks]
+    end
+
+    UI -->|HTTPS| API
+    API -->|Check| Cache
+    Cache -->|Miss| QR
+    QR -->|Rewritten Query| Agent
+    Agent -->|Search| VAS
+    VAS -->|Grounded Response| KB
+    Agent -->|Read/Write| SDB
+    API -->|Fetch| RDS
+    API -->|Fetch| Canvas
+    API -->|Fetch| DW
+    CTX -->|Inject| Agent
+    RES -->|Overnight| KB
+
+    style Client fill:#e3f2fd,stroke:#1565c0
+    style Backend fill:#e8f5e9,stroke:#2e7d32
+    style ADK fill:#fff3e0,stroke:#e65100
+    style Data fill:#fce4ec,stroke:#c62828
 ```
 
 ---
 
-## Technology Stack
+## Tech Stack
 
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| Frontend | React 19 + Vite | Fast, modern SPA |
-| Styling | Tailwind CSS | Utility-first CSS |
-| Backend | FastAPI (Python 3.11) | High-performance API |
-| Database | AWS RDS MySQL | User data, chat history |
-| Vector DB | Pinecone | Semantic search |
-| AI Model | OpenAI GPT-3.5-turbo | Response generation |
-| Embeddings | text-embedding-3-small | Vector conversion |
-| Auth | JWT + bcrypt | Secure authentication |
-| Deployment | Docker + AWS EC2 | Containerized hosting |
+| Layer | Technology | Why |
+|-------|-----------|-----|
+| **Frontend** | React 19, Vite, TailwindCSS | PWA support, SSE streaming, fast builds |
+| **Backend** | FastAPI (Python 3.11) | Async, 80+ endpoints, 4,200 lines |
+| **AI Agent** | Google ADK + Gemini 2.5 Flash | Grounded responses from structured KB |
+| **Knowledge Base** | Vertex AI Search (51 docs) | Semantic search with grounding metadata |
+| **Database** | AWS RDS MySQL | Users, chat history, DegreeWorks, Canvas data |
+| **Session Store** | DatabaseSessionService (RDS) | Multi-instance session persistence |
+| **Cache L1** | In-Memory TTLCache | ~0.001ms, hot queries |
+| **Cache L2** | Redis Cloud | ~1ms, 24hr TTL, distributed |
+| **Cache L3** | Semantic Embedding Cache | Cosine similarity 0.78 threshold |
+| **Deployment** | Google Cloud Run (3 services) | Auto-scaling, min-instances=2 |
 
 ---
 
 ## Key Features
 
-| Feature | Description |
+| Feature | How It Works |
 |---------|-------------|
-| **AI Chat** | Context-aware responses grounded in university data |
-| **Voice Mode** | Speech-to-text input, text-to-speech output |
-| **Curriculum Tracker** | Visual progress through CS degree requirements |
-| **DegreeWorks Parser** | Upload PDF transcripts for automatic grade import |
-| **Multi-Session** | Create and manage multiple conversation threads |
-| **Admin Dashboard** | Manage knowledge base, view analytics, handle tickets |
+| **Grounding Gate** | Counts KB chunks returned by Vertex AI Search. Appends a disclaimer when the agent has 0 evidence but still responded. Catches hallucinations before they reach students. |
+| **3-Layer Follow-Up Resolver** | Layer 0: regex override detection ("go back to X"). Layer 1: deterministic entity focus from last Q&A. Layer 2: Gemini LLM fallback. Prevents context bleed between topics. |
+| **Course Context Engine** | Pre-computes prereqs, schedules, faculty cards on the backend and injects into agent session state. Workaround for Gemini API limitation that blocks mixing search + function tools. |
+| **Self-Healing Research Pipeline** | Detects failed queries, clusters them with embeddings, researches corrections using Gemini + Google Search, suggests KB additions. Runs overnight via cron. |
+| **DatabaseSessionService** | ADK sessions stored in shared RDS instead of in-memory per instance. Eliminates 404 errors during scaling and deploys. 24-hour session TTL for all-day conversation continuity. |
+| **Canvas LMS Integration** | Pulls grades, assignments, deadlines via Canvas REST API. Lazy-loads only when query mentions grades/assignments. |
+| **DegreeWorks Integration** | Parses academic records via PDF upload or Banner auto-sync. Injects GPA, completed courses, remaining requirements into agent context. |
+| **Red Team Hardened** | 43-category Promptfoo security audit. 9 agent-level security rules blocking jailbreaks, role-play, calibration framing, and self-disclosure attacks. |
+| **Guest Mode** | 15-minute free trial. Personal queries (GPA, grades) intercepted and redirected to signup. No fabricated data. |
+| **3-Tier Caching** | L1 in-memory (instant) + L2 Redis (distributed) + L3 semantic similarity (catches rephrased questions). Greeting fast-path skips the agent entirely. |
+
+---
+
+## Design Decisions
+
+| Decision | Alternatives Considered | Why This Approach |
+|----------|------------------------|-------------------|
+| **Single unified agent** (v4+) | 8-specialist multi-agent (v3) | 3x faster response time. Multi-agent had routing overhead and inconsistent handoffs. |
+| **Backend pre-computation** over agent tools | FunctionTool in ADK | Gemini API blocks mixing VertexAiSearchTool with FunctionTool. Pre-compute on backend, inject via session state. |
+| **DatabaseSessionService** over in-memory | Session affinity cookies | Affinity is best-effort only. Breaks on deploys, scale-in, instance recycling. DB sessions survive everything. |
+| **Grounding gate** over coverage metric | Vertex AI Search coverage score | Coverage always returns 100% (useless). Chunk count is the reliable signal. |
+| **24-hour session TTL** | 30 minutes | Students leave for class and come back hours later. DW data changes weekly at most. Context hash forces refresh on data changes anyway. |
+| **Query rewriter skips clear entities** | Always apply previous turn's focus | Prevented context bleed (Dean's List answer bleeding into calc grade question). |
+
+---
+
+## Performance
+
+Results from a 409-question automated stress test across 15 categories:
+
+| Metric | Value |
+|--------|-------|
+| **Pass Rate** | 95.4% (390/409) |
+| **Fail Rate** | 0.0% (0/409) |
+| **Partial (KB gaps)** | 4.6% (19/409) |
+| **Avg Response Time** | 6.13s |
+| **Min Response Time** | 0.12s (cached) |
+| **Max Response Time** | 18.26s |
+
+| Category | Pass | Total |
+|----------|------|-------|
+| Course Info | 40 | 40 |
+| Faculty | 25 | 25 |
+| Academic Planning | 39 | 40 |
+| Emotional Support | 20 | 20 |
+| Slang & Casual | 20 | 20 |
+| Multi-Part Questions | 20 | 20 |
+| Personalized (DW) | 20 | 20 |
+| Follow-up Chains (10 chains) | 49 | 50 |
+| Edge Cases | 28 | 30 |
+| Guest Intercept | 10 | 10 |
+
+---
+
+## Version History
+
+| Version | Branch Tag | Key Changes |
+|---------|-----------|-------------|
+| **v5.0** | `main` | DatabaseSessionService, grounding gate, 3-layer resolver, course context engine, Canvas integration, 43-category red team audit, guest fake data removal |
+| **v4.3** | `v4.3-research` | Auth system (email verification, password reset), auto-research pipeline, structured KB v7 |
+| **v4.0** | `v4.0-accuracy` | Agent accuracy fix (39% to 100%), semantic caching, fresh session strategy |
+| **v3.0** | `v3.0-multi-agent` | 8-specialist multi-agent architecture, Promptfoo security tests |
+| **v2.2** | `v2.2-caching` | Multi-tier Redis caching, SSE streaming |
+| **v2.0** | `v2.0-adk` | Google ADK migration, replaced RAG pipeline |
+| **v1.0** | `v1.0-rag` | Original RAG with Pinecone + OpenAI GPT-3.5 |
+
+All previous versions are accessible via git tags: `git checkout v3.0-multi-agent`
+
+---
+
+## Local Development
+
+```bash
+# Clone
+git clone https://github.com/theaayushstha1/cs-chatbot-morganstate.git
+cd cs-chatbot-morganstate
+
+# Copy and fill environment variables
+cp .env.example .env
+
+# Start ADK Agent (port 8080)
+cd adk_agent && pip install google-adk && adk web . --port 8080
+
+# Start Backend (port 5001)
+cd backend && pip install -r requirements.txt && uvicorn main:app --host 127.0.0.1 --port 5001
+
+# Start Frontend (port 3000)
+cd frontend && npm install && npm run dev -- --port 3000
+```
+
+---
+
+## Deployment
+
+Three services on Google Cloud Run:
+
+```bash
+# 1. ADK Agent
+gcloud run deploy csnavigator-adk --source=./adk_agent \
+  --region=us-central1 --memory=2Gi --cpu=2 --min-instances=2
+
+# 2. Backend API
+gcloud run deploy csnavigator-backend --source=./backend \
+  --region=us-central1 --memory=1Gi --cpu=1 --min-instances=2
+
+# 3. Frontend
+gcloud run deploy csnavigator-frontend --source=./frontend \
+  --region=us-central1 --memory=512Mi --cpu=1 --min-instances=1
+```
 
 ---
 
@@ -133,106 +211,65 @@ Answer: "COSC 311 (Data Structures) requires COSC 211
 
 ```
 cs-chatbot-morganstate/
-├── frontend/                 # React application
-│   ├── src/
-│   │   ├── components/       # UI components
-│   │   ├── pages/            # Route pages
-│   │   └── App.jsx           # Main app entry
-│   └── Dockerfile
-│
-├── backend/                  # FastAPI application
-│   ├── main.py               # API endpoints (~3000 lines)
-│   ├── security.py           # JWT authentication
-│   ├── ingestion.py          # Vector DB ingestion
-│   ├── datasource/           # Knowledge base JSON files
-│   └── Dockerfile
-│
-├── docker-compose.yml        # Container orchestration
-├── deploy.sh                 # One-command deployment
-└── README.md
+  frontend/                     React 19 + Vite SPA
+    src/components/             Chat, Sidebar, Profile, Admin, Curriculum
+    public/                     Static assets (WebP optimized)
+    Dockerfile                  Cloud Run container
+
+  backend/                      FastAPI (Python 3.11)
+    main.py                     API server (4,200+ lines, 80+ endpoints)
+    vertex_agent.py             ADK agent client, session management
+    cache.py                    3-tier caching (L1 + L2 + Semantic)
+    research_agent.py           Self-healing failed query pipeline
+    services/
+      course_context.py         Prereq, schedule, faculty pre-computation
+      query_rewriter.py         3-layer follow-up resolver
+      context_builders.py       DW + Canvas context injection
+    kb_structured/              51 JSON knowledge base documents
+    scripts/                    Admin and deployment utilities
+    legacy_rag/                 Archived Pinecone-era scripts (v1.0-v2.0)
+    Dockerfile                  Cloud Run container
+
+  adk_agent/                    Google ADK Agent
+    cs_navigator_unified/
+      agent.py                  Agent definition (security rules, grounding)
+    Dockerfile                  Cloud Run container + DatabaseSessionService
+
+  docs/                         Documentation and evidence
+  deploy-cloudrun.sh            Deployment script
 ```
 
 ---
 
-## Quick Start
+## Team
 
-### Prerequisites
-- Docker Desktop
-- OpenAI API Key
-- Pinecone API Key
+Built under the guidance of **Dr. Shuangbao "Paul" Wang**, Professor and Chair of Computer Science at Morgan State University.
 
-### Local Development
+| Name | Role |
+|------|------|
+| **Aayush Shrestha** | Lead Developer. ADK agent architecture, backend systems, Canvas/DegreeWorks integration, caching, security hardening, Cloud Run deployment. |
+| **Sakina Shrestha** | Developer. RAG pipeline (v1.0), agent contributions, frontend development. |
+| **Dr. Shuangbao "Paul" Wang** | Faculty Advisor. Research direction, department coordination, testing oversight. |
 
-```bash
-# 1. Clone repository
-git clone https://github.com/theaayushstha1/cs-chatbot-morganstate.git
-cd cs-chatbot-morganstate
+## Contributing
 
-# 2. Create .env file in backend/
-OPENAI_API_KEY=your_key
-PINECONE_API_KEY=your_key
-PINECONE_INDEX=your_index
-JWT_SECRET=your_secret
-DATABASE_URL=mysql+pymysql://user:pass@host:3306/db
-
-# 3. Run with Docker
-docker-compose up --build
-
-# 4. Access application
-# Frontend: http://localhost:3000
-# Backend:  http://localhost:5000
-```
-
-### Production Deployment
-
-```bash
-# One-command deploy to EC2
-bash deploy.sh
-```
-
----
-
-## API Overview
-
-| Endpoint | Method | Auth | Description |
-|----------|--------|------|-------------|
-| `/chat` | POST | Yes | Send message, receive AI response |
-| `/api/register` | POST | No | Create user account |
-| `/api/login` | POST | No | Authenticate, receive JWT |
-| `/api/profile` | GET/PUT | Yes | User profile management |
-| `/chat-history` | GET | Yes | Retrieve conversation history |
-| `/sessions` | GET/POST/DELETE | Yes | Manage chat sessions |
-| `/api/curriculum` | GET | Yes | CS curriculum data |
-| `/api/degreeworks/upload-pdf` | POST | Yes | Upload transcript PDF |
-
----
-
-## Knowledge Base
-
-The chatbot is trained on 11 curated knowledge sources:
-
-1. **CS Courses** - All 45+ CS course descriptions
-2. **Curriculum Requirements** - 120 credit hour breakdown
-3. **Faculty Directory** - Professors and office hours
-4. **Career Resources** - Internships, jobs, resume tips
-5. **Campus Facilities** - Labs, library, study spaces
-6. **Academic Policies** - Grading, registration, deadlines
-7. **Student Organizations** - CS clubs and events
-8. **Research Opportunities** - Labs and projects
-9. **Graduate Programs** - MS/PhD pathways
-10. **FAQ** - Common student questions
-11. **Contact Information** - Department contacts
-
----
-
-## Contributors
-
-- **Aayush Shrestha** - Cloud Architecture & Backend
-- **Sakina Shrestha** - Core Development
-- **Morgan State University** - Computer Science Department
+To contribute:
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/your-feature`)
+3. Commit your changes
+4. Push to the branch
+5. Open a Pull Request
 
 ---
 
 ## License
 
-MIT License - See [LICENSE](./LICENSE) for details.
+MIT License. See [LICENSE](./LICENSE) for details.
+
+---
+
+<p align="center">
+  Built at Morgan State University | Department of Computer Science
+  <br>
+  <a href="https://cs.inavigator.ai">cs.inavigator.ai</a>
+</p>

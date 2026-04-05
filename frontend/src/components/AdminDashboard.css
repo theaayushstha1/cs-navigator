@@ -59,12 +59,12 @@
 }
 
 body.dark .back-home-btn {
-  background: var(--msu-gold);
-  color: #0f172a;
+  background: #8ab4f8;
+  color: #202124;
 }
 
 body.dark .back-home-btn:hover {
-  background: var(--msu-gold-hover);
+  background: #aecbfa;
 }
 
 .AdminDashboard .page-icon {
@@ -73,7 +73,7 @@ body.dark .back-home-btn:hover {
 }
 
 body.dark .AdminDashboard .page-icon {
-  color: var(--msu-gold);
+  color: #8ab4f8;
 }
 
 .AdminDashboard .page-title {
@@ -93,25 +93,28 @@ body.dark .AdminDashboard .page-icon {
    ======================================== */
 .admin-tabs {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   margin-bottom: 28px;
   padding-bottom: 20px;
   border-bottom: 1px solid var(--border-color);
+  flex-wrap: wrap;
 }
 
 .admin-tab {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 14px 24px;
+  gap: 8px;
+  padding: 12px 18px;
   background: var(--bg-card);
   border: 2px solid var(--border-color);
   border-radius: 12px;
   color: var(--text-secondary);
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
+  flex: 1;
+  justify-content: center;
 }
 
 .admin-tab:hover {
@@ -127,9 +130,9 @@ body.dark .AdminDashboard .page-icon {
 }
 
 body.dark .admin-tab.active {
-  background: var(--msu-gold);
-  border-color: var(--msu-gold);
-  color: #0f172a;
+  background: #8ab4f8;
+  border-color: #8ab4f8;
+  color: #202124;
 }
 
 .ticket-badge {
@@ -173,12 +176,12 @@ body.dark .admin-tab.active {
 }
 
 body.dark .action-btn {
-  background: var(--msu-gold);
-  color: #0f172a;
+  background: #8ab4f8;
+  color: #202124;
 }
 
 body.dark .action-btn:hover {
-  background: var(--msu-gold-hover);
+  background: #aecbfa;
 }
 
 /* ========================================
@@ -215,11 +218,11 @@ body.dark .action-btn:hover {
 .admin-form input:focus {
   outline: none;
   border-color: var(--msu-blue);
-  box-shadow: 0 0 0 3px rgba(0, 45, 114, 0.1);
+  box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.1);
 }
 
 body.dark .admin-form input:focus {
-  border-color: var(--msu-gold);
+  border-color: #8ab4f8;
   box-shadow: 0 0 0 3px rgba(255, 183, 3, 0.1);
 }
 
@@ -308,7 +311,7 @@ body.dark .admin-form input:focus {
 }
 
 body.dark .stat-card:hover {
-  border-color: var(--msu-gold);
+  border-color: #8ab4f8;
 }
 
 .stat-card .stat-icon {
@@ -379,9 +382,9 @@ body.dark .stat-card.progress .stat-number { color: #3B82F6; }
 }
 
 body.dark .filter-btn.active {
-  background: var(--msu-gold);
-  border-color: var(--msu-gold);
-  color: #0f172a;
+  background: #8ab4f8;
+  border-color: #8ab4f8;
+  color: #202124;
 }
 
 /* Tickets List */
@@ -416,7 +419,7 @@ body.dark .filter-btn.active {
 }
 
 body.dark .ticket-card:hover {
-  border-color: var(--msu-gold);
+  border-color: #8ab4f8;
 }
 
 .ticket-header-row {
@@ -818,7 +821,7 @@ body.dark .ticket-card:hover {
 }
 
 body.dark .search-box:focus-within {
-  border-color: var(--msu-gold);
+  border-color: #8ab4f8;
 }
 
 .search-box svg {
@@ -1020,12 +1023,12 @@ body.dark .search-box:focus-within {
 }
 
 body.dark .voice-search-btn {
-  background: var(--msu-gold);
-  color: #0f172a;
+  background: #8ab4f8;
+  color: #202124;
 }
 
 body.dark .voice-search-btn:hover {
-  background: var(--msu-gold-hover);
+  background: #aecbfa;
 }
 
 .voice-search-btn.listening {
@@ -1106,7 +1109,7 @@ body.dark .voice-search-btn.listening {
 }
 
 body.dark .kb-search-results {
-  border-color: var(--msu-gold);
+  border-color: #8ab4f8;
 }
 
 .kb-search-results h3 {
@@ -1121,7 +1124,7 @@ body.dark .kb-search-results {
 }
 
 body.dark .kb-search-results h3 strong {
-  color: var(--msu-gold);
+  color: #8ab4f8;
 }
 
 .search-hint {
@@ -1162,7 +1165,7 @@ body.dark .kb-search-results h3 strong {
 }
 
 body.dark .search-result-item:hover {
-  border-color: var(--msu-gold);
+  border-color: #8ab4f8;
 }
 
 .search-result-item:last-child {
@@ -1178,7 +1181,7 @@ body.dark .search-result-item:hover {
 }
 
 body.dark .result-filename {
-  color: var(--msu-gold);
+  color: #8ab4f8;
 }
 
 .result-match {
@@ -1199,8 +1202,8 @@ body.dark .result-filename {
 
 .kb-layout {
   display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: 24px;
+  grid-template-columns: 300px 1fr;
+  gap: 20px;
   min-height: 500px;
 }
 
@@ -1251,7 +1254,7 @@ body.dark .search-summary-text {
 }
 
 body.dark .clear-search-btn {
-  background: #1e293b;
+  background: #2d2d2d;
   border-color: #F59E0B;
   color: #FDE68A;
 }
@@ -1324,7 +1327,7 @@ body.dark .matched-file-item:hover {
 
 body.dark .matched-file-item.active {
   background: #F59E0B;
-  color: #1e293b;
+  color: #2d2d2d;
 }
 
 .matched-filename {
@@ -1386,14 +1389,16 @@ body.dark .matched-file-item.active {
 }
 
 body.dark .kb-file-item.active {
-  background: var(--msu-gold);
-  color: #0f172a;
+  background: #8ab4f8;
+  color: #202124;
 }
 
 .kb-filename {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   font-weight: 500;
-  word-break: break-all;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  line-height: 1.3;
 }
 
 .kb-filesize {
@@ -1428,7 +1433,8 @@ body.dark .kb-file-item.active {
 
 .kb-editor-actions {
   display: flex;
-  gap: 10px;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 /* Editor Container for Overlay Highlighting */
@@ -1479,16 +1485,32 @@ body.dark .kb-file-item.active {
   caret-color: var(--text-main);
 }
 
-/* Yellow highlight for matched words - text is transparent, only background shows */
+/* Yellow highlight for matched words */
 .highlight-match {
   background: #FBBF24 !important;
-  color: transparent !important;
+  color: #000 !important;
   padding: 2px 0;
   border-radius: 3px;
 }
 
+.highlight-match.active-match {
+  background: #F97316 !important;
+  outline: 2px solid #EA580C;
+  outline-offset: 1px;
+}
+
 body.dark .highlight-match {
   background: #F59E0B !important;
+  color: #000 !important;
+}
+
+body.dark .highlight-match.active-match {
+  background: #F97316 !important;
+  outline-color: #EA580C;
+}
+
+/* Transparent text only for textarea overlay pattern (edit mode) */
+.kb-highlight-backdrop .highlight-match {
   color: transparent !important;
 }
 
@@ -1496,7 +1518,7 @@ body.dark .highlight-match {
 .kb-search-results mark,
 .result-match mark {
   background: #FBBF24;
-  color: #1e293b;
+  color: #2d2d2d;
   padding: 1px 4px;
   border-radius: 3px;
   font-weight: 600;
@@ -1623,7 +1645,7 @@ body.dark .result-match mark {
 }
 
 .action-btn.active {
-  background: var(--msu-orange) !important;
+  background: var(--msu-blue) !important;
 }
 
 .action-btn.save-btn {
@@ -1868,7 +1890,7 @@ body.dark .result-match mark {
 
 .chart-bar {
   width: 50px;
-  background: linear-gradient(180deg, var(--msu-blue) 0%, rgba(0, 45, 114, 0.7) 100%);
+  background: linear-gradient(180deg, var(--msu-blue) 0%, rgba(66, 133, 244, 0.7) 100%);
   border-radius: 8px 8px 0 0;
   display: flex;
   align-items: flex-start;
@@ -1879,7 +1901,7 @@ body.dark .result-match mark {
 }
 
 body.dark .chart-bar {
-  background: linear-gradient(180deg, var(--msu-gold) 0%, rgba(255, 183, 3, 0.7) 100%);
+  background: linear-gradient(180deg, #8ab4f8 0%, rgba(138, 180, 248, 0.7) 100%);
 }
 
 .chart-bar:hover {
@@ -1893,7 +1915,7 @@ body.dark .chart-bar {
 }
 
 body.dark .chart-value {
-  color: #0f172a;
+  color: #202124;
 }
 
 .chart-label {
@@ -2083,10 +2105,10 @@ body.dark .chart-value {
 }
 
 .doc-card:hover {
-  background: rgba(0, 82, 204, 0.1);
+  background: rgba(66, 133, 244, 0.1);
   border-color: #0052CC;
   transform: translateY(-4px);
-  box-shadow: 0 8px 24px rgba(0, 82, 204, 0.2);
+  box-shadow: 0 8px 24px rgba(66, 133, 244, 0.2);
 }
 
 .doc-card svg {
@@ -2191,6 +2213,236 @@ body.dark .footer-icon-btn {
 body.dark .footer-icon-btn:hover {
   background: rgba(255, 255, 255, 0.05);
   color: #9CA3AF;
+}
+
+/* ========================================
+   Overview Tab
+   ======================================== */
+.overview-section {
+  margin-bottom: 28px;
+}
+
+.overview-section h3 {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 16px 0;
+}
+
+.overview-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* KB Stats Row */
+.kb-stats-row {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.kb-stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 24px;
+  background: var(--bg-body);
+  border: 2px solid var(--border-color);
+  border-radius: 12px;
+  min-width: 100px;
+}
+
+.kb-stat-item.compact {
+  padding: 10px 16px;
+  min-width: 70px;
+}
+
+.kb-stat-value {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.kb-stat-item.compact .kb-stat-value {
+  font-size: 1.1rem;
+}
+
+.kb-stat-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+/* ========================================
+   Drag & Drop Zone
+   ======================================== */
+.kb-drop-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px 24px;
+  margin-bottom: 20px;
+  background: var(--bg-body);
+  border: 2px dashed var(--border-color);
+  border-radius: 12px;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+}
+
+.kb-drop-zone.active {
+  border-color: var(--msu-blue);
+  background: rgba(66, 133, 244, 0.08);
+  color: var(--msu-blue);
+}
+
+body.dark .kb-drop-zone.active {
+  border-color: #8ab4f8;
+  background: rgba(138, 180, 248, 0.1);
+  color: #8ab4f8;
+}
+
+.drop-hint {
+  font-size: 0.75rem;
+  opacity: 0.6;
+}
+
+/* ========================================
+   Cache Management
+   ======================================== */
+.cache-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.cache-tier-card {
+  background: var(--bg-body);
+  border: 2px solid var(--border-color);
+  border-radius: 14px;
+  padding: 20px;
+}
+
+.cache-tier-card h4 {
+  margin: 0 0 16px 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.cache-stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.cache-stat-row:last-child {
+  border-bottom: none;
+}
+
+.cache-stat-row span {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.cache-stat-row strong {
+  font-size: 0.9rem;
+  color: var(--text-main);
+}
+
+/* ========================================
+   KB Editor Icon Buttons (compact)
+   ======================================== */
+.kb-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: var(--bg-card);
+  border: 2px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.kb-icon-btn:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--msu-blue);
+  color: var(--msu-blue);
+}
+
+body.dark .kb-icon-btn:hover {
+  border-color: #8ab4f8;
+  color: #8ab4f8;
+}
+
+.kb-icon-btn.active {
+  background: var(--msu-blue);
+  border-color: var(--msu-blue);
+  color: white;
+}
+
+body.dark .kb-icon-btn.active {
+  background: #8ab4f8;
+  border-color: #8ab4f8;
+  color: #202124;
+}
+
+.kb-icon-btn.save {
+  background: #10B981;
+  border-color: #10B981;
+  color: white;
+}
+
+.kb-icon-btn.save:hover {
+  background: #059669;
+  border-color: #059669;
+}
+
+.kb-icon-btn.danger:hover {
+  background: #EF4444;
+  border-color: #EF4444;
+  color: white;
+}
+
+.kb-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ========================================
+   Responsive Additions
+   ======================================== */
+@media (max-width: 768px) {
+  .kb-stats-row {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .overview-actions {
+    flex-direction: column;
+  }
+
+  .cache-stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .kb-drop-zone {
+    flex-direction: column;
+    text-align: center;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -2333,7 +2585,7 @@ body.dark .footer-icon-btn:hover {
   font-size: 0.9rem;
   color: var(--text-main);
   line-height: 1.5;
-  background: rgba(0, 45, 114, 0.03);
+  background: rgba(66, 133, 244, 0.03);
   padding: 10px 12px;
   border-radius: 8px;
   border-left: 3px solid var(--msu-blue);
@@ -2368,12 +2620,12 @@ body.dark .satisfaction-bar-container {
 }
 
 body.dark .feedback-card {
-  background: #1e293b;
+  background: #2d2d2d;
 }
 
 body.dark .feedback-message p {
-  background: rgba(255, 183, 3, 0.05);
-  border-left-color: var(--msu-gold);
+  background: rgba(138, 180, 248, 0.05);
+  border-left-color: #8ab4f8;
 }
 
 body.dark .feedback-details p {

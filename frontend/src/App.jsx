@@ -1,29 +1,30 @@
 import React, { useState, useEffect } from "react";
 import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import { Toaster } from "sonner";
 
 import NavBar         from "./components/NavBar";
 import ChatSidebar    from "./components/ChatSidebar";
 import Chatbox        from "./components/Chatbox";
 import CurriculumPage from "./components/CurriculumPage";
+import MyClassesPage from "./components/MyClassesPage";
+import GradeSurgeon from "./components/GradeSurgeon";
+import RippleEffect from "./components/RippleEffect";
 import ProfilePage    from "./components/ProfilePage";
 import AdminDashboard from "./components/AdminDashboard";
 import Forbidden      from "./components/Forbidden";
 import LandingPage    from "./components/LandingPage";
+import CommandPalette from "./components/CommandPalette";
+import WelcomeModal from "./components/WelcomeModal";
 
 import SignUp from "./SignUp";
 import Login  from "./Login";
+import ForgotPassword from "./ForgotPassword";
+import ResetPassword from "./ResetPassword";
 
 import "./index.css";
 
-// --- SMART API SWITCHING ---
-// 1. Check if we are running in "Development" mode (npm run dev)
-// 2. If yes, use Localhost:8000
-// 3. If no (Production), use the environment variable or default to the AWS configuration
-// 🔥 SMART CONFIG: Check the browser URL to pick the right backend
-const hostname = window.location.hostname;
-const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-  ? "http://127.0.0.1:8000"           // If on Laptop -> Use Local Backend (8000)
-  : "http://100.48.56.24:5000";     // If on AWS -> Use AWS Backend (5000)
+import { getApiBase } from "./lib/apiBase";
+const API_BASE = getApiBase();
 function parseJwt(token) {
   try {
     const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
@@ -60,7 +61,8 @@ function ChatLayout({
   onArchive,
   onRename,
   darkMode,
-  onToggleTheme
+  onToggleTheme,
+  onCollapse
 }) {
   const activeSession = sessions.find((s) => s.id === activeId) || { messages: [] };
   return (
@@ -78,6 +80,7 @@ function ChatLayout({
         onRename={onRename}
         darkMode={darkMode}
         onToggleTheme={onToggleTheme}
+        onCollapse={onCollapse}
       />
       {/* 🔥 UPDATE: Passing sessionId to Chatbox so it knows where to save */}
       <Chatbox
@@ -103,6 +106,7 @@ function SidebarLayout({
   onRename,
   darkMode,
   onToggleTheme,
+  onCollapse,
   children
 }) {
   return (
@@ -120,6 +124,7 @@ function SidebarLayout({
         onRename={onRename}
         darkMode={darkMode}
         onToggleTheme={onToggleTheme}
+        onCollapse={onCollapse}
       />
       <div className="page-content">
         {children}
@@ -134,6 +139,8 @@ export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem("token"));
   const [role, setRole]   = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [cmdkOpen, setCmdkOpen] = useState(false);
+  const [showWelcome, setShowWelcome] = useState(false);
 
   // Dark mode state
   const [darkMode, setDarkMode] = useState(
@@ -164,6 +171,31 @@ export default function App() {
     const shouldCollapse = sidebarCollapsed || !token;
     document.body.classList.toggle('sidebar-collapsed', shouldCollapse);
   }, [sidebarCollapsed, token]);
+
+  // Welcome modal: show once per account
+  useEffect(() => {
+    if (token && !localStorage.getItem("welcomed")) {
+      const timer = setTimeout(() => setShowWelcome(true), 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [token]);
+
+  const dismissWelcome = () => {
+    setShowWelcome(false);
+    localStorage.setItem("welcomed", "1");
+  };
+
+  // Cmd+K listener
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setCmdkOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   // chat‐session state
   const [sessions, setSessions] = useState(() => {
@@ -197,27 +229,26 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           
-          // Check if we have history data
           if (data.history && data.history.length > 0) {
               const grouped = {};
-              
+
               // Group the flat list of messages by their session_id
               data.history.forEach(item => {
                   const sid = item.session_id || "default";
                   if (!grouped[sid]) grouped[sid] = [];
-                  
+
                   // Add User Message
-                  grouped[sid].push({ 
-                    text: item.user, 
-                    sender: "user", 
-                    time: new Date(item.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) 
+                  grouped[sid].push({
+                    text: item.user,
+                    sender: "user",
+                    time: new Date(item.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
                   });
-                  
+
                   // Add Bot Message
-                  grouped[sid].push({ 
-                    text: item.bot, 
-                    sender: "bot", 
-                    time: new Date(item.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) 
+                  grouped[sid].push({
+                    text: item.bot,
+                    sender: "bot",
+                    time: new Date(item.time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
                   });
               });
 
@@ -230,14 +261,20 @@ export default function App() {
                   pinned: false,
                   archived: false
               }));
-              
+
               // Update state with database sessions
               setSessions(dbSessions);
-              
+
               // Set the active chat to the most recent one (last in the list)
               if (dbSessions.length > 0) {
                 setActiveId(dbSessions[dbSessions.length - 1].id);
               }
+          } else {
+              // New account or no history - reset to a fresh session
+              // This clears any stale sessions from a previous account
+              const freshId = Date.now().toString();
+              setSessions([{ id: freshId, title: "New Chat", messages: [], pinned: false, archived: false }]);
+              setActiveId(freshId);
           }
         }
       } catch (err) {
@@ -335,8 +372,11 @@ export default function App() {
   const handleLogout = () => {
     setToken(null);
     localStorage.removeItem("token");
-    // Clear UI but default to a new chat
-    setSessions([{ id: Date.now().toString(), title: "New Chat", messages: [], pinned: false, archived: false }]); 
+    localStorage.removeItem("chat_sessions");
+    // Clear UI and reset to a fresh chat
+    const freshId = Date.now().toString();
+    setSessions([{ id: freshId, title: "New Chat", messages: [], pinned: false, archived: false }]);
+    setActiveId(freshId);
     navigate("/login", { replace: true });
   };
 
@@ -345,9 +385,20 @@ export default function App() {
 
   return (
     <>
-      <NavBar 
-        role={role} 
-        onLogout={handleLogout} 
+      <Toaster position="top-center" richColors />
+      {showWelcome && <WelcomeModal onClose={dismissWelcome} />}
+      <CommandPalette
+        open={cmdkOpen}
+        onOpenChange={setCmdkOpen}
+        onNewChat={handleNew}
+        onToggleTheme={toggleTheme}
+        onNavigate={navigate}
+        role={role}
+        darkMode={darkMode}
+      />
+      <NavBar
+        role={role}
+        onLogout={handleLogout}
         onToggleSidebar={toggleSidebar}
       />
 
@@ -370,6 +421,9 @@ export default function App() {
             />
           }
         />
+
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
 
         {/* public: guest trial chat */}
         <Route
@@ -402,7 +456,86 @@ export default function App() {
                 onRename={handleRename}
                 darkMode={darkMode}
                 onToggleTheme={toggleTheme}
+                onCollapse={toggleSidebar}
               />
+            </RequireAuth>
+          }
+        />
+
+        {/* protected: my classes with sidebar */}
+        <Route
+          path="/my-classes"
+          element={
+            <RequireAuth>
+              <SidebarLayout
+                sessions={sessions}
+                activeId={activeId}
+                onNew={handleNew}
+                onSelect={handleSelect}
+                onDelete={handleDelete}
+                onLogout={handleLogout}
+                userEmail={userEmail}
+                onPin={handlePin}
+                onArchive={handleArchive}
+                onRename={handleRename}
+                darkMode={darkMode}
+                onToggleTheme={toggleTheme}
+                onCollapse={toggleSidebar}
+              >
+                <MyClassesPage />
+              </SidebarLayout>
+            </RequireAuth>
+          }
+        />
+
+        {/* protected: grade surgeon with sidebar */}
+        <Route
+          path="/grade-analysis"
+          element={
+            <RequireAuth>
+              <SidebarLayout
+                sessions={sessions}
+                activeId={activeId}
+                onNew={handleNew}
+                onSelect={handleSelect}
+                onDelete={handleDelete}
+                onLogout={handleLogout}
+                userEmail={userEmail}
+                onPin={handlePin}
+                onArchive={handleArchive}
+                onRename={handleRename}
+                darkMode={darkMode}
+                onToggleTheme={toggleTheme}
+                onCollapse={toggleSidebar}
+              >
+                <GradeSurgeon />
+              </SidebarLayout>
+            </RequireAuth>
+          }
+        />
+
+        {/* protected: ripple effect with sidebar */}
+        <Route
+          path="/ripple-effect"
+          element={
+            <RequireAuth>
+              <SidebarLayout
+                sessions={sessions}
+                activeId={activeId}
+                onNew={handleNew}
+                onSelect={handleSelect}
+                onDelete={handleDelete}
+                onLogout={handleLogout}
+                userEmail={userEmail}
+                onPin={handlePin}
+                onArchive={handleArchive}
+                onRename={handleRename}
+                darkMode={darkMode}
+                onToggleTheme={toggleTheme}
+                onCollapse={toggleSidebar}
+              >
+                <RippleEffect />
+              </SidebarLayout>
             </RequireAuth>
           }
         />
@@ -425,6 +558,7 @@ export default function App() {
                 onRename={handleRename}
                 darkMode={darkMode}
                 onToggleTheme={toggleTheme}
+                onCollapse={toggleSidebar}
               >
                 <CurriculumPage />
               </SidebarLayout>
@@ -450,6 +584,7 @@ export default function App() {
                 onRename={handleRename}
                 darkMode={darkMode}
                 onToggleTheme={toggleTheme}
+                onCollapse={toggleSidebar}
               >
                 <ProfilePage userEmail={userEmail} onLogout={handleLogout} />
               </SidebarLayout>

@@ -79,12 +79,14 @@
    ======================================== */
 .progress-section {
   max-width: 1400px;
-  margin: -30px auto 24px auto;
+  margin: 24px auto 24px auto;
   padding: 0 24px;
+  position: relative;
+  z-index: 1;
 }
 
 .progress-card {
-  background: var(--bg-card);
+  background: var(--bg-card, #fff);
   border: 1px solid var(--border-color);
   border-radius: 16px;
   padding: 28px;
@@ -173,11 +175,11 @@ body.dark .credits-text strong {
   min-width: 60px;
   background: linear-gradient(
     90deg,
-    #002d72 0%,
-    #003d9e 25%,
-    #0052cc 50%,
-    #3b82f6 75%,
-    var(--msu-gold) 100%
+    #4285F4 0%,
+    #5a95f5 25%,
+    #669DF6 50%,
+    #8ab4f8 75%,
+    #34A853 100%
   );
   background-size: 200% 100%;
   border-radius: 14px;
@@ -189,7 +191,7 @@ body.dark .credits-text strong {
   position: relative;
   animation: gradientShift 3s ease infinite, glow 2s ease-in-out infinite alternate;
   box-shadow:
-    0 0 20px rgba(0, 45, 114, 0.5),
+    0 0 20px rgba(66, 133, 244, 0.5),
     0 0 40px rgba(59, 130, 246, 0.3),
     inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
@@ -209,13 +211,13 @@ body.dark .credits-text strong {
 @keyframes glow {
   from {
     box-shadow:
-      0 0 15px rgba(0, 45, 114, 0.4),
+      0 0 15px rgba(66, 133, 244, 0.4),
       0 0 30px rgba(59, 130, 246, 0.2),
       inset 0 1px 0 rgba(255, 255, 255, 0.3);
   }
   to {
     box-shadow:
-      0 0 25px rgba(0, 45, 114, 0.6),
+      0 0 25px rgba(66, 133, 244, 0.6),
       0 0 50px rgba(59, 130, 246, 0.4),
       0 0 70px rgba(245, 158, 11, 0.2),
       inset 0 1px 0 rgba(255, 255, 255, 0.3);
@@ -335,14 +337,14 @@ body.dark .credits-text strong {
 .tab-btn:hover {
   border-color: var(--msu-blue);
   color: var(--msu-blue);
-  background: rgba(0, 45, 114, 0.05);
+  background: rgba(66, 133, 244, 0.05);
 }
 
 .tab-btn.active {
   background: linear-gradient(135deg, var(--msu-blue) 0%, #003d9e 100%);
   border-color: var(--msu-blue);
   color: white;
-  box-shadow: 0 4px 12px rgba(0, 45, 114, 0.3);
+  box-shadow: 0 4px 12px rgba(66, 133, 244, 0.3);
 }
 
 .tab-btn.active svg {
@@ -394,7 +396,7 @@ body.dark .tab-btn:hover {
 .search-input:focus {
   outline: none;
   border-color: var(--msu-blue);
-  box-shadow: 0 0 0 3px rgba(0, 45, 114, 0.15);
+  box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.15);
 }
 
 .search-input::placeholder {
@@ -478,11 +480,11 @@ body.dark .filter-select {
 }
 
 .curriculum-table tbody tr:hover {
-  background: rgba(0, 45, 114, 0.08);
+  background: rgba(66, 133, 244, 0.08);
 }
 
 body.dark .curriculum-table tbody tr:hover {
-  background: rgba(0, 45, 114, 0.2);
+  background: rgba(66, 133, 244, 0.2);
 }
 
 /* Row status styling */
@@ -499,7 +501,7 @@ body.dark .course-row.completed {
 }
 
 body.dark .course-row.in-progress {
-  background: rgba(245, 158, 11, 0.1);
+  background: rgba(52, 168, 83, 0.1);
 }
 
 .curriculum-table tbody tr:last-child {
@@ -646,9 +648,9 @@ body.dark .category-badge.mathematics {
 }
 
 .category-badge.core-cs {
-  background: rgba(0, 45, 114, 0.15);
+  background: rgba(66, 133, 244, 0.15);
   color: var(--msu-blue);
-  border: 1px solid rgba(0, 45, 114, 0.3);
+  border: 1px solid rgba(66, 133, 244, 0.3);
 }
 
 body.dark .category-badge.core-cs {
@@ -914,7 +916,7 @@ body.dark .category-title.required {
 
 .connect-prompt > div,
 .connect-prompt {
-  background: linear-gradient(135deg, rgba(0, 45, 114, 0.1), rgba(245, 158, 11, 0.1));
+  background: linear-gradient(135deg, rgba(66, 133, 244, 0.1), rgba(52, 168, 83, 0.1));
   border: 2px dashed var(--msu-blue);
   border-radius: 16px;
   padding: 32px;
@@ -937,12 +939,12 @@ body.dark .category-title.required {
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
-  box-shadow: 0 4px 12px rgba(0, 45, 114, 0.3);
+  box-shadow: 0 4px 12px rgba(66, 133, 244, 0.3);
 }
 
 .connect-btn:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(0, 45, 114, 0.4);
+  box-shadow: 0 6px 16px rgba(66, 133, 244, 0.4);
 }
 
 /* Scrollbar for table */

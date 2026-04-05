@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-EC2_HOST="18.214.136.155"
+EC2_HOST="100.51.127.130"
 EC2_USER="ec2-user"
 EC2_KEY="cs-chatbot-key.pem"
 
@@ -16,4 +16,4 @@ ssh -i "$EC2_KEY" "${EC2_USER}@${EC2_HOST}" << 'EOF'
 EOF
 
 echo "✅ Quick deployment complete!"
-echo "🌐 Frontend: http://18.214.136.155:3000"
+echo "Frontend: https://inavigator.ai"

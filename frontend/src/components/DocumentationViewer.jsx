@@ -1140,8 +1140,8 @@ Content-Type: application/json
     Analyze --> Tools
     Tools --> Output
 
-    style Rec fill:#002D72,color:#fff
-    style Visual fill:#002D72,color:#fff
+    style Rec fill:#4285F4,color:#fff
+    style Visual fill:#4285F4,color:#fff
     style Alert fill:#f59e0b,color:#fff`}
       />
 
@@ -1247,10 +1247,10 @@ Content-Type: application/json
     External --> Agents
     Agents --> Output
 
-    style RR fill:#002D72,color:#fff
-    style IC fill:#002D72,color:#fff
-    style IM fill:#002D72,color:#fff
-    style CP fill:#002D72,color:#fff`}
+    style RR fill:#4285F4,color:#fff
+    style IC fill:#4285F4,color:#fff
+    style IM fill:#4285F4,color:#fff
+    style CP fill:#4285F4,color:#fff`}
       />
 
       <h3>Feature List</h3>
@@ -1342,7 +1342,7 @@ Content-Type: application/json
     Actions --> Engine
     Engine --> Rewards
 
-    style XP fill:#002D72,color:#fff
+    style XP fill:#4285F4,color:#fff
     style Streak fill:#f59e0b,color:#fff
     style Badge fill:#10b981,color:#fff`}
       />
@@ -1554,7 +1554,7 @@ Content-Type: application/json
     Data --> Analytics
     Analytics --> Dashboard
 
-    style Trends fill:#002D72,color:#fff
+    style Trends fill:#4285F4,color:#fff
     style Risk fill:#f59e0b,color:#fff
     style Insights fill:#10b981,color:#fff`}
       />

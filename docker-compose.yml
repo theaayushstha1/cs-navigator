@@ -21,7 +21,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - VITE_API_BASE_URL=http://100.48.56.24:5000
+        - VITE_API_BASE_URL=
     image: sakina593/chatbot-frontend:latest
     platform: linux/amd64
     container_name: ec2-user-frontend-1

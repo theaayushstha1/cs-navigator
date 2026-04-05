@@ -13,11 +13,11 @@ DOCKER_USERNAME="sakina593"
 FRONTEND_IMAGE="${DOCKER_USERNAME}/chatbot-frontend"
 BACKEND_IMAGE="${DOCKER_USERNAME}/chatbot-backend"
 
-EC2_HOST="100.48.56.24"
+EC2_HOST="100.51.127.130"
 EC2_USER="ec2-user"
 EC2_KEY="cs-chatbot-key.pem"
 
-API_URL="http://${EC2_HOST}:5000"
+API_URL=""
 
 log(){ echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1"; }
 die(){ echo "[ERROR] $1" >&2; exit 1; }
@@ -98,8 +98,8 @@ main() {
   deploy_to_ec2
   log "========================================="
   log "Deployment complete!"
-  log "Frontend: http://${EC2_HOST}:3000"
-  log "Backend:  http://${EC2_HOST}:5000"
+  log "Frontend: https://inavigator.ai"
+  log "Backend:  https://inavigator.ai/api/"
   log "========================================="
 }
 

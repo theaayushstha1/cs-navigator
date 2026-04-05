@@ -1,7 +1,12 @@
 export function getApiBase() {
-  const env = (import.meta?.env?.VITE_API_BASE_URL || "").trim();
-  if (env) return env.replace(/\/$/, "");
-
-  // dev: vite (5173) or docker front (3000) -> backend on 5000
-  return `${window.location.protocol}//${window.location.hostname}:5000`;
+  // Use env var if set (from .env.local)
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL;
+  }
+  const hostname = window.location.hostname;
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    return "http://127.0.0.1:8000";
+  }
+  // Cloud Run: frontend and backend are separate services
+  return "https://csnavigator-backend-750361124802.us-central1.run.app";
 }

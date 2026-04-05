@@ -43,7 +43,7 @@ export default function AuthLayout({ title, subtitle, children, footer }) {
         <div className="auth__brandInner">
           <img
             className="auth__logoMain"
-            src="/main_logo.png"
+            src="/main_logo.webp"
             alt="Morgan State University"
           />
 
@@ -83,7 +83,7 @@ export default function AuthLayout({ title, subtitle, children, footer }) {
         <section className="auth__card" aria-label={title}>
           {/* Logo for mobile */}
           <div className="auth__mobileLogoWrap">
-            <img src="/msu_logo.png" alt="MSU" className="auth__mobileLogo" />
+            <img src="/msu_logo.webp" alt="MSU" className="auth__mobileLogo" />
           </div>
 
           <header className="auth__header">
@@ -100,10 +100,6 @@ export default function AuthLayout({ title, subtitle, children, footer }) {
           {footer ? <div className="auth__footer">{footer}</div> : null}
         </section>
 
-        {/* Decorative corner badge */}
-        <div className="auth__badge">
-          <img src="/msu_logo.png" alt="" className="auth__badgeLogo" />
-        </div>
       </main>
     </div>
   );

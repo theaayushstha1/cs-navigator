@@ -2,18 +2,19 @@ import sys
 # Force unbuffered output so we see logs immediately
 sys.stdout.reconfigure(line_buffering=True)
 
-print("✅✅✅ main.py loaded successfully")
+print("[OK] main.py loaded successfully")
 
 import os
 import re
 import json
+import asyncio
 # import time  # Commented: currently unused, kept for potential future use
-import shutil # 🔥 NEW: For file operations
+import shutil #  NEW: For file operations
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-# 🔥 FIXED IMPORTS: Use 'pypdf' which you installed, not 'PyPDF2'
+#  FIXED IMPORTS: Use 'pypdf' which you installed, not 'PyPDF2'
 import pypdf 
 import docx
 from langchain.schema import SystemMessage, HumanMessage 
@@ -23,8 +24,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse, HTMLResponse
+from pydantic import BaseModel, field_validator
 from collections import Counter
 import io
 from dotenv import load_dotenv
@@ -39,101 +40,117 @@ PROJECT_ROOT = os.path.dirname(BACKEND_DIR)
 # Path to .env file in the root
 ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 
-print(f"🔍 Looking for .env at: {ENV_PATH}")
+# Load course catalog for context injection
+COURSE_CATALOG_TEXT = ""
+_catalog_path = os.path.join(BACKEND_DIR, "data_sources", "classes.json")
+if os.path.exists(_catalog_path):
+    try:
+        with open(_catalog_path) as _f:
+            _catalog = json.load(_f)
+        _lines = []
+        for c in _catalog.get("courses", []):
+            prereqs = ", ".join(c.get("prerequisites", [])) or "None"
+            _lines.append(f"  {c['course_code']} - {c['course_name']} ({c.get('credits',3)} cr, {c.get('category','')}) Prereqs: {prereqs}")
+        COURSE_CATALOG_TEXT = "AVAILABLE CS COURSES AT MORGAN STATE (from official catalog):\n" + "\n".join(_lines) + "\n"
+    except Exception as _e:
+        print(f"[WARN] Failed to load course catalog: {_e}")
+
+print(f"[INFO] Looking for .env at: {ENV_PATH}")
 
 if os.path.exists(ENV_PATH):
     load_dotenv(ENV_PATH)
-    print("✅ .env file loaded!")
+    print("[OK] .env file loaded!")
 else:
-    print("❌ .env file NOT found at root. Checking backend folder...")
+    print("[ERROR] .env file NOT found at root. Checking backend folder...")
     load_dotenv(os.path.join(BACKEND_DIR, ".env"))
 
-print(f"🔑 JWT_SECRET Check: {'FOUND' if os.getenv('JWT_SECRET') else 'MISSING'}")
+print(f"[KEY] JWT_SECRET Check: {'FOUND' if os.getenv('JWT_SECRET') else 'MISSING'}")
 
 # SQLAlchemy Imports
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, text
 
-# LangChain & AI Imports
-from langchain.text_splitter import TokenTextSplitter
-from langchain_openai import OpenAIEmbeddings
-from langchain_pinecone import PineconeVectorStore
-from langchain_community.chat_models import ChatOpenAI
-from langchain.chains import RetrievalQA
-from pinecone import Pinecone
+# Vertex AI Agent Engine (replaces Pinecone + OpenAI RAG pipeline)
+from vertex_agent import query_agent, query_agent_stream, check_agent_health, reset_session
+
+# Query caching for faster responses
+from cache import query_cache, get_context_hash, log_cache_stats
+
+
+# Legacy imports kept for /ingest endpoint and file analysis fallback
+try:
+    from langchain.text_splitter import TokenTextSplitter
+    from langchain_openai import OpenAIEmbeddings
+    from langchain_pinecone import PineconeVectorStore
+    from langchain_community.chat_models import ChatOpenAI
+    from langchain.chains import RetrievalQA
+    from pinecone import Pinecone
+    LEGACY_RAG_AVAILABLE = True
+except ImportError:
+    LEGACY_RAG_AVAILABLE = False
+    print("   Legacy RAG imports not available (Pinecone/LangChain not installed)")
 
 # Local Imports (Auth & DB) - These must run AFTER load_dotenv
 from db import SessionLocal, engine, Base
-from models import User, DegreeWorksData, SupportTicket
+from models import User, DegreeWorksData, BannerStudentData, SupportTicket, FailedQuery, KBSuggestion, CanvasStudentData, UserMemory, ChatHistory, Feedback
 from security import hash_password, verify_password, create_access_token
 from jose import JWTError, jwt
+
+# Banner SSB integration (CAS auth + REST API sync)
+from banner_scraper import sync_banner
 
 # ==============================================================================
 # 2. CONFIGURATION & CONSTANTS
 # ==============================================================================
+# Banner sync rate limiting: {user_id: [timestamp, ...]}
+_banner_sync_timestamps: dict[int, list] = {}
+# Vertex AI Agent Engine config
+USE_VERTEX_AGENT   = os.getenv("USE_VERTEX_AGENT", "true").lower() == "true"
+ADK_BASE_URL       = os.getenv("ADK_BASE_URL", "http://127.0.0.1:8080")
+
+# Legacy Pinecone + OpenAI config (kept for /ingest and TTS)
 PINECONE_API_KEY   = os.getenv("PINECONE_API_KEY")
 PINECONE_ENV       = os.getenv("PINECONE_ENV")
 PINECONE_INDEX     = os.getenv("PINECONE_INDEX_NAME")
 PINECONE_NAMESPACE = os.getenv("PINECONE_NAMESPACE", "docs")
-OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY")  # Still needed for TTS
 JWT_SECRET         = os.getenv("JWT_SECRET")
 ALGORITHM          = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 240
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "4320"))  # 3 days default
 
 # Upload configuration
 UPLOAD_FOLDER = os.path.join(BACKEND_DIR, "uploads", "profile_pictures")
-CHAT_FILES_FOLDER = os.path.join(BACKEND_DIR, "uploads", "chat_files") # 🔥 NEW: Chat files folder
+CHAT_FILES_FOLDER = os.path.join(BACKEND_DIR, "uploads", "chat_files") #  NEW: Chat files folder
 
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'txt', 'docx', 'doc', 'mov', 'mp4'} # 🔥 NEW: Added Docs
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'txt', 'docx', 'doc', 'mov', 'mp4'} #  NEW: Added Docs
 
 # Create folders if not exist
 for folder in [UPLOAD_FOLDER, CHAT_FILES_FOLDER]:
     if not os.path.exists(folder):
         os.makedirs(folder, exist_ok=True)
-        print(f"✅ Created folder: {folder}")
+        print(f"[OK] Created folder: {folder}")
 
 # Safety check for keys
-if not all([PINECONE_API_KEY, PINECONE_ENV, PINECONE_INDEX, OPENAI_API_KEY]):
-    print("⚠️ WARNING: Some API keys are missing. Chatbot features will be limited.")
+if USE_VERTEX_AGENT:
+    print(f"[INFO] Using Vertex AI Agent Engine at {ADK_BASE_URL}")
+elif not all([PINECONE_API_KEY, PINECONE_ENV, PINECONE_INDEX, OPENAI_API_KEY]):
+    print("[WARN] WARNING: Some API keys are missing. Chatbot features will be limited.")
 
 # ==============================================================================
-# 3. DATABASE MODELS (UPDATED WITH SESSION_ID)
+# 3. DATABASE MODELS
 # ==============================================================================
-class ChatHistory(Base):
-    """
-    Stores chat history in AWS RDS (or local DB).
-    Linked to the User table via user_id.
-    """
-    __tablename__ = "chat_history"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    session_id = Column(String(255), default="default") # 🔥 NEW: Support multiple threads
-    user_query = Column(Text)
-    bot_response = Column(Text)
-    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-class Feedback(Base):
-    """
-    🔥 NEW: Stores user feedback on bot responses for improving the chatbot.
-    """
-    __tablename__ = "feedback"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    session_id = Column(String(255), default="default")
-    message_text = Column(Text)  # The bot message that was rated
-    feedback_type = Column(String(50))  # 'helpful', 'not_helpful', 'report'
-    report_details = Column(Text, nullable=True)  # Additional details for reports
-    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+# ChatHistory, Feedback, and all other models are now in models.py
+# Imported above: ChatHistory, Feedback (via models import line)
 
 def init_db():
     """Initializes the database tables and runs migrations."""
     # 1. Create tables if missing
     try:
         Base.metadata.create_all(bind=engine)
-        print("✅ Database tables checked/created.")
+        print("[OK] Database tables checked/created.")
     except Exception as e:
-        print(f"⚠️ DB Connection Error: {e}")
+        print(f"[WARN] DB Connection Error: {e}")
 
     # 2. Add session_id column if missing (For existing DBs)
     with engine.connect() as conn:
@@ -141,44 +158,61 @@ def init_db():
             # Check if column exists by selecting from it
             conn.execute(text("SELECT session_id FROM chat_history LIMIT 1"))
         except (OperationalError, ProgrammingError):
-            print("⚠️ 'session_id' column missing. Adding it now...")
+            print("[WARN] 'session_id' column missing. Adding it now...")
             try:
                 conn.execute(text("ALTER TABLE chat_history ADD COLUMN session_id VARCHAR(255) DEFAULT 'default'"))
                 conn.commit()
-                print("✅ Successfully added 'session_id' column!")
+                print("[OK] Successfully added 'session_id' column!")
             except Exception as e:
-                print(f"❌ Failed to add column: {e}")
+                print(f"[ERROR] Failed to add column: {e}")
 
         # 3. Add profile_picture_data column if missing (For base64 storage)
         try:
             conn.execute(text("SELECT profile_picture_data FROM users LIMIT 1"))
         except (OperationalError, ProgrammingError):
-            print("⚠️ 'profile_picture_data' column missing. Adding it now...")
+            print("[WARN] 'profile_picture_data' column missing. Adding it now...")
             try:
                 conn.execute(text("ALTER TABLE users ADD COLUMN profile_picture_data LONGTEXT"))
                 conn.commit()
-                print("✅ Successfully added 'profile_picture_data' column!")
+                print("[OK] Successfully added 'profile_picture_data' column!")
             except Exception as e:
-                print(f"❌ Failed to add profile_picture_data column: {e}")
+                print(f"[ERROR] Failed to add profile_picture_data column: {e}")
 
         # 4. Add morgan_connected_at column if missing
         try:
             conn.execute(text("SELECT morgan_connected_at FROM users LIMIT 1"))
         except (OperationalError, ProgrammingError):
-            print("⚠️ 'morgan_connected_at' column missing. Adding it now...")
+            print("[WARN] 'morgan_connected_at' column missing. Adding it now...")
             try:
                 conn.execute(text("ALTER TABLE users ADD COLUMN morgan_connected_at DATETIME"))
                 conn.commit()
-                print("✅ Successfully added 'morgan_connected_at' column!")
+                print("[OK] Successfully added 'morgan_connected_at' column!")
             except Exception as e:
-                print(f"❌ Failed to add morgan_connected_at column: {e}")
+                print(f"[ERROR] Failed to add morgan_connected_at column: {e}")
 
-        # 5. Check if degreeworks_data table exists
+        # 5. Add email auth columns if missing
+        for col, col_type in [
+            ("email_verified", "BOOLEAN DEFAULT TRUE"),
+            ("verification_token", "VARCHAR(255)"),
+            ("reset_token", "VARCHAR(255)"),
+            ("reset_token_expires", "DATETIME"),
+        ]:
+            try:
+                conn.execute(text(f"SELECT {col} FROM users LIMIT 1"))
+            except (OperationalError, ProgrammingError):
+                try:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {col_type}"))
+                    conn.commit()
+                    print(f"[OK] Added '{col}' column to users")
+                except Exception:
+                    pass
+
+        # 6. Check if degreeworks_data table exists
         try:
             conn.execute(text("SELECT id FROM degreeworks_data LIMIT 1"))
-            print("✅ degreeworks_data table exists")
+            print("[OK] degreeworks_data table exists")
         except (OperationalError, ProgrammingError):
-            print("⚠️ 'degreeworks_data' table missing. Creating it now...")
+            print("[WARN] 'degreeworks_data' table missing. Creating it now...")
             try:
                 conn.execute(text("""
                     CREATE TABLE degreeworks_data (
@@ -206,16 +240,28 @@ def init_db():
                     )
                 """))
                 conn.commit()
-                print("✅ Successfully created 'degreeworks_data' table!")
+                print("[OK] Successfully created 'degreeworks_data' table!")
             except Exception as e:
-                print(f"❌ Failed to create degreeworks_data table: {e}")
+                print(f"[ERROR] Failed to create degreeworks_data table: {e}")
+
+        # 6b. Add data_source column to degreeworks_data if missing
+        try:
+            conn.execute(text("SELECT data_source FROM degreeworks_data LIMIT 1"))
+        except (OperationalError, ProgrammingError):
+            print("[WARN] 'data_source' column missing from degreeworks_data. Adding it now...")
+            try:
+                conn.execute(text("ALTER TABLE degreeworks_data ADD COLUMN data_source VARCHAR(50) DEFAULT 'manual_entry'"))
+                conn.commit()
+                print("[OK] Successfully added 'data_source' column!")
+            except Exception as e:
+                print(f"[ERROR] Failed to add data_source column: {e}")
 
         # 6. Check if support_tickets table exists
         try:
             conn.execute(text("SELECT id FROM support_tickets LIMIT 1"))
-            print("✅ support_tickets table exists")
+            print("[OK] support_tickets table exists")
         except (OperationalError, ProgrammingError):
-            print("⚠️ 'support_tickets' table missing. Creating it now...")
+            print("[WARN] 'support_tickets' table missing. Creating it now...")
             try:
                 conn.execute(text("""
                     CREATE TABLE support_tickets (
@@ -238,15 +284,51 @@ def init_db():
                     )
                 """))
                 conn.commit()
-                print("✅ Successfully created 'support_tickets' table!")
+                print("[OK] Successfully created 'support_tickets' table!")
             except Exception as e:
-                print(f"❌ Failed to create support_tickets table: {e}")
+                print(f"[ERROR] Failed to create support_tickets table: {e}")
 
-    # 7. Create/Update admin account
+        # 7. Check if banner_student_data table exists
+        try:
+            conn.execute(text("SELECT id FROM banner_student_data LIMIT 1"))
+            print("[OK] banner_student_data table exists")
+        except (OperationalError, ProgrammingError):
+            print("[WARN] 'banner_student_data' table missing. Creating it now...")
+            try:
+                conn.execute(text("""
+                    CREATE TABLE banner_student_data (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        user_id INT UNIQUE NOT NULL,
+                        student_phone VARCHAR(20),
+                        student_address TEXT,
+                        current_term VARCHAR(50),
+                        registered_courses TEXT,
+                        total_registered_credits FLOAT,
+                        registration_history TEXT,
+                        grade_history TEXT,
+                        cumulative_gpa FLOAT,
+                        total_credits_earned FLOAT,
+                        total_credits_attempted FLOAT,
+                        deans_list_terms TEXT,
+                        synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    )
+                """))
+                conn.commit()
+                print("[OK] Successfully created 'banner_student_data' table!")
+            except Exception as e:
+                print(f"[ERROR] Failed to create banner_student_data table: {e}")
+
+    # 8. Create/Update admin account
     try:
         db = SessionLocal()
-        admin_email = "admin@test.com"
-        admin_password = "admin"
+        admin_email = os.getenv("ADMIN_EMAIL", "admin@morgan.edu")
+        admin_password = os.getenv("ADMIN_PASSWORD")
+        if not admin_password:
+            print("[WARN] ADMIN_PASSWORD not set in env, skipping admin account creation")
+            db.close()
+            return
 
         existing_admin = db.query(User).filter(User.email == admin_email).first()
 
@@ -255,9 +337,9 @@ def init_db():
             if existing_admin.role != "admin":
                 existing_admin.role = "admin"
                 db.commit()
-                print(f"✅ Updated {admin_email} to admin role!")
+                print(f"[OK] Updated {admin_email} to admin role!")
             else:
-                print(f"✅ Admin account {admin_email} already exists with admin role.")
+                print(f"[OK] Admin account {admin_email} already exists with admin role.")
         else:
             # Create new admin account
             from security import hash_password
@@ -270,11 +352,11 @@ def init_db():
             )
             db.add(admin_user)
             db.commit()
-            print(f"✅ Created admin account: {admin_email}")
+            print(f"[OK] Created admin account: {admin_email}")
 
         db.close()
     except Exception as e:
-        print(f"❌ Failed to create/update admin account: {e}")
+        print(f"[ERROR] Failed to create/update admin account: {e}")
 
 init_db()
 
@@ -288,10 +370,22 @@ qa = None
 llm = None
 
 def build_qa_chain():
-    """Initialize AI components on startup"""
+    """Initialize legacy AI components on startup (only when not using Vertex AI)"""
     global retriever, qa, llm, pc
+    if USE_VERTEX_AGENT:
+        # Check Vertex AI Agent health
+        health = check_agent_health()
+        print(f" Vertex AI Agent: {health['status']} - {health['message']}")
+        if health["status"] != "connected":
+            print("[WARN] ADK server not running. Start it with:")
+            print("   cd google-ai-engine-research/adk_deploy && python -m google.adk.cli web . --port 8080")
+        return
+
+    if not LEGACY_RAG_AVAILABLE:
+        print("[WARN] Legacy RAG libraries not installed. Chatbot will be offline.")
+        return
     if not all([PINECONE_API_KEY, OPENAI_API_KEY, PINECONE_INDEX]):
-        print("⚠️ API Keys missing. Chatbot will be offline.")
+        print("[WARN] API Keys missing. Chatbot will be offline.")
         return
     try:
         pc = Pinecone(api_key=PINECONE_API_KEY)
@@ -304,16 +398,16 @@ def build_qa_chain():
         retriever = store.as_retriever(
             search_type="mmr",
             search_kwargs={
-                "k": 10,           # Increased from 8 - fetch more relevant docs
-                "fetch_k": 30,     # Increased from 20 - larger pool for MMR selection
-                "lambda_mult": 0.5 # Reduced from 0.7 - better balance of relevance & diversity
+                "k": 10,
+                "fetch_k": 30,
+                "lambda_mult": 0.5
             }
         )
         llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, model_name="gpt-3.5-turbo", temperature=0)
         qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents=True)
-        print("✅ AI System Initialized")
+        print("[OK] Legacy AI System Initialized (Pinecone + OpenAI)")
     except Exception as e:
-        print(f"❌ AI Init Failed: {e}")
+        print(f"[ERROR] AI Init Failed: {e}")
 
 @asynccontextmanager
 async def lifespan(app):
@@ -323,11 +417,14 @@ async def lifespan(app):
     yield
     # Shutdown (cleanup if needed)
 
-app = FastAPI(title="CS Chatbot API", version="2.1.0", lifespan=lifespan)
+app = FastAPI(title="CS Navigator API", version="5.0.0", lifespan=lifespan)
+
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5175,http://127.0.0.1:3000,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:8000,https://inavigator.ai,https://cs.inavigator.ai,https://api.inavigator.ai,https://csnavigator-frontend-750361124802.us-central1.run.app").split(",")
+print(f"[CORS] Allowed origins: {ALLOWED_ORIGINS}")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -335,7 +432,7 @@ app.add_middleware(
 
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["*"]
+    allowed_hosts=os.getenv("TRUSTED_HOSTS", "localhost,127.0.0.1,inavigator.ai,cs.inavigator.ai,api.inavigator.ai,csnavigator-backend-750361124802.us-central1.run.app,csnavigator-frontend-750361124802.us-central1.run.app,csnavigator-backend-jvat5svbjq-uc.a.run.app").split(",")
 )
 
 # Mount Static Files (Profile Pictures AND Chat Files)
@@ -343,12 +440,12 @@ UPLOADS_DIR = os.path.join(BACKEND_DIR, "uploads")
 if os.path.exists(UPLOADS_DIR):
     try:
         app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
-        print(f"✅ Static files mounted: /uploads -> {UPLOADS_DIR}")
+        print(f"[OK] Static files mounted: /uploads -> {UPLOADS_DIR}")
     except Exception as e:
-        print(f"❌ Error mounting static files: {e}")
+        print(f"[ERROR] Error mounting static files: {e}")
 else:
     os.makedirs(UPLOADS_DIR, exist_ok=True)
-    print(f"✅ Created uploads directory: {UPLOADS_DIR}")
+    print(f"[OK] Created uploads directory: {UPLOADS_DIR}")
 
 # ==============================================================================
 # 5. AUTHENTICATION HELPERS
@@ -372,17 +469,18 @@ def get_current_user(
         user_email = payload.get("email")
         if not user_email:
             raise HTTPException(status_code=403, detail="Invalid token")
-        
+
         user = db.query(User).filter(User.email == user_email).first()
         if not user:
             raise HTTPException(status_code=403, detail="User not found")
-        
+
         return {
             "user_id": user.id,
             "email": user.email,
             "role": user.role
         }
-    except JWTError:
+    except JWTError as e:
+        print(f"JWT decode error: {e}")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
 
 def allowed_file(filename: str) -> bool:
@@ -395,13 +493,37 @@ class RegisterRequest(BaseModel):
     email: str
     password: str
 
+    @staticmethod
+    def validate_email_format(v):
+        import re
+        if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', v):
+            raise ValueError("Invalid email format")
+        return v
+
+    @staticmethod
+    def validate_password_strength(v):
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
+
 class LoginRequest(BaseModel):
     email: str
     password: str
 
+VALID_MODELS = {"", "inav-1.0", "inav-1.1"}
+
 class QueryRequest(BaseModel):
     query: str
-    session_id: str = "default" # 🔥 NEW: Accept session ID
+    session_id: str = "default"
+    skip_cache: bool = False
+    model: str = ""              # "inav-1.0" (fast) or "inav-1.1" (pro)
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def validate_model(cls, v):
+        if v not in VALID_MODELS:
+            return ""
+        return v
 
 class GuestQueryRequest(BaseModel):
     query: str
@@ -416,11 +538,21 @@ import time as time_module
 guest_rate_limits = defaultdict(list)  # IP -> list of timestamps
 GUEST_RATE_LIMIT = 15  # requests per minute (time-based session provides natural limiting)
 GUEST_RATE_WINDOW = 60  # seconds
+_guest_rate_last_cleanup = time_module.time()
 
 def check_guest_rate_limit(ip: str) -> bool:
     """Check if IP is within rate limit. Returns True if allowed, False if blocked."""
+    global _guest_rate_last_cleanup
     current_time = time_module.time()
-    # Clean old entries
+
+    # Periodic cleanup: purge stale IPs every 10 minutes to prevent memory leak
+    if current_time - _guest_rate_last_cleanup > 600:
+        stale_ips = [k for k, v in guest_rate_limits.items() if not v or current_time - v[-1] > GUEST_RATE_WINDOW]
+        for k in stale_ips:
+            del guest_rate_limits[k]
+        _guest_rate_last_cleanup = current_time
+
+    # Clean old entries for this IP
     guest_rate_limits[ip] = [t for t in guest_rate_limits[ip] if current_time - t < GUEST_RATE_WINDOW]
     # Check limit
     if len(guest_rate_limits[ip]) >= GUEST_RATE_LIMIT:
@@ -428,6 +560,12 @@ def check_guest_rate_limit(ip: str) -> bool:
     # Add new request
     guest_rate_limits[ip].append(current_time)
     return True
+
+# Forgot-password rate limiting: {email: [timestamp, ...]}
+_forgot_pw_timestamps: dict[str, list] = {}
+_forgot_pw_last_cleanup = time_module.time()
+FORGOT_PW_RATE_LIMIT = 5   # max requests per window
+FORGOT_PW_RATE_WINDOW = 900  # 15 minutes
 
 class Course(BaseModel):
     course_code: str
@@ -449,7 +587,7 @@ class TTSRequest(BaseModel):
     text: str
     voice: str = "alloy"  # Options: alloy, echo, fable, onyx, nova, shimmer
 
-# 🔥 DegreeWorks Data Schema
+#  DegreeWorks Data Schema
 class DegreeWorksRequest(BaseModel):
     student_name: Optional[str] = None
     student_id: Optional[str] = None
@@ -473,7 +611,122 @@ class DegreeWorksRequest(BaseModel):
 # ==============================================================================
 DATA_DIR       = os.path.join(BACKEND_DIR, "data_sources")
 CLASSES_FILE   = os.path.join(DATA_DIR, "classes.json")
+KB_COURSES_FILE = os.path.join(DATA_DIR, "courses.txt")
 RESOURCES_FILE = os.path.join(DATA_DIR, "academic_resources.json")
+
+# Cached parsed curriculum from txt source of truth
+_parsed_curriculum = None
+
+def parse_curriculum_from_txt():
+    """Parse courses.txt into the structured JSON format the frontend expects.
+    This makes the txt knowledge base files the single source of truth for the curriculum page."""
+    global _parsed_curriculum
+    if _parsed_curriculum is not None:
+        return _parsed_curriculum
+
+    degree_info = {
+        "program": "Computer Science, B.S.",
+        "university": "Morgan State University",
+        "total_credits": 120,
+        "general_education_credits": 44,
+        "supporting_credits": 11,
+        "major_credits": 65,
+        "cs_core_credits": 76,
+        "description": "A minimum of 120 credit hours are required to graduate with a B.S. in Computer Science."
+    }
+
+    elective_requirements = {
+        "group_a": {"name": "Group A Electives", "required_courses": 3,
+                    "description": "Students must choose three (3) courses from Group A"},
+        "group_b": {"name": "Group B Electives", "required_courses": 2,
+                    "description": "Students must choose two (2) courses from Group B"},
+        "group_c": {"name": "Group C Electives", "required_courses": 4,
+                    "description": "Students must choose four (4) courses from Group C. Note: COSC 470 OR COSC 472 - only one counts."},
+        "group_d": {"name": "Group D Electives", "required_courses": 1,
+                    "description": "Students must choose one (1) course from Group D, or any 300-400 level COSC course not previously taken"}
+    }
+
+    section_map = {
+        "REQUIRED COURSES": ("Required", "required", None),
+        "SUPPORTING COURSES": ("Supporting", "supporting", None),
+        "GROUP A ELECTIVES": ("Group A Elective", "group_a", "Choose 3 courses from Group A"),
+        "GROUP B ELECTIVES": ("Group B Elective", "group_b", "Choose 2 courses from Group B"),
+        "GROUP C ELECTIVES": ("Group C Elective", "group_c", "Choose 4 courses from Group C (COSC 470 OR COSC 472)"),
+        "GROUP D ELECTIVES": ("Group D Elective", "group_d", "Choose 1 course from Group D"),
+    }
+
+    courses = []
+    with open(KB_COURSES_FILE, encoding="utf-8") as f:
+        lines = f.read().split('\n')
+
+    current_cat = current_req = current_note = None
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Detect section headers
+        matched = False
+        for key, (cat, req, note) in section_map.items():
+            if line.upper().startswith(key):
+                current_cat, current_req, current_note = cat, req, note
+                matched = True
+                break
+        if matched:
+            i += 1
+            continue
+
+        # Detect course line: "COSC 111 - Introduction to Computer Science I"
+        m = re.match(r'^([A-Z]+\s+\d{3})\s*[-\u2013\u2014]\s*(.+)$', line)
+        if m and current_cat:
+            course = {
+                "course_code": m.group(1).strip(),
+                "course_name": m.group(2).strip(),
+                "credits": 3,
+                "category": current_cat,
+                "requirement_type": current_req,
+                "prerequisites": [],
+                "offered": ["Fall", "Spring"],
+            }
+            if current_note:
+                course["elective_note"] = current_note
+
+            # Parse detail lines until blank line
+            i += 1
+            while i < len(lines) and lines[i].strip():
+                d = lines[i].strip()
+                if d.lower().startswith("credits:"):
+                    try:
+                        course["credits"] = int(d.split(":", 1)[1].strip())
+                    except ValueError:
+                        pass
+                elif d.lower().startswith("prerequisite"):
+                    raw = d.split(":", 1)[1].strip()
+                    if raw.lower() in ("none", ""):
+                        course["prerequisites"] = []
+                    else:
+                        parts = [p.strip() for p in raw.split(",")]
+                        course["prerequisites"] = [
+                            p[3:].strip() if p.startswith("or ") else p
+                            for p in parts if p
+                        ]
+                elif d.lower().startswith("offered:"):
+                    course["offered"] = [o.strip() for o in d.split(":", 1)[1].split(",") if o.strip()]
+                elif d.lower().startswith("also satisfies"):
+                    course["note"] = d
+                i += 1
+
+            courses.append(course)
+            continue
+
+        i += 1
+
+    result = {
+        "degree_info": degree_info,
+        "courses": courses,
+        "elective_requirements": elective_requirements
+    }
+    _parsed_curriculum = result
+    return result
 
 helpful_links = {}
 if os.path.exists(RESOURCES_FILE):
@@ -505,26 +758,251 @@ def load_json_documents(paths: List[str]) -> List[Dict[str,Any]]:
     return docs
 
 # ==============================================================================
+# 7b. ROOT DASHBOARD - Show endpoints & recent logs
+# ==============================================================================
+import logging
+from collections import deque
+
+# In-memory log buffer (last 200 log lines)
+_log_buffer = deque(maxlen=200)
+
+class BufferHandler(logging.Handler):
+    def emit(self, record):
+        _log_buffer.append(self.format(record))
+
+_buf_handler = BufferHandler()
+_buf_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+logging.getLogger().addHandler(_buf_handler)
+logging.getLogger("uvicorn.access").addHandler(_buf_handler)
+logging.getLogger("uvicorn.error").addHandler(_buf_handler)
+
+def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    db: Session = Depends(get_db)
+) -> Optional[Dict[str, Any]]:
+    """Like get_current_user but returns None instead of 401/403 when unauthenticated."""
+    if not credentials:
+        return None
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[ALGORITHM])
+        user_email = payload.get("email")
+        if not user_email:
+            return None
+        user = db.query(User).filter(User.email == user_email).first()
+        if not user:
+            return None
+        return {"user_id": user.id, "email": user.email, "role": user.role}
+    except JWTError:
+        return None
+
+@app.get("/", response_class=HTMLResponse)
+def root_dashboard(request: Request, user: Optional[dict] = Depends(get_optional_user)):
+    """Dashboard showing all endpoints and recent logs. Admin only, dev/staging only."""
+    if not user or user.get("role") != "admin":
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(url="/docs")
+    # Hide logs in production unless explicitly enabled
+    show_logs = os.getenv("SHOW_DASHBOARD_LOGS", "true").lower() == "true"
+    routes = []
+    for route in request.app.routes:
+        if hasattr(route, "methods"):
+            for method in sorted(route.methods):
+                if method == "HEAD":
+                    continue
+                routes.append({"method": method, "path": route.path})
+    routes.sort(key=lambda r: (r["path"], r["method"]))
+
+    import html as _html
+    logs_html = "\n".join(
+        f"<div class='log'>{_html.escape(line)}</div>" for line in reversed(_log_buffer)
+    ) or "<div class='log dim'>No logs captured yet.</div>"
+
+    rows = "\n".join(
+        f"<tr><td class='method {r['method'].lower()}'>{r['method']}</td><td>{r['path']}</td></tr>"
+        for r in routes
+    )
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>CSNavigator API</title>
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family: 'SF Mono', 'Fira Code', monospace; background:#0d1117; color:#c9d1d9; padding:2rem; }}
+  h1 {{ color:#58a6ff; margin-bottom:.5rem; font-size:1.4rem; }}
+  h2 {{ color:#8b949e; margin:1.5rem 0 .5rem; font-size:1rem; text-transform:uppercase; letter-spacing:.1em; }}
+  .info {{ color:#8b949e; font-size:.85rem; margin-bottom:1rem; }}
+  table {{ border-collapse:collapse; width:100%; max-width:700px; }}
+  td {{ padding:4px 12px; border-bottom:1px solid #21262d; font-size:.85rem; }}
+  .method {{ font-weight:bold; width:60px; }}
+  .get {{ color:#3fb950; }}  .post {{ color:#d29922; }}  .put {{ color:#58a6ff; }}  .delete {{ color:#f85149; }}
+  #logs {{ background:#161b22; border:1px solid #30363d; border-radius:6px; padding:1rem; max-height:500px; overflow-y:auto; margin-top:.5rem; }}
+  .log {{ font-size:.78rem; padding:2px 0; border-bottom:1px solid #21262d; white-space:pre-wrap; word-break:break-all; }}
+  .dim {{ color:#484f58; }}
+  .refresh {{ color:#58a6ff; text-decoration:none; font-size:.85rem; }}
+</style></head><body>
+  <h1>CSNavigator API v2.1.0</h1>
+  <div class="info">Backend is running. {len(routes)} endpoints registered.</div>
+
+  <h2>Endpoints</h2>
+  <table>{rows}</table>
+
+  {'<h2>Recent Logs <a class="refresh" href="/">refresh</a></h2><div id="logs">' + logs_html + '</div>' if show_logs else '<p class="dim">Logs hidden in production. Set SHOW_DASHBOARD_LOGS=true to enable.</p>'}
+</body></html>"""
+
+# ==============================================================================
 # 8. API ENDPOINTS
 # ==============================================================================
 
 # --- Auth ---
+ALLOWED_EMAIL_DOMAINS = ["morgan.edu"]
+
+_register_timestamps: dict[str, list] = {}
+
 @app.post("/api/register", status_code=status.HTTP_201_CREATED)
 def register(req: RegisterRequest, db: Session = Depends(get_db)):
+    import re
+    from email_service import generate_token, send_verification_email
+
+    email = req.email.strip().lower()
+
+    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+        raise HTTPException(status_code=400, detail="Invalid email format")
+
+    # Rate limit per EMAIL (not per IP). On campus WiFi all students share one IP,
+    # so IP-based limiting blocks innocent users. 3 attempts per email per hour.
+    now_ts = time_module.time()
+    reg_ts = _register_timestamps.get(email, [])
+    reg_ts = [t for t in reg_ts if now_ts - t < 3600]
+    if len(reg_ts) >= 3:
+        raise HTTPException(status_code=429, detail="Too many attempts for this email. Try again in an hour.")
+    reg_ts.append(now_ts)
+    _register_timestamps[email] = reg_ts
+
+    # Only allow Morgan State email for new registrations
+    email_domain = email.split("@")[-1].lower()
+    allow_test = os.getenv("ALLOW_TEST_EMAILS", "false").lower() == "true"
+    if email_domain not in ALLOWED_EMAIL_DOMAINS and not (allow_test and email.endswith("@test.com")):
+        raise HTTPException(status_code=400, detail="Only @morgan.edu email addresses are allowed.")
+
+    if len(req.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     if db.query(User).filter(User.email == req.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
+
     hashed = hash_password(req.password)
-    student = User(email=req.email, password_hash=hashed, role="student")
+    token = generate_token()
+    student = User(email=req.email, password_hash=hashed, role="student", email_verified=False, verification_token=token)
     db.add(student)
     db.commit()
     db.refresh(student)
-    return {"message": "Account created", "user_id": student.id}
+
+    send_verification_email(req.email, token)
+    return {"message": "Account created! Check your Morgan State email to verify.", "user_id": student.id}
+
+
+@app.get("/api/verify-email")
+def verify_email(token: str, db: Session = Depends(get_db)):
+    from starlette.responses import RedirectResponse
+    user = db.query(User).filter(User.verification_token == token).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification link")
+    user.email_verified = True
+    user.verification_token = None
+    db.commit()
+    # Redirect to login with success flag
+    app_url = os.getenv("APP_URL", "https://cs.inavigator.ai")
+    return RedirectResponse(url=f"{app_url}/login?verified=true")
+
+
+@app.post("/api/resend-verification")
+async def resend_verification(request: Request, db: Session = Depends(get_db)):
+    from email_service import generate_token, send_verification_email
+    body = await request.json()
+    email = body.get("email", "")
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        return {"message": "If an account exists, a verification email has been sent."}
+    if user.email_verified:
+        return {"message": "Email already verified."}
+    token = generate_token()
+    user.verification_token = token
+    db.commit()
+    send_verification_email(email, token)
+    return {"message": "Verification email sent. Check your inbox."}
+
+
+@app.post("/api/forgot-password")
+async def forgot_password(request: Request, db: Session = Depends(get_db)):
+    from email_service import generate_token, send_password_reset_email
+    body = await request.json()
+    email = body.get("email", "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email required")
+
+    # Rate limit: max 5 forgot-password requests per 15 minutes per email
+    global _forgot_pw_last_cleanup
+    now_ts = time_module.time()
+
+    # Periodic cleanup: purge stale emails every 15 minutes
+    if now_ts - _forgot_pw_last_cleanup > FORGOT_PW_RATE_WINDOW:
+        stale = [k for k, v in _forgot_pw_timestamps.items() if not v or now_ts - v[-1] > FORGOT_PW_RATE_WINDOW]
+        for k in stale:
+            del _forgot_pw_timestamps[k]
+        _forgot_pw_last_cleanup = now_ts
+
+    timestamps = _forgot_pw_timestamps.get(email, [])
+    timestamps = [t for t in timestamps if now_ts - t < FORGOT_PW_RATE_WINDOW]
+    if len(timestamps) >= FORGOT_PW_RATE_LIMIT:
+        return {"message": "If an account exists with that email, a password reset link has been sent."}
+    timestamps.append(now_ts)
+    _forgot_pw_timestamps[email] = timestamps
+
+    user = db.query(User).filter(User.email == email).first()
+    if user:
+        token = generate_token()
+        user.reset_token = token
+        user.reset_token_expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        db.commit()
+        send_password_reset_email(email, token)
+
+    return {"message": "If an account exists with that email, a password reset link has been sent."}
+
+
+@app.post("/api/reset-password")
+async def reset_password(request: Request, db: Session = Depends(get_db)):
+    body = await request.json()
+    token = body.get("token", "")
+    new_password = body.get("password", "")
+    if not token or not new_password:
+        raise HTTPException(status_code=400, detail="Token and new password required")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    user = db.query(User).filter(User.reset_token == token).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+    if user.reset_token_expires:
+        expires = user.reset_token_expires if user.reset_token_expires.tzinfo else user.reset_token_expires.replace(tzinfo=timezone.utc)
+        if expires < datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="Reset link has expired. Request a new one.")
+
+    user.password_hash = hash_password(new_password)
+    user.reset_token = None
+    user.reset_token_expires = None
+    user.email_verified = True
+    db.commit()
+    return {"message": "Password reset successfully. You can now log in."}
+
 
 @app.post("/api/login")
 def login(req: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == req.email).first()
     if not user or not verify_password(req.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Require email verification (skip for admins and existing test accounts)
+    if not getattr(user, 'email_verified', True) and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Please verify your email first. Check your inbox for the verification link.")
+
     token = create_access_token({
         "user_id": user.id,
         "role": user.role,
@@ -622,26 +1100,36 @@ async def upload_profile_picture(profilePicture: UploadFile = File(...), user: d
     # Return base64 data URL for immediate display
     return {"url": data_url}
 
-# 🔥 NEW: Chat File Upload Endpoint
+#  NEW: Chat File Upload Endpoint
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+
 @app.post("/api/upload-file")
 async def upload_chat_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     # 1. Validate File Type
-    if not allowed_file(file.filename): 
+    if not allowed_file(file.filename):
         raise HTTPException(400, "File type not allowed")
-    
+
     # 2. Create Unique Filename
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    # Sanitize filename
     clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
     filename = f"chat_{user['user_id']}_{timestamp}_{clean_name}"
     filepath = os.path.join(CHAT_FILES_FOLDER, filename)
 
-    # 3. Save the File
+    # 3. Stream to disk with size enforcement (never holds full file in memory)
     try:
+        bytes_written = 0
         with open(filepath, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            while chunk := await file.read(64 * 1024):  # 64KB chunks
+                bytes_written += len(chunk)
+                if bytes_written > MAX_UPLOAD_SIZE:
+                    buffer.close()
+                    os.remove(filepath)
+                    raise HTTPException(413, f"File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024*1024)}MB")
+                buffer.write(chunk)
+    except HTTPException:
+        raise  # Preserve 413 for oversized files
     except Exception as e:
-        print(f"❌ File Save Error: {e}")
+        print(f"[ERROR] File Save Error: {e}")
         raise HTTPException(500, "Could not save file")
 
     # 4. Return the public URL
@@ -667,7 +1155,7 @@ async def sync_degreeworks(
     db: Session = Depends(get_db)
 ):
     """
-    Receives DegreeWorks data from the bookmarklet and saves it to the database.
+    Receives DegreeWorks data and saves it to the database.
     Creates or updates the user's DegreeWorks record.
     """
     try:
@@ -677,6 +1165,11 @@ async def sync_degreeworks(
 
         # Check if user already has DegreeWorks data
         existing = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
+
+        # Determine data source: only raw_data indicates a parsed/scraped source
+        data_source = "manual_entry"
+        if req.raw_data:
+            data_source = "pdf_parse"
 
         if existing:
             # Update existing record
@@ -696,6 +1189,7 @@ async def sync_degreeworks(
             existing.courses_remaining = json.dumps(req.courses_remaining) if req.courses_remaining else None
             existing.requirements_status = json.dumps(req.requirements_status) if req.requirements_status else None
             existing.raw_data = req.raw_data
+            existing.data_source = data_source
             existing.updated_at = datetime.now(timezone.utc)
         else:
             # Create new record
@@ -716,7 +1210,8 @@ async def sync_degreeworks(
                 courses_in_progress=json.dumps(req.courses_in_progress) if req.courses_in_progress else None,
                 courses_remaining=json.dumps(req.courses_remaining) if req.courses_remaining else None,
                 requirements_status=json.dumps(req.requirements_status) if req.requirements_status else None,
-                raw_data=req.raw_data
+                raw_data=req.raw_data,
+                data_source=data_source
             )
             db.add(new_data)
 
@@ -745,7 +1240,7 @@ async def sync_degreeworks(
         }
 
     except Exception as e:
-        print(f"❌ DegreeWorks Sync Error: {e}")
+        print(f"[ERROR] DegreeWorks Sync Error: {e}")
         raise HTTPException(500, f"Failed to sync DegreeWorks data: {str(e)}")
 
 
@@ -900,7 +1395,7 @@ async def disconnect_degreeworks(user: dict = Depends(get_current_user), db: Ses
 
         return {"success": True, "message": "DegreeWorks data disconnected"}
     except Exception as e:
-        print(f"❌ DegreeWorks Disconnect Error: {e}")
+        print(f"[ERROR] DegreeWorks Disconnect Error: {e}")
         raise HTTPException(500, f"Failed to disconnect: {str(e)}")
 
 
@@ -911,139 +1406,71 @@ async def upload_degreeworks_pdf(
     db: Session = Depends(get_db)
 ):
     """
-    Uploads DegreeWorks PDF and stores the raw text for chat context injection.
-    Uses a "Chat with PDF" approach - the LLM reads the raw text directly.
+    Uploads DegreeWorks document (PDF or DOCX) and stores the extracted
+    text for chat context injection.
     """
+    ALLOWED_DW_EXTENSIONS = {'pdf', 'docx', 'doc'}
+
     print("=" * 60)
-    print("🚀 PDF UPLOAD ENDPOINT HIT!")
-    print(f"📄 File received: {file.filename if file else 'NO FILE'}")
-    print(f"📄 User: {user}")
+    print("DEGREEWORKS UPLOAD ENDPOINT HIT!")
+    print(f"File received: {file.filename if file else 'NO FILE'}")
+    print(f"User: {user}")
     print("=" * 60)
 
     if not file or not file.filename:
-        print("❌ No file provided")
         raise HTTPException(400, "No file provided")
 
-    if not file.filename.lower().endswith('.pdf'):
-        print(f"❌ Invalid file type: {file.filename}")
-        raise HTTPException(400, "Please upload a PDF file")
+    ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
+    if ext not in ALLOWED_DW_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported file type. Please upload: {', '.join(ALLOWED_DW_EXTENSIONS)}")
 
     try:
         # Save the uploaded file temporarily
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        temp_filename = f"degreeworks_{user['user_id']}_{timestamp}.pdf"
+        temp_filename = f"degreeworks_{user['user_id']}_{timestamp}.{ext}"
         temp_filepath = os.path.join(CHAT_FILES_FOLDER, temp_filename)
 
         content = await file.read()
-        print(f"📄 Received PDF file: {file.filename}, size: {len(content)} bytes")
+        print(f"Received file: {file.filename}, size: {len(content)} bytes")
 
         with open(temp_filepath, "wb") as buffer:
             buffer.write(content)
 
-        print(f"📄 Saved PDF to: {temp_filepath}")
-
-        # Extract text from PDF - try multiple methods
+        # Extract text - try fast local methods first, OCR API only when needed
         pdf_text = ""
 
-        # Method 1: pypdf
-        try:
-            print("📄 Trying pypdf extraction...")
-            reader = pypdf.PdfReader(temp_filepath)
-            print(f"📄 PDF has {len(reader.pages)} pages")
-            for i, page in enumerate(reader.pages):
-                page_text = page.extract_text()
-                print(f"📄 Page {i+1}: extracted {len(page_text) if page_text else 0} chars")
-                if page_text:
-                    pdf_text += page_text + "\n"
-        except Exception as e:
-            print(f"❌ pypdf extraction failed: {e}")
-
-        # Method 2: Try pdfplumber if pypdf failed or got little text
-        if len(pdf_text.strip()) < 100:
+        # Method 1: Local pypdf for PDFs (instant for text-based PDFs)
+        if ext == 'pdf':
             try:
-                import pdfplumber
-                print("📄 Trying pdfplumber extraction...")
-                with pdfplumber.open(temp_filepath) as pdf:
-                    print(f"📄 pdfplumber found {len(pdf.pages)} pages")
-                    for i, page in enumerate(pdf.pages):
-                        # Try multiple extraction methods
-                        page_text = page.extract_text() or ""
-
-                        # Also try extracting tables
-                        tables = page.extract_tables()
-                        if tables:
-                            for table in tables:
-                                for row in table:
-                                    if row:
-                                        page_text += " ".join([str(cell) if cell else "" for cell in row]) + "\n"
-
-                        print(f"📄 pdfplumber Page {i+1}: extracted {len(page_text)} chars")
-                        if page_text:
-                            pdf_text += page_text + "\n"
-            except ImportError:
-                print("⚠️ pdfplumber not installed - run: pip install pdfplumber")
-            except Exception as e:
-                print(f"❌ pdfplumber extraction failed: {e}")
-                import traceback
-                traceback.print_exc()
-
-        # Method 3: Try PyMuPDF (fitz) if still no text
-        if len(pdf_text.strip()) < 100:
-            try:
-                import fitz  # PyMuPDF
-                print("📄 Trying PyMuPDF extraction...")
-                doc = fitz.open(temp_filepath)
-                print(f"📄 PyMuPDF found {len(doc)} pages")
-                for i, page in enumerate(doc):
-                    # Try different text extraction methods
-                    page_text = page.get_text("text")  # Plain text
-                    if len(page_text.strip()) < 50:
-                        page_text = page.get_text("blocks")  # Try blocks
-                        if isinstance(page_text, list):
-                            page_text = "\n".join([str(b[4]) if len(b) > 4 else "" for b in page_text])
-                    print(f"📄 PyMuPDF Page {i+1}: extracted {len(page_text) if page_text else 0} chars")
+                print("Trying local pypdf extraction (fast)...")
+                reader = pypdf.PdfReader(temp_filepath)
+                for page in reader.pages:
+                    page_text = page.extract_text()
                     if page_text:
-                        pdf_text += str(page_text) + "\n"
-                doc.close()
-            except ImportError:
-                print("⚠️ PyMuPDF not installed - run: pip install pymupdf")
+                        pdf_text += page_text + "\n"
+                print(f"pypdf extracted {len(pdf_text)} chars")
             except Exception as e:
-                print(f"❌ PyMuPDF extraction failed: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"pypdf extraction failed: {e}")
 
-        # Method 4: Try reading raw PDF content for any text
-        if len(pdf_text.strip()) < 100:
-            print("📄 Trying raw PDF text extraction...")
+        # Method 2: Local python-docx for DOCX (instant)
+        if ext in ('docx', 'doc'):
             try:
-                with open(temp_filepath, 'rb') as f:
-                    raw_content = f.read()
-                # Try to find text streams in PDF
-                import re as regex
-                # Look for text between BT (begin text) and ET (end text) markers
-                text_matches = regex.findall(rb'\(([^)]+)\)', raw_content)
-                raw_text = ""
-                for match in text_matches[:500]:  # Limit to first 500 matches
-                    try:
-                        decoded = match.decode('utf-8', errors='ignore')
-                        if len(decoded) > 2 and decoded.isprintable():
-                            raw_text += decoded + " "
-                    except:
-                        pass
-                if len(raw_text.strip()) > 50:
-                    pdf_text = raw_text
-                    print(f"📄 Raw extraction found {len(raw_text)} chars")
+                print("Trying local docx extraction (fast)...")
+                doc_file = docx.Document(temp_filepath)
+                for para in doc_file.paragraphs:
+                    pdf_text += para.text + "\n"
+                print(f"docx extracted {len(pdf_text)} chars")
             except Exception as e:
-                print(f"❌ Raw extraction failed: {e}")
+                print(f"docx extraction failed: {e}")
 
-        print(f"📄 Total extracted text: {len(pdf_text)} characters")
-        print(f"📄 Text preview: {pdf_text[:500]}...")
+        print(f"Total extracted text: {len(pdf_text)} characters")
 
-        # Be more lenient - even 20 chars might work for the LLM
         if len(pdf_text.strip()) < 20:
-            raise HTTPException(400, f"Could not extract text from this PDF. Extracted only {len(pdf_text)} chars. The file may be image-based.")
-
-        print(f"✅ Successfully extracted {len(pdf_text)} characters from DegreeWorks PDF")
+            raise HTTPException(
+                400,
+                f"Could not extract text from this file ({len(pdf_text)} chars). "
+                "Please upload a text-based PDF or DOCX file."
+            )
 
         # Try to parse specific fields (best effort)
         data = parse_degreeworks_pdf(pdf_text)
@@ -1100,1080 +1527,428 @@ async def upload_degreeworks_pdf(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ DegreeWorks PDF Upload Error: {e}")
+        print(f"[ERROR] DegreeWorks PDF Upload Error: {e}")
         raise HTTPException(500, f"Failed to process PDF: {str(e)}")
-
-
-@app.post("/api/degreeworks/scrape-html")
-async def scrape_degreeworks_html(
-    request: dict,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Receives raw HTML from DegreeWorks page (via bookmarklet) and extracts academic data.
-    This is the preferred method - more accurate than PDF parsing.
-    """
-    html_content = request.get("html", "")
-
-    if not html_content or len(html_content) < 100:
-        raise HTTPException(400, "No HTML content provided")
-
-    try:
-        # Parse the HTML and extract data
-        data = parse_degreeworks_html(html_content)
-
-        if not data or (not data.get('overall_gpa') and not data.get('classification')):
-            raise HTTPException(400, "Could not extract academic data from this page. Make sure you're on the DegreeWorks audit page.")
-
-        # Get or create DegreeWorks record
-        db_user = db.query(User).filter(User.id == user["user_id"]).first()
-        existing = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
-
-        if existing:
-            # Update existing
-            for key, value in data.items():
-                if value is not None and hasattr(existing, key):
-                    setattr(existing, key, value)
-            existing.updated_at = datetime.now(timezone.utc)
-        else:
-            # Create new
-            new_data = DegreeWorksData(user_id=user["user_id"], **data)
-            db.add(new_data)
-
-        # Update user's morgan_connected status
-        db_user.morgan_connected = True
-        db_user.morgan_connected_at = datetime.now(timezone.utc)
-
-        # Update user name if found
-        if data.get('student_name') and not db_user.name:
-            db_user.name = data['student_name']
-        if data.get('student_id') and not db_user.student_id:
-            db_user.student_id = data['student_id']
-
-        db.commit()
-
-        return {
-            "success": True,
-            "message": "DegreeWorks data synced successfully!",
-            "data": {
-                "student_name": data.get('student_name'),
-                "classification": data.get('classification'),
-                "degree_program": data.get('degree_program'),
-                "overall_gpa": data.get('overall_gpa'),
-                "major_gpa": data.get('major_gpa'),
-                "total_credits_earned": data.get('total_credits_earned'),
-                "courses_count": len(json.loads(data.get('courses_completed', '[]'))) if data.get('courses_completed') else 0
-            }
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ DegreeWorks HTML Scrape Error: {e}")
-        raise HTTPException(500, f"Failed to process DegreeWorks data: {str(e)}")
-
-
-def parse_degreeworks_html(html: str) -> dict:
-    """
-    Parses DegreeWorks HTML and extracts academic data.
-    Based on the DegreeWorks HTML structure.
-    """
-    data = {}
-
-    # First, extract all text content from HTML
-    # Remove script and style tags
-    html_clean = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
-    html_clean = re.sub(r'<style[^>]*>.*?</style>', '', html_clean, flags=re.DOTALL | re.IGNORECASE)
-    # Remove HTML tags but keep text
-    text = re.sub(r'<[^>]+>', ' ', html_clean)
-    # Clean up whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
-    text_lower = text.lower()
-
-    # Also keep original HTML for pattern matching
-    html_lower = html.lower()
-
-    # Extract Student Name - look in multiple places
-    name_patterns = [
-        r'student[:\s]+name[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
-        r'name[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
-        r'>([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)</(?:h1|h2|div|span)',
-    ]
-    for pattern in name_patterns:
-        match = re.search(pattern, html)
-        if match:
-            name = match.group(1).strip()
-            if len(name) > 3 and len(name) < 50:
-                data['student_name'] = name
-                break
-
-    # Student ID
-    id_patterns = [
-        r'(?:student\s*)?id[:\s#]*["\']?(\d{7,9})["\']?',
-        r'>\s*(\d{7,9})\s*<',
-    ]
-    for pattern in id_patterns:
-        match = re.search(pattern, html_lower)
-        if match:
-            data['student_id'] = match.group(1)
-            break
-
-    # Overall GPA - this is critical
-    gpa_patterns = [
-        r'overall\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'cumulative\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'gpa[:\s]+(\d\.\d{1,2})',
-        r'gpa\s*:\s*(\d\.\d{1,2})',
-        r'gpa\s+(\d\.\d{1,2})',
-        r'total\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'career\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'>(\d\.\d{2})<.*?gpa',
-        r'gpa.*?>(\d\.\d{2})<',
-    ]
-    for pattern in gpa_patterns:
-        match = re.search(pattern, text_lower)
-        if match:
-            try:
-                gpa = float(match.group(1))
-                if 0 <= gpa <= 4.0:
-                    data['overall_gpa'] = gpa
-                    break
-            except:
-                pass
-
-    # Fallback: Find any decimal that looks like GPA
-    if not data.get('overall_gpa'):
-        # Look near GPA keyword
-        gpa_area = re.search(r'gpa.{0,30}', text_lower)
-        if gpa_area:
-            gpa_match = re.search(r'(\d\.\d{1,2})', gpa_area.group())
-            if gpa_match:
-                gpa = float(gpa_match.group(1))
-                if 1.0 <= gpa <= 4.0:
-                    data['overall_gpa'] = gpa
-
-    # Major GPA
-    major_gpa_patterns = [
-        r'major\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'program\s*gpa[:\s]*(\d\.\d{1,2})',
-    ]
-    for pattern in major_gpa_patterns:
-        match = re.search(pattern, text_lower)
-        if match:
-            data['major_gpa'] = float(match.group(1))
-            break
-
-    # Classification
-    class_patterns = [
-        r'classification[:\s]*(freshman|sophomore|junior|senior|graduate)',
-        r'class[:\s]*(freshman|sophomore|junior|senior|graduate)',
-        r'standing[:\s]*(freshman|sophomore|junior|senior|graduate)',
-        r'level[:\s]*(freshman|sophomore|junior|senior|graduate)',
-        r'student\s*level[:\s]*(freshman|sophomore|junior|senior|graduate)',
-        r'>(freshman|sophomore|junior|senior|graduate)<',
-    ]
-    for pattern in class_patterns:
-        match = re.search(pattern, text_lower)
-        if match:
-            data['classification'] = match.group(1).title()
-            break
-
-    # If classification not found, try to determine from credits
-    if not data.get('classification') and data.get('total_credits_earned'):
-        credits = data['total_credits_earned']
-        if credits >= 90:
-            data['classification'] = 'Senior'
-        elif credits >= 60:
-            data['classification'] = 'Junior'
-        elif credits >= 30:
-            data['classification'] = 'Sophomore'
-        else:
-            data['classification'] = 'Freshman'
-
-    # Degree/Program/Major
-    degree_patterns = [
-        r'(bachelor\s+of\s+science\s+in\s+[a-z\s]+?)(?:\s|<|$)',
-        r'(master\s+of\s+science\s+in\s+[a-z\s]+?)(?:\s|<|$)',
-        r'major[:\s]*(computer\s+science|information\s+(?:systems|science)|cybersecurity|software\s+engineering)',
-        r'program[:\s]*(computer\s+science|information\s+(?:systems|science)|cybersecurity)',
-        r'>(computer\s+science|information\s+systems)<',
-    ]
-    for pattern in degree_patterns:
-        match = re.search(pattern, text_lower)
-        if match:
-            program = match.group(1).strip().title()
-            if len(program) > 5:
-                data['degree_program'] = program
-                break
-
-    # Credits - look for various patterns
-    credits_patterns = [
-        r'(?:total|earned|completed)\s*(?:credits|hours)[:\s]*(\d{2,3}(?:\.\d)?)',
-        r'(\d{2,3}(?:\.\d)?)\s*(?:credits|hours)\s*(?:earned|completed|total)',
-        r'credits\s*(?:earned|applied)[:\s]*(\d{2,3}(?:\.\d)?)',
-        r'hours\s*earned[:\s]*(\d{2,3}(?:\.\d)?)',
-        r'credits\s*:\s*(\d{2,3}(?:\.\d)?)',
-        r'total\s*credits[:\s]*(\d{2,3}(?:\.\d)?)',
-    ]
-    for pattern in credits_patterns:
-        match = re.search(pattern, text_lower)
-        if match:
-            try:
-                credits = float(match.group(1))
-                # Valid range for student credits (20-200), avoid 100 (often percentage)
-                if 20 < credits <= 200 and credits != 100:
-                    data['total_credits_earned'] = credits
-                    break
-            except:
-                pass
-
-    # Credits Required
-    req_patterns = [
-        r'(?:credits|hours)\s*required[:\s]*(\d{2,3})',
-        r'required[:\s]*(\d{2,3})\s*(?:credits|hours)',
-        r'total\s*(?:credits|hours)[:\s]*(\d{2,3})',
-    ]
-    for pattern in req_patterns:
-        match = re.search(pattern, text_lower)
-        if match:
-            req = float(match.group(1))
-            if 60 <= req <= 180:
-                data['credits_required'] = req
-                break
-
-    # Credits Remaining
-    remain_patterns = [
-        r'(?:remaining|still\s*need|left)[:\s]*(\d{1,3}(?:\.\d)?)\s*(?:credits|hours)?',
-        r'(\d{1,3}(?:\.\d)?)\s*(?:credits|hours)\s*(?:remaining|left|needed)',
-    ]
-    for pattern in remain_patterns:
-        match = re.search(pattern, text_lower)
-        if match:
-            remain = float(match.group(1))
-            if 0 <= remain <= 150:
-                data['credits_remaining'] = remain
-                break
-
-    # Catalog Year
-    catalog_match = re.search(r'(?:catalog|requirement)[:\s]*(\d{4}[-–]\d{4}|\d{4})', text_lower)
-    if catalog_match:
-        data['catalog_year'] = catalog_match.group(1)
-
-    # Advisor
-    advisor_patterns = [
-        r'advisor[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)*)',
-        r'advised\s+by[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
-    ]
-    for pattern in advisor_patterns:
-        match = re.search(pattern, text)
-        if match:
-            advisor = match.group(1).strip()
-            if len(advisor) > 3:
-                data['advisor'] = advisor
-                break
-
-    # Extract completed courses - look for course patterns
-    # Pattern: DEPT 123 Course Title Grade Credits Term
-    courses_completed = []
-    course_patterns = [
-        # Standard format: COSC 111 Intro to CS A 3.00 Fall 2024
-        r'([A-Z]{2,4})\s*(\d{3}[A-Z]?)\s+([A-Za-z][A-Za-z\s&\-,]+?)\s+([ABCDF][+-]?)\s+(\d(?:\.\d{1,2})?)\s+((?:Fall|Spring|Summer|Winter)\s*\d{4})',
-        # Without term: COSC 111 Intro to CS A 3.00
-        r'([A-Z]{2,4})\s*(\d{3}[A-Z]?)\s+([A-Za-z][A-Za-z\s&\-,]{3,30}?)\s+([ABCDF][+-]?)\s+(\d(?:\.\d{1,2})?)',
-        # Minimal: COSC 111 A 3.00
-        r'([A-Z]{2,4})\s*(\d{3}[A-Z]?)\s+([ABCDF][+-]?)\s+(\d(?:\.\d{1,2})?)',
-    ]
-
-    seen_courses = set()
-    for pattern in course_patterns:
-        for match in re.finditer(pattern, text):
-            groups = match.groups()
-            if len(groups) >= 4:
-                dept = groups[0]
-                num = groups[1]
-                code = f"{dept} {num}"
-
-                if code in seen_courses:
-                    continue
-                seen_courses.add(code)
-
-                course = {'code': code}
-
-                if len(groups) == 6:  # Full format with term
-                    course['name'] = groups[2].strip()[:50]
-                    course['grade'] = groups[3]
-                    course['credits'] = float(groups[4])
-                    course['term'] = groups[5]
-                elif len(groups) == 5:  # Without term
-                    course['name'] = groups[2].strip()[:50]
-                    course['grade'] = groups[3]
-                    course['credits'] = float(groups[4])
-                elif len(groups) == 4:  # Minimal
-                    course['grade'] = groups[2]
-                    course['credits'] = float(groups[3])
-
-                if course.get('grade') in ['A', 'A-', 'A+', 'B', 'B-', 'B+', 'C', 'C-', 'C+', 'D', 'D-', 'D+', 'F']:
-                    courses_completed.append(course)
-
-    if courses_completed:
-        data['courses_completed'] = json.dumps(courses_completed[:50])  # Limit to 50 courses
-
-    # Extract remaining/needed courses
-    remaining_courses = []
-    still_needed_pattern = r'still\s+need(?:ed)?[:\s]+(.+?)(?:\.|$)'
-    for match in re.finditer(still_needed_pattern, text_lower):
-        req = match.group(1).strip()
-        if len(req) > 5 and len(req) < 200:
-            remaining_courses.append({'requirement': req})
-
-    if remaining_courses:
-        data['courses_remaining'] = json.dumps(remaining_courses[:20])
-
-    # Store raw text for reference (truncated)
-    data['raw_data'] = text[:30000]
-
-    return data
 
 
 def parse_degreeworks_pdf(text: str) -> dict:
     """
-    Parses DegreeWorks PDF text and extracts academic data.
-    Super enhanced to handle Morgan State DegreeWorks PDF formats.
+    Parses DegreeWorks PDF text using pure text processing.
+    No LLM needed - cleans the text first, then extracts structured data with regex.
+    Fast, deterministic, and free (no API call).
     """
     data = {}
-    # Clean up text - remove extra whitespace but preserve structure
-    text_clean = re.sub(r'[ \t]+', ' ', text)
-    text_lower_clean = text_clean.lower()
 
-    # Debug: print first 1000 chars to see format
+    # Store raw text for the "chat with PDF" feature
+    data['raw_data'] = text[:30000]
+
+    # =====================================================
+    # STEP 1: Clean the raw PDF text
+    # Remove noise, collapse multi-line entries, keep only useful lines
+    # =====================================================
+    lines = text.split('\n')
+    clean_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Skip noise lines
+        if stripped.startswith('Satisfied by:'):
+            continue
+        if stripped.startswith('Exception by:'):
+            continue
+        if stripped.startswith('Morgan State University') and '- *****' in stripped:
+            continue
+        if stripped.startswith('Disclaimer'):
+            break
+        if stripped.startswith('Legend'):
+            break
+        if stripped.startswith('Ellucian Degree'):
+            break
+        clean_lines.append(stripped)
+
+    clean_text = '\n'.join(clean_lines)
+    # Also make a single-line version for multi-line course matching
+    collapsed = ' '.join(clean_lines)
+
     print("=" * 60)
-    print("📄 PDF TEXT PREVIEW (first 1000 chars):")
-    print("=" * 60)
-    print(text[:1000])
+    print(f"PDF: {len(text)} chars raw -> {len(clean_text)} chars cleaned")
     print("=" * 60)
 
-    # ============ GPA EXTRACTION (Most Important) ============
-    # Try many different patterns to find GPA
-    gpa_found = False
+    # =====================================================
+    # STEP 2: Extract header fields (GPA, name, classification, etc.)
+    # =====================================================
 
-    # Pattern group 1: Explicit GPA labels (most reliable)
-    gpa_patterns_explicit = [
-        r'overall\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'cumulative\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'gpa[:\s]+(\d\.\d{1,2})',
-        r'overall[:\s]+(\d\.\d{1,2})',
-        r'cumulative[:\s]+(\d\.\d{1,2})',
-        r'grade\s*point\s*average[:\s]*(\d\.\d{1,2})',
-        r'cum\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'inst\s*gpa[:\s]*(\d\.\d{1,2})',  # Institutional GPA
-        r'ovr\s*gpa[:\s]*(\d\.\d{1,2})',   # Abbreviated
-        r'total\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'current\s*gpa[:\s]*(\d\.\d{1,2})',
-        r'career\s*gpa[:\s]*(\d\.\d{1,2})',  # Banner/DegreeWorks terminology
-        r'gpa\s*:\s*(\d\.\d{1,2})',  # GPA : 3.50
-        r'gpa\s+(\d\.\d{1,2})',  # GPA 3.50 (no colon)
-    ]
+    # Student name: "Student name Last, First"
+    name_match = re.search(r'Student\s+name\s+(\w[\w\'-]+),\s+(\w[\w\'-]+)', text)
+    if name_match:
+        data['student_name'] = f"{name_match.group(2)} {name_match.group(1)}"
 
-    for pattern in gpa_patterns_explicit:
-        match = re.search(pattern, text_lower_clean)
-        if match:
-            try:
-                gpa = float(match.group(1))
-                if 0.0 <= gpa <= 4.0:
-                    data['overall_gpa'] = gpa
-                    print(f"✅ Found GPA (explicit): {gpa}")
-                    gpa_found = True
-                    break
-            except: pass
+    # Overall GPA: "Overall GPA\n3.953" or "GPA: 3.953"
+    gpa_match = re.search(r'Overall\s+GPA\s*[:\n]?\s*(\d\.\d{1,3})', text)
+    if gpa_match:
+        gpa = float(gpa_match.group(1))
+        if 0.0 <= gpa <= 4.0:
+            data['overall_gpa'] = gpa
 
-    # Pattern group 2: GPA near keyword (within 30 chars)
-    if not gpa_found:
-        gpa_keywords = ['gpa', 'overall', 'cumulative', 'average', 'grade point']
-        for keyword in gpa_keywords:
-            if keyword in text_lower_clean:
-                # Find position of keyword
-                pos = text_lower_clean.find(keyword)
-                # Look for decimal in nearby text (30 chars before and after)
-                nearby = text_lower_clean[max(0, pos-30):pos+40]
-                decimal_match = re.search(r'(\d\.\d{2})', nearby)
-                if decimal_match:
-                    gpa = float(decimal_match.group(1))
-                    if 0.0 <= gpa <= 4.0:
-                        data['overall_gpa'] = gpa
-                        print(f"✅ Found GPA (near '{keyword}'): {gpa}")
-                        gpa_found = True
-                        break
+    # Major GPA: "Your GPA in these classes is 4.000"
+    major_gpa_match = re.search(r'Your\s+GPA\s+in\s+these\s+classes\s+is\s+(\d\.\d{1,3})', text)
+    if major_gpa_match:
+        mgpa = float(major_gpa_match.group(1))
+        if 0.0 <= mgpa <= 4.0:
+            data['major_gpa'] = mgpa
 
-    # Pattern group 3: Look for X.XX X.XX pattern (often GPA and credits together)
-    if not gpa_found:
-        double_decimal = re.search(r'(\d\.\d{2})\s+(\d{1,3}\.\d{2})', text)
-        if double_decimal:
-            first = float(double_decimal.group(1))
-            if 0.0 <= first <= 4.0:
-                data['overall_gpa'] = first
-                print(f"✅ Found GPA (double pattern): {first}")
-                gpa_found = True
+    # Classification: "Classification 4-Senior" or "Classification Senior"
+    class_match = re.search(r'Classification\s+(?:\d-)?(Freshman|Sophomore|Junior|Senior|Graduate)', text, re.IGNORECASE)
+    if class_match:
+        data['classification'] = class_match.group(1).title()
 
-    # Pattern group 4: Find ANY decimal between 1.0 and 4.0 (last resort)
-    if not gpa_found:
-        all_decimals = re.findall(r'(?<!\d)(\d\.\d{2})(?!\d)', text)
-        for dec in all_decimals:
-            val = float(dec)
-            # GPA is typically between 1.0 and 4.0
-            if 1.5 <= val <= 4.0:
-                data['overall_gpa'] = val
-                print(f"✅ Found likely GPA (fallback): {val}")
-                gpa_found = True
-                break
+    # Credits applied: "Credits applied:  128.5"
+    credits_match = re.search(r'Credits\s+applied:\s*(\d+\.?\d*)', text)
+    if credits_match:
+        creds = float(credits_match.group(1))
+        if 0 <= creds <= 300:
+            data['total_credits_earned'] = creds
 
-    # ============ CLASSIFICATION ============
-    # BEST APPROACH: Use credits to determine classification (most reliable)
-    # Credits thresholds: Freshman (0-29), Sophomore (30-59), Junior (60-89), Senior (90+)
+    # Credits required: "Credits required: 120"
+    creq_match = re.search(r'Credits\s+required:\s*(\d+\.?\d*)', text)
+    if creq_match:
+        creq = float(creq_match.group(1))
+        if 30 <= creq <= 300:
+            data['credits_required'] = creq
+            if data.get('total_credits_earned'):
+                remaining = max(0, creq - data['total_credits_earned'])
+                data['credits_remaining'] = remaining
 
-    # First, try to get credits if we don't have them yet
-    if not data.get('total_credits_earned'):
-        # Quick credits search - allow 2-3 digit numbers (e.g., 45, 124)
-        credits_match = re.search(r'(\d{2,3}(?:\.\d)?)\s*(?:credits|hours)', text_lower_clean)
-        if credits_match:
-            try:
-                cred_val = float(credits_match.group(1))
-                if 20 <= cred_val <= 200:  # Valid credit range
-                    data['total_credits_earned'] = cred_val
-            except:
-                pass
+    # Degree program: "Degree Bachelor of Science" + "Major Computer Science"
+    degree_match = re.search(r'Degree\s+(Bachelor\s+of\s+\w+|Master\s+of\s+\w+)', text)
+    major_match = re.search(r'Major\s+([A-Za-z ]+?)(?:\s{2,}|Program)', text)
+    if degree_match and major_match:
+        data['degree_program'] = f"{degree_match.group(1)} in {major_match.group(1).strip()}"
+    elif degree_match:
+        data['degree_program'] = degree_match.group(1)
 
-    # Now determine classification from credits (MOST RELIABLE METHOD)
-    if data.get('total_credits_earned'):
-        credits = data['total_credits_earned']
-        if credits >= 90:
-            data['classification'] = 'Senior'
-        elif credits >= 60:
-            data['classification'] = 'Junior'
-        elif credits >= 30:
-            data['classification'] = 'Sophomore'
-        else:
-            data['classification'] = 'Freshman'
-        print(f"✅ Classification from credits ({credits}): {data['classification']}")
-
-    # If classification not set yet, try multiple fallback patterns
-    if not data.get('classification'):
-        # Pattern 1: Look for explicit "Classification: Senior" format
-        class_patterns = [
-            r'classification[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'class[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'standing[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'level[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'student\s+level[:\s]*(senior|junior|sophomore|freshman|graduate)',
-            r'academic\s+level[:\s]*(senior|junior|sophomore|freshman|graduate)',
-        ]
-        for pattern in class_patterns:
-            class_match = re.search(pattern, text_lower_clean)
-            if class_match:
-                data['classification'] = class_match.group(1).title()
-                print(f"✅ Classification from label: {data['classification']}")
-                break
-
-        # Pattern 2: Look for standalone classification words with context clues
-        if not data.get('classification'):
-            # Check if "Senior" appears more than once (likely classification not course)
-            for cls in ['Senior', 'Junior', 'Sophomore', 'Freshman', 'Graduate']:
-                cls_lower = cls.lower()
-                # Count occurrences
-                count = len(re.findall(rf'\b{cls_lower}\b', text_lower_clean))
-                # If it appears multiple times or near key words, it's likely classification
-                if count >= 2:
-                    data['classification'] = cls
-                    print(f"✅ Classification from frequency ({cls} appeared {count} times): {cls}")
-                    break
-                # Check if near classification-related keywords
-                context_match = re.search(rf'(level|status|standing|class|year).*?\b{cls_lower}\b|\b{cls_lower}\b.*?(level|status|standing|class|year)', text_lower_clean)
-                if context_match:
-                    data['classification'] = cls
-                    print(f"✅ Classification from context: {cls}")
-                    break
-
-    # ============ CREDITS ============
-    credits_found = False
-
-    # IMPORTANT: Look for LABELED credits first (e.g., "Credits applied: 124")
-    # Avoid picking up "100%" or "100 %" which is percentage, not credits
-    credits_patterns = [
-        # DegreeWorks specific patterns
-        r'credits\s*applied[:\s]*(\d{2,3}(?:\.\d{1,2})?)',  # "Credits applied: 124.0"
-        r'credits\s*earned[:\s]*(\d{2,3}(?:\.\d{1,2})?)',   # "Credits earned: 124"
-        r'credits\s*required[:\s]*(\d{2,3}(?:\.\d{1,2})?)',  # "Credits required: 120"
-        r'total\s*credits[:\s]*(\d{2,3}(?:\.\d{1,2})?)',     # "Total credits: 124"
-        r'hours\s*earned[:\s]*(\d{2,3}(?:\.\d{1,2})?)',      # "Hours earned: 124"
-        r'transfer\s*hours[:\s]*(\d{2,3}(?:\.\d{1,2})?)',    # "Transfer Hours: 41"
-        # More general patterns
-        r'(\d{2,3}(?:\.\d{1,2})?)\s*credits?\s*(?:applied|earned|completed)',
-        r'(\d{2,3}(?:\.\d{1,2})?)\s*(?:credit\s*)?hours?\s*(?:earned|completed)',
-    ]
-
-    for pattern in credits_patterns:
-        match = re.search(pattern, text_lower_clean)
-        if match:
-            try:
-                credits = float(match.group(1))
-                # Must be between 30-200 and NOT be 100 (which is often percentage)
-                if 30 <= credits <= 200 and credits != 100:
-                    data['total_credits_earned'] = credits
-                    print(f"✅ Found Credits (explicit): {credits}")
-                    credits_found = True
-                    break
-            except: pass
-
-    # If we found 100, double-check it's not from "100%" - look for a different number
-    if not credits_found:
-        # Look specifically for numbers > 100 or numbers like 124, 120, etc.
-        credit_match = re.search(r'(?:credits?|hours?)\s*(?:applied|earned|required)[:\s]*(\d{3}(?:\.\d)?)', text_lower_clean)
-        if credit_match:
-            credits = float(credit_match.group(1))
-            if 100 < credits <= 200:
-                data['total_credits_earned'] = credits
-                print(f"✅ Found Credits (3-digit): {credits}")
-                credits_found = True
-
-    # Fallback: Look for "124.0" or "120.0" pattern (common credit amounts)
-    if not credits_found:
-        common_credits = re.findall(r'(\d{3}\.\d)\b', text)
-        for c in common_credits:
-            val = float(c)
-            if 100 < val <= 150:  # Typical total credits range
-                data['total_credits_earned'] = val
-                print(f"✅ Found Credits (common pattern): {val}")
-                credits_found = True
-                break
-
-    # Pattern group 3: Look for standalone numbers that could be credits (last resort)
-    if not credits_found:
-        # Find 2-3 digit numbers
-        all_numbers = re.findall(r'(?<!\d)(\d{2,3})(?:\.\d{1,2})?(?!\d)', text)
-        for num in all_numbers:
-            val = int(num)
-            # Credits typically between 30 and 150 for enrolled students
-            if 30 <= val <= 150:
-                data['total_credits_earned'] = float(val)
-                print(f"✅ Found likely Credits (fallback): {val}")
-                credits_found = True
-                break
-
-    # ============ DEGREE PROGRAM ============
-    degree_patterns = [
-        r'(bachelor\s+of\s+science\s+in\s+[a-z\s]+)',
-        r'(master\s+of\s+science\s+in\s+[a-z\s]+)',
-        r'(b\.?s\.?\s+(?:in\s+)?computer\s+science)',
-        r'(computer\s+science)',
-        r'(information\s+(?:systems?|science))',
-        r'(cybersecurity)',
-        r'(software\s+engineering)',
-        r'(electrical\s+engineering)',
-        r'major[:\s]*([a-z\s]+?)(?:\n|$)',
-        r'program[:\s]*([a-z\s]+?)(?:\n|$)',
-        r'degree[:\s]*([a-z\s]+?)(?:\n|$)',
-    ]
-    for pattern in degree_patterns:
-        match = re.search(pattern, text_lower_clean)
-        if match:
-            program = match.group(1).strip().title()
-            if len(program) > 3 and len(program) < 60:
-                data['degree_program'] = program
-                print(f"✅ Found Program: {program}")
-                break
-
-    # ============ STUDENT NAME ============
-    # Look for patterns like "Name: John Smith" or just capitalized names at start
-    name_patterns = [
-        r'(?:student|name)[:\s]+([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',
-        r'^([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?(?:\s+[A-Z][a-z]+)+)',  # At start of text
-    ]
-    for pattern in name_patterns:
-        match = re.search(pattern, text_clean, re.MULTILINE)
-        if match:
-            name = match.group(1).strip()
-            if 3 < len(name) < 50:
-                data['student_name'] = name
-                print(f"✅ Found Name: {name}")
-                break
-
-    # ============ STUDENT ID ============
-    id_match = re.search(r'(?:id|student)[:\s#]*(\d{7,9})', text_lower_clean)
-    if id_match:
-        data['student_id'] = id_match.group(1)
-        print(f"✅ Found Student ID: {data['student_id']}")
-    else:
-        # Just look for any 7-9 digit number
-        id_match = re.search(r'(?<!\d)(\d{7,9})(?!\d)', text)
-        if id_match:
-            data['student_id'] = id_match.group(1)
-
-    # ============ ADVISOR ============
-    # Look for advisor name in DegreeWorks format
-    # Example formats: "Advisor Md/dr Blakeley", "Advisor: Dr. Smith", "Advisor Walden Blakeley"
-
-    # Words that are NOT advisor names
-    not_advisor_words = [
-        'prerequisite', 'prerequsite', 'required', 'complete', 'incomplete',
-        'pending', 'satisfied', 'unsatisfied', 'needed', 'met', 'unmet',
-        'information', 'course', 'credit', 'hours', 'gpa', 'grade'
-    ]
-
-    # Try multiple patterns
-    advisor_found = False
-
-    # Pattern 1: "Advisor" followed by title and name (e.g., "Advisor Md/dr Blakeley")
-    advisor_match = re.search(r'advisor[:\s]+(?:md/?dr\.?|dr\.?|mr\.?|ms\.?|mrs\.?|prof\.?)?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', text_clean, re.IGNORECASE)
+    # Advisor: "Advisor Vojislav Stojkovic" (stop at double-space or end of line)
+    advisor_match = re.search(r'Advisor\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)', text)
     if advisor_match:
-        advisor = advisor_match.group(1).strip()
-        if advisor.lower() not in not_advisor_words and len(advisor) > 2:
-            data['advisor'] = advisor
-            advisor_found = True
-            print(f"✅ Found Advisor: {advisor}")
+        data['advisor'] = advisor_match.group(1).strip()
 
-    # Pattern 2: Look for name after "Advisor" with more flexible matching
-    if not advisor_found:
-        # Find the word "Advisor" and grab the next 2-3 words
-        advisor_pos = text_clean.lower().find('advisor')
-        if advisor_pos != -1:
-            # Get text after "Advisor"
-            after_advisor = text_clean[advisor_pos + 7:advisor_pos + 50].strip()
-            # Split into words and take first 1-2 capitalized words
-            words = after_advisor.split()
-            name_parts = []
-            for word in words[:3]:
-                # Skip titles and non-names
-                clean_word = re.sub(r'[^a-zA-Z]', '', word)
-                if clean_word and clean_word.lower() not in not_advisor_words:
-                    if clean_word[0].isupper() and len(clean_word) > 2:
-                        name_parts.append(clean_word)
-                        if len(name_parts) >= 2:
-                            break
-            if name_parts:
-                data['advisor'] = ' '.join(name_parts)
-                print(f"✅ Found Advisor (parsed): {data['advisor']}")
-
-    # ============ CATALOG YEAR ============
-    catalog_match = re.search(r'(?:catalog|requirement|year)[:\s]*(\d{4}[-–]\d{4}|\d{4})', text_lower_clean)
+    # Catalog year: "Catalog year:  SPRING 2024"
+    catalog_match = re.search(r'Catalog\s+year:\s*(\w+\s+\d{4})', text)
     if catalog_match:
         data['catalog_year'] = catalog_match.group(1)
-        print(f"✅ Found Catalog Year: {data['catalog_year']}")
 
-    # ============ IN-PROGRESS COURSES (Parse FIRST) ============
-    # Parse IP courses BEFORE completed courses so they don't get incorrectly categorized
-    # DegreeWorks format: "COSC 458 SOFTWARE ENGINEERING IP (3) SPRING 2026"
-    courses_in_progress = []
-    seen_in_progress = set()
+    # Transfer hours (extracted but not stored in DB - kept in raw_data only)
+    # transfer_match = re.search(r'Transfer\s*Hours\s+(\d+\.?\d*)', text)
 
-    print("=" * 40)
-    print("PARSING IN-PROGRESS COURSES...")
+    # =====================================================
+    # STEP 3: Extract ALL courses from cleaned collapsed text
+    # Pattern: DEPT CODE  COURSE NAME  GRADE  CREDITS  TERM
+    # Handles multi-line names because text is collapsed
+    # =====================================================
 
-    # Pattern 1: DegreeWorks format - Course with IP grade and credits in parentheses
-    # Format: COSC 458 SOFTWARE ENGINEERING IP (3) SPRING 2026
-    ip_patterns = [
-        # Full format with course name: COSC 458 SOFTWARE ENGINEERING IP (3)
-        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+([A-Z][A-Za-z\s&\-,\./]+?)\s+IP\s+\((\d)\)',
-        # Short format: COSC 458 IP (3)
-        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+IP\s+\((\d)\)',
-    ]
+    # Course code prefixes we care about (add more as needed)
+    DEPT_PREFIXES = r'(?:COSC|MATH|CLCO|EEGR|INSS|PHYS|BIOL|CHEM|ENGL|HIST|PSYC|PHIL|HLTH|WGST|FIN|ORTR|THEA|PHEC)'
 
-    for pattern in ip_patterns:
-        for match in re.finditer(pattern, text_clean):
-            groups = match.groups()
-            dept = groups[0]
-            num = groups[1]
-            code = f"{dept} {num}"
+    # Letter grades, transfer grades, pass/fail, and in-progress
+    VALID_GRADES = r'(?:A\+?|A-|B\+?|B-|C\+?|C-|D\+?|D-|F|TRA|TRB|TRC|TRD|PT|IP|W)'
 
-            if code in seen_in_progress:
-                continue
-            seen_in_progress.add(code)
+    # Main course extraction pattern on collapsed text
+    # Course name: up to ~60 chars of letters/digits/spaces/punctuation, but NOT containing
+    # another course code or grade-like pattern (prevents runaway matching)
+    course_pattern = re.compile(
+        r'(' + DEPT_PREFIXES + r'\s+\d{3}(?:TR)?)\s+'  # course code (e.g., COSC 470, PHYS 116TR)
+        r'([A-Z][A-Za-z0-9 &/\',\.\-\(\)]{2,55}?)\s+'  # course name (2-55 chars, starts with uppercase)
+        r'\b(' + VALID_GRADES + r')\b\s+'                 # grade with word boundary
+        r'(\d+\.?\d*)\s+'                                  # credits
+        r'((?:FALL|SPRING|SUMMER)\s+\d{4})',              # term
+        re.IGNORECASE
+    )
 
-            course = {'code': code, 'status': 'in_progress'}
-            if len(groups) >= 4:
-                course['name'] = groups[2].strip()[:50]
-                course['credits'] = int(groups[3])
-            elif len(groups) >= 3:
-                try:
-                    course['credits'] = int(groups[2])
-                except:
-                    pass
+    # In-progress pattern: "COSC 458 SOFTWARE ENGINEERING IP (3) SPRING 2026"
+    # Course name limited to 55 chars max to prevent runaway across multiple entries
+    ip_pattern = re.compile(
+        r'(' + DEPT_PREFIXES + r'\s+\d{3})\s+'
+        r'([A-Z][A-Za-z0-9 &/\',\.\-\(\)]{2,55}?)\s+'
+        r'IP\s+\((\d+)\)\s+'
+        r'((?:FALL|SPRING|SUMMER)\s+\d{4})',
+        re.IGNORECASE
+    )
 
-            courses_in_progress.append(course)
-            print(f"   Found IP course: {code}")
+    completed_courses = []
+    ip_courses = []
+    seen_codes = set()
 
-    # Pattern 2: Look for "Preregistered" section (DegreeWorks specific)
-    preregistered_match = re.search(r'Preregistered[:\s]*Credits[:\s]*\d+', text_clean, re.IGNORECASE)
-    if preregistered_match:
-        start_pos = preregistered_match.end()
-        preregistered_text = text_clean[start_pos:start_pos+2000]
+    # First pass: extract in-progress courses (IP pattern is more specific)
+    for match in ip_pattern.finditer(collapsed):
+        code = match.group(1).upper().strip()
+        name = match.group(2).strip()
+        credits = int(match.group(3))
+        term = match.group(4).strip()
+        if code not in seen_codes:
+            seen_codes.add(code)
+            ip_courses.append({
+                "code": code,
+                "name": name,
+                "credits": credits,
+                "status": "in_progress",
+                "term": term
+            })
 
-        # Find courses in preregistered section
-        ip_courses = re.findall(r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+([A-Z][A-Za-z\s&\-,\./]+?)\s+IP\s+\((\d)\)', preregistered_text)
-        for dept, num, name, credits in ip_courses:
-            code = f"{dept} {num}"
-            if code not in seen_in_progress:
-                seen_in_progress.add(code)
-                courses_in_progress.append({
-                    'code': code,
-                    'name': name.strip()[:50],
-                    'credits': int(credits),
-                    'status': 'in_progress'
-                })
-                print(f"   Found IP course (preregistered): {code}")
+    # Second pass: extract completed courses
+    for match in course_pattern.finditer(collapsed):
+        code = match.group(1).upper().strip()
+        name = match.group(2).strip()
+        grade = match.group(3).upper().strip()
+        credits = float(match.group(4))
+        term = match.group(5).strip()
 
-    if courses_in_progress:
-        data['courses_in_progress'] = json.dumps(courses_in_progress[:20])
-        print(f"Found {len(courses_in_progress)} in-progress courses")
-    else:
-        print("No in-progress courses found")
+        if code in seen_codes:
+            continue
+        seen_codes.add(code)
 
-    # ============ COMPLETED COURSES ============
-    print("=" * 40)
-    print("PARSING COMPLETED COURSES...")
-    courses_completed = []
-    seen_courses = set()
+        if grade == 'IP':
+            ip_courses.append({
+                "code": code,
+                "name": name,
+                "credits": int(credits),
+                "status": "in_progress",
+                "term": term
+            })
+        else:
+            completed_courses.append({
+                "code": code,
+                "name": name,
+                "grade": grade,
+                "credits": credits,
+                "term": term
+            })
 
-    # Only match courses with actual letter grades (A, B, C, D, F) or transfer grades (TRA, TRB)
-    # DO NOT use broad patterns that match all course codes
-    course_patterns = [
-        # Format: COSC 111 INTRO TO COMPUTER SCI I A 4 SPRING 2024
-        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+([A-Za-z][A-Za-z\s&\-,\.]+?)\s+(A[+-]?|B[+-]?|C[+-]?|D[+-]?|F|TRA|TRB|TR[A-Z]?|PT)\s+(\d(?:\.\d{1,2})?)',
-        # Format: COSC 111 A 4
-        r'([A-Z]{2,4})\s+(\d{3}[A-Z]?)\s+(A[+-]?|B[+-]?|C[+-]?|D[+-]?|F|TRA|TRB|TR[A-Z]?|PT)\s+(\d(?:\.\d{1,2})?)',
-    ]
+    if completed_courses:
+        data['courses_completed'] = json.dumps(completed_courses)
+    if ip_courses:
+        data['courses_in_progress'] = json.dumps(ip_courses)
 
-    for pattern in course_patterns:
-        for match in re.finditer(pattern, text_clean):
-            groups = match.groups()
-            dept = groups[0]
-            num = groups[1]
-            code = f"{dept} {num}"
-
-            # Skip if already seen as completed OR if it's an in-progress course
-            if code in seen_courses or code in seen_in_progress:
-                continue
-            seen_courses.add(code)
-
-            course = {'code': code}
-            if len(groups) >= 5:
-                course['name'] = groups[2].strip()[:50]
-                course['grade'] = groups[3]
-                course['credits'] = float(groups[4])
-            elif len(groups) >= 4:
-                course['grade'] = groups[2]
-                course['credits'] = float(groups[3])
-
-            courses_completed.append(course)
-
-    if courses_completed:
-        data['courses_completed'] = json.dumps(courses_completed[:50])
-        print(f"Found {len(courses_completed)} completed courses")
-
-    # Store raw text for debugging
-    data['raw_data'] = text[:30000]
+    # Derive classification from credits if not found in header
+    if not data.get("classification") and data.get("total_credits_earned"):
+        credits = data["total_credits_earned"]
+        if credits >= 90:
+            data["classification"] = "Senior"
+        elif credits >= 60:
+            data["classification"] = "Junior"
+        elif credits >= 30:
+            data["classification"] = "Sophomore"
+        else:
+            data["classification"] = "Freshman"
 
     print("=" * 60)
     print("EXTRACTION SUMMARY:")
+    print(f"   Name: {data.get('student_name', 'NOT FOUND')}")
     print(f"   GPA: {data.get('overall_gpa', 'NOT FOUND')}")
+    print(f"   Major GPA: {data.get('major_gpa', 'NOT FOUND')}")
     print(f"   Credits: {data.get('total_credits_earned', 'NOT FOUND')}")
     print(f"   Classification: {data.get('classification', 'NOT FOUND')}")
     print(f"   Program: {data.get('degree_program', 'NOT FOUND')}")
-    print(f"   Completed Courses: {len(courses_completed)}")
-    print(f"   In-Progress Courses: {len(courses_in_progress)}")
+    print(f"   Advisor: {data.get('advisor', 'NOT FOUND')}")
+    print(f"   Courses Completed: {len(completed_courses)}")
+    print(f"   Courses In Progress: {len(ip_courses)}")
+    if completed_courses:
+        print(f"   Completed codes: {[c['code'] for c in completed_courses]}")
+    if ip_courses:
+        print(f"   In-progress codes: {[c['code'] for c in ip_courses]}")
     print("=" * 60)
 
     return data
 
 
 # ==============================================================================
-# SUPPORT TICKETS API
+# Banner Student Self Service Integration Endpoints
 # ==============================================================================
 
-class TicketCreate(BaseModel):
-    subject: str
-    category: str  # "bug", "feature", "question", "other"
-    description: str
-    attachment_data: Optional[str] = None  # Base64 encoded
-    attachment_name: Optional[str] = None
+class BannerSyncRequest(BaseModel):
+    """Request body for Banner SSB sync. Credentials are in-memory only."""
+    username: str
+    password: str
 
 
-class TicketUpdate(BaseModel):
-    status: Optional[str] = None
-    priority: Optional[str] = None
-    admin_notes: Optional[str] = None
-
-
-@app.post("/api/tickets")
-async def create_ticket(
-    ticket: TicketCreate,
+@app.post("/api/banner/sync")
+async def sync_banner_data(
+    req: BannerSyncRequest,
     user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Create a new support ticket"""
-    try:
-        new_ticket = SupportTicket(
-            user_id=user["user_id"],
-            subject=ticket.subject,
-            category=ticket.category,
-            description=ticket.description,
-            attachment_data=ticket.attachment_data,
-            attachment_name=ticket.attachment_name,
-            status="open",
-            priority="normal"
-        )
-        db.add(new_ticket)
-        db.commit()
-        db.refresh(new_ticket)
+    """
+    Full Banner SSB sync via CAS authentication.
+    Authenticates with MSU CAS, calls Banner REST APIs,
+    updates DegreeWorksData + BannerStudentData in RDS.
+    Returns SSE progress stream.
+    """
+    user_id = user["user_id"]
 
-        print(f"📩 New support ticket #{new_ticket.id} from user {user['email']}: {ticket.subject}")
+    # Rate limit: max 3 syncs per user per hour
+    now = datetime.now(timezone.utc)
+    timestamps = _banner_sync_timestamps.get(user_id, [])
+    one_hour_ago = now.timestamp() - 3600
+    timestamps = [t for t in timestamps if t > one_hour_ago]
+    if len(timestamps) >= 3:
+        raise HTTPException(429, "Rate limit exceeded. Maximum 3 syncs per hour.")
+    timestamps.append(now.timestamp())
+    _banner_sync_timestamps[user_id] = timestamps
 
-        return {
-            "success": True,
-            "message": "Ticket submitted successfully! We'll review it soon.",
-            "ticket_id": new_ticket.id
+    async def generate_sse():
+        """SSE stream for sync progress."""
+        try:
+            progress_steps = []
+
+            async def track_progress(step, detail):
+                progress_steps.append({"step": step, "detail": detail})
+
+            # Run the sync (DegreeWorks + Student Profile)
+            results = await sync_banner(req.username, req.password, track_progress)
+
+            # Stream progress steps
+            for p in progress_steps:
+                yield f"data: {json.dumps({'type': 'progress', 'step': p['step'], 'detail': p['detail']})}\n\n"
+
+            # Process results and update database
+            sync_db = SessionLocal()
+            try:
+                db_user = sync_db.query(User).filter(User.id == user_id).first()
+                if not db_user:
+                    yield f"data: {json.dumps({'type': 'error', 'detail': 'User not found'})}\n\n"
+                    return
+
+                yield f"data: {json.dumps({'type': 'progress', 'step': 'saving', 'detail': 'Saving to database...'})}\n\n"
+
+                existing_dw = sync_db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user_id).first()
+                if not existing_dw:
+                    existing_dw = DegreeWorksData(user_id=user_id)
+                    sync_db.add(existing_dw)
+
+                # 1. Parse DegreeWorks JSON audit (primary, richest source)
+                dw_json = results.get("degreeworks_json")
+                dw_data = {}
+                if dw_json:
+                    try:
+                        from banner_scraper.parsers import parse_degreeworks_audit_json
+                        dw_data = parse_degreeworks_audit_json(dw_json)
+                        # Apply all DW fields
+                        for key, value in dw_data.items():
+                            if value is not None and hasattr(existing_dw, key):
+                                setattr(existing_dw, key, value)
+                    except Exception as e:
+                        print(f"[BANNER] DW JSON parse error: {e}")
+
+                # 2. Parse Student Profile HTML (fills gaps DW might miss)
+                profile_html = results.get("profile_html")
+                profile = {}
+                if profile_html:
+                    try:
+                        from banner_scraper.parsers import parse_student_profile
+                        profile = parse_student_profile({"type": "html", "data": profile_html})
+                        # Only fill in gaps (DW data takes priority)
+                        if not existing_dw.student_name and profile.get("name"):
+                            existing_dw.student_name = profile["name"]
+                        if not existing_dw.student_id and profile.get("student_id"):
+                            existing_dw.student_id = profile["student_id"]
+                        if not existing_dw.classification and profile.get("classification"):
+                            existing_dw.classification = profile["classification"]
+                        if not existing_dw.advisor and profile.get("advisor"):
+                            existing_dw.advisor = profile["advisor"]
+                        if not existing_dw.overall_gpa and profile.get("overall_gpa"):
+                            existing_dw.overall_gpa = profile["overall_gpa"]
+                        if not existing_dw.total_credits_earned and profile.get("total_credits_earned"):
+                            existing_dw.total_credits_earned = profile["total_credits_earned"]
+                        if not existing_dw.degree_program and profile.get("degree_program"):
+                            existing_dw.degree_program = profile["degree_program"]
+                    except Exception as e:
+                        print(f"[BANNER] Profile parse error: {e}")
+
+                existing_dw.data_source = "banner_scrape"
+                existing_dw.updated_at = datetime.now(timezone.utc)
+
+                # Auto-populate user profile
+                name = existing_dw.student_name
+                sid = existing_dw.student_id
+                if name:
+                    db_user.name = name
+                if sid:
+                    db_user.student_id = sid
+
+                db_user.morgan_connected = True
+                db_user.morgan_connected_at = datetime.now(timezone.utc)
+
+                sync_db.commit()
+
+                # Count courses
+                completed_count = len(json.loads(existing_dw.courses_completed or "[]"))
+                ip_count = len(json.loads(existing_dw.courses_in_progress or "[]"))
+
+                summary = {
+                    "profile": bool(name),
+                    "name": name or "",
+                    "student_id": sid or "",
+                    "classification": existing_dw.classification or "",
+                    "cumulative_gpa": existing_dw.overall_gpa,
+                    "total_credits": existing_dw.total_credits_earned or 0,
+                    "major": existing_dw.degree_program or "",
+                    "advisor": existing_dw.advisor or "",
+                    "courses_completed": completed_count,
+                    "courses_in_progress": ip_count,
+                    "degreeworks_synced": bool(dw_json),
+                    "profile_synced": bool(profile_html and len(profile_html) > 1000),
+                }
+
+                yield f"data: {json.dumps({'type': 'done', 'summary': summary})}\n\n"
+
+            finally:
+                sync_db.close()
+
+        except ValueError as e:
+            # Auth errors (safe to show: "Invalid credentials", "LDAP not available", etc.)
+            yield f"data: {json.dumps({'type': 'error', 'detail': str(e)[:200]})}\n\n"
+        except Exception as e:
+            print(f"[ERROR] Banner sync failed: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'detail': 'Sync failed. Please try again.'})}\n\n"
+
+    return StreamingResponse(generate_sse(), media_type="text/event-stream")
+
+
+@app.get("/api/banner/data")
+async def get_banner_data(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Returns all stored Banner data for the authenticated user."""
+    banner = db.query(BannerStudentData).filter(BannerStudentData.user_id == user["user_id"]).first()
+
+    if not banner:
+        return {"connected": False, "data": None}
+
+    return {
+        "connected": True,
+        "data": {
+            "student_phone": banner.student_phone,
+            "student_address": json.loads(banner.student_address) if banner.student_address else None,
+            "current_term": banner.current_term,
+            "registered_courses": json.loads(banner.registered_courses) if banner.registered_courses else [],
+            "total_registered_credits": banner.total_registered_credits,
+            "registration_history": json.loads(banner.registration_history) if banner.registration_history else [],
+            "grade_history": json.loads(banner.grade_history) if banner.grade_history else [],
+            "cumulative_gpa": banner.cumulative_gpa,
+            "total_credits_earned": banner.total_credits_earned,
+            "total_credits_attempted": banner.total_credits_attempted,
+            "deans_list_terms": json.loads(banner.deans_list_terms) if banner.deans_list_terms else [],
+            "synced_at": banner.synced_at.isoformat() if banner.synced_at else None,
+            "updated_at": banner.updated_at.isoformat() if banner.updated_at else None,
         }
-    except Exception as e:
-        print(f"❌ Ticket creation error: {e}")
-        raise HTTPException(500, f"Failed to create ticket: {str(e)}")
-
-
-@app.get("/api/tickets/my")
-async def get_my_tickets(
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get current user's tickets"""
-    tickets = db.query(SupportTicket).filter(
-        SupportTicket.user_id == user["user_id"]
-    ).order_by(SupportTicket.created_at.desc()).all()
-
-    return {
-        "tickets": [
-            {
-                "id": t.id,
-                "subject": t.subject,
-                "category": t.category,
-                "status": t.status,
-                "priority": t.priority,
-                "created_at": t.created_at.isoformat(),
-                "admin_notes": t.admin_notes
-            }
-            for t in tickets
-        ]
     }
 
 
-@app.get("/api/tickets")
-async def get_all_tickets(
-    status: Optional[str] = None,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get all tickets (admin only)"""
-    if user.get("role") != "admin":
-        raise HTTPException(403, "Admin access required")
-
-    query = db.query(SupportTicket).order_by(SupportTicket.created_at.desc())
-
-    if status:
-        query = query.filter(SupportTicket.status == status)
-
-    tickets = query.all()
-
-    return {
-        "tickets": [
-            {
-                "id": t.id,
-                "user_id": t.user_id,
-                "user_email": db.query(User).filter(User.id == t.user_id).first().email if t.user_id else None,
-                "subject": t.subject,
-                "category": t.category,
-                "description": t.description,
-                "status": t.status,
-                "priority": t.priority,
-                "admin_notes": t.admin_notes,
-                "attachment_name": t.attachment_name,
-                "has_attachment": bool(t.attachment_data),
-                "created_at": t.created_at.isoformat(),
-                "updated_at": t.updated_at.isoformat() if t.updated_at else None
-            }
-            for t in tickets
-        ],
-        "total": len(tickets)
-    }
-
-
-@app.get("/api/tickets/{ticket_id}")
-async def get_ticket(
-    ticket_id: int,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get a specific ticket"""
-    ticket = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).first()
-
-    if not ticket:
-        raise HTTPException(404, "Ticket not found")
-
-    # Users can only view their own tickets, admins can view all
-    if user.get("role") != "admin" and ticket.user_id != user["user_id"]:
-        raise HTTPException(403, "Not authorized to view this ticket")
-
-    return {
-        "id": ticket.id,
-        "user_id": ticket.user_id,
-        "subject": ticket.subject,
-        "category": ticket.category,
-        "description": ticket.description,
-        "status": ticket.status,
-        "priority": ticket.priority,
-        "admin_notes": ticket.admin_notes,
-        "attachment_data": ticket.attachment_data,
-        "attachment_name": ticket.attachment_name,
-        "created_at": ticket.created_at.isoformat(),
-        "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None
-    }
-
-
-@app.put("/api/tickets/{ticket_id}")
-async def update_ticket(
-    ticket_id: int,
-    update: TicketUpdate,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Update a ticket (admin only)"""
-    if user.get("role") != "admin":
-        raise HTTPException(403, "Admin access required")
-
-    ticket = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).first()
-
-    if not ticket:
-        raise HTTPException(404, "Ticket not found")
-
-    if update.status:
-        ticket.status = update.status
-        if update.status == "resolved":
-            ticket.resolved_by = user["user_id"]
-            ticket.resolved_at = datetime.now(timezone.utc)
-
-    if update.priority:
-        ticket.priority = update.priority
-
-    if update.admin_notes is not None:
-        ticket.admin_notes = update.admin_notes
-
-    db.commit()
-
-    return {"success": True, "message": "Ticket updated successfully"}
-
-
-@app.get("/api/tickets/stats/summary")
-async def get_ticket_stats(
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get ticket statistics (admin only)"""
-    if user.get("role") != "admin":
-        raise HTTPException(403, "Admin access required")
-
-    total = db.query(SupportTicket).count()
-    open_count = db.query(SupportTicket).filter(SupportTicket.status == "open").count()
-    in_progress = db.query(SupportTicket).filter(SupportTicket.status == "in_progress").count()
-    resolved = db.query(SupportTicket).filter(SupportTicket.status == "resolved").count()
-
-    return {
-        "total": total,
-        "open": open_count,
-        "in_progress": in_progress,
-        "resolved": resolved
-    }
-
-
-# ==============================================================================
-# 🔥 FEEDBACK ENDPOINT - Rate & Report Bot Responses
-# ==============================================================================
-class FeedbackCreate(BaseModel):
-    message_text: str
-    feedback_type: str  # 'helpful', 'not_helpful', 'report'
-    report_details: Optional[str] = None
-    session_id: Optional[str] = "default"
-
-
-@app.post("/api/feedback")
-async def submit_feedback(
-    feedback: FeedbackCreate,
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Submit feedback on a bot response to help improve the chatbot"""
-    try:
-        new_feedback = Feedback(
-            user_id=user["user_id"],
-            session_id=feedback.session_id,
-            message_text=feedback.message_text[:2000],  # Limit to 2000 chars
-            feedback_type=feedback.feedback_type,
-            report_details=feedback.report_details[:1000] if feedback.report_details else None
-        )
-        db.add(new_feedback)
-        db.commit()
-
-        # Log for analytics
-        emoji = "👍" if feedback.feedback_type == "helpful" else "👎" if feedback.feedback_type == "not_helpful" else "🚩"
-        print(f"{emoji} Feedback received: {feedback.feedback_type} from user {user['email']}")
-
-        return {"success": True, "message": "Thank you for your feedback!"}
-
-    except Exception as e:
-        print(f"❌ Feedback error: {e}")
-        raise HTTPException(500, f"Failed to save feedback: {str(e)}")
-
-
-@app.get("/api/feedback/stats")
-async def get_feedback_stats(
-    user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get feedback statistics (admin only)"""
-    if user.get("role") != "admin":
-        raise HTTPException(403, "Admin access required")
-
-    total = db.query(Feedback).count()
-    helpful = db.query(Feedback).filter(Feedback.feedback_type == "helpful").count()
-    not_helpful = db.query(Feedback).filter(Feedback.feedback_type == "not_helpful").count()
-    reports = db.query(Feedback).filter(Feedback.feedback_type == "report").count()
-
-    # Get recent reports for review
-    recent_reports = db.query(Feedback).filter(
-        Feedback.feedback_type == "report"
-    ).order_by(Feedback.timestamp.desc()).limit(10).all()
-
-    return {
-        "total": total,
-        "helpful": helpful,
-        "not_helpful": not_helpful,
-        "reports": reports,
-        "satisfaction_rate": round((helpful / total * 100), 1) if total > 0 else 0,
-        "recent_reports": [
-            {
-                "id": r.id,
-                "message_preview": r.message_text[:100] + "..." if len(r.message_text) > 100 else r.message_text,
-                "details": r.report_details,
-                "timestamp": r.timestamp.isoformat()
-            }
-            for r in recent_reports
-        ]
-    }
-
-
-# 🔥 NEW HELPER: Extract Text from Files (Updated to use 'pypdf')
 def extract_file_content(filepath: str) -> str:
     """Reads text from PDF, DOCX, or TXT files."""
     ext = filepath.split('.')[-1].lower()
     text = ""
     try:
         if ext == 'pdf':
-            # 🔥 UPDATED: Uses pypdf instead of PyPDF2
+            #  UPDATED: Uses pypdf instead of PyPDF2
             reader = pypdf.PdfReader(filepath)
             for page in reader.pages:
                 text += page.extract_text() + "\n"
@@ -2193,125 +1968,431 @@ def extract_file_content(filepath: str) -> str:
     # Limit content to ~15k chars to fit context window
     return text[:15000]
 
+# ==============================================================================
+# Canvas LMS Integration Endpoints
+# ==============================================================================
+
+class CanvasSyncRequest(BaseModel):
+    username: str
+    password: str
+
+_canvas_sync_timestamps: dict[int, list] = {}
+
+@app.post("/api/canvas/sync")
+async def sync_canvas_data(
+    req: CanvasSyncRequest,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Sync student data from Canvas LMS via LDAP auth. Returns SSE stream."""
+    user_id = user["user_id"]
+
+    # Rate limit: max 3 syncs per hour
+    now_ts = datetime.now(timezone.utc).timestamp()
+    timestamps = _canvas_sync_timestamps.get(user_id, [])
+    timestamps = [t for t in timestamps if now_ts - t < 3600]
+    if len(timestamps) >= 3:
+        raise HTTPException(status_code=429, detail="Rate limit: max 3 Canvas syncs per hour")
+    timestamps.append(now_ts)
+    _canvas_sync_timestamps[user_id] = timestamps
+
+    async def generate_sse():
+        try:
+            from canvas_client import sync_canvas
+
+            progress_messages = []
+            async def progress_cb(msg):
+                progress_messages.append(msg)
+                yield f"data: {json.dumps({'type': 'progress', 'detail': msg})}\n\n"
+
+            # Run sync with progress streaming
+            gen = progress_cb  # We need a different pattern for SSE
+
+            yield f"data: {json.dumps({'type': 'progress', 'detail': 'Logging into Canvas...'})}\n\n"
+
+            from canvas_client import canvas_authenticate, fetch_canvas_data
+
+            try:
+                client = await canvas_authenticate(req.username, req.password)
+            except ValueError as e:
+                yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
+                return
+
+            yield f"data: {json.dumps({'type': 'progress', 'detail': 'Fetching courses...'})}\n\n"
+
+            try:
+                data = await fetch_canvas_data(client)
+            except Exception as e:
+                print(f"[ERROR] Canvas fetch failed: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'detail': 'Failed to fetch Canvas data. Please try again.'})}\n\n"
+                await client.aclose()
+                return
+
+            await client.aclose()
+
+            yield f"data: {json.dumps({'type': 'progress', 'detail': 'Saving to database...'})}\n\n"
+
+            # Merge grades into courses
+            courses_with_grades = []
+            for c in data.get("courses", []):
+                grade_info = data.get("grades", {}).get(c["id"], {})
+                courses_with_grades.append({
+                    **c,
+                    "current_score": grade_info.get("current_score"),
+                    "current_grade": grade_info.get("current_grade"),
+                })
+
+            # Save to database
+            try:
+                existing = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user_id).first()
+                if existing:
+                    existing.canvas_user_id = data["profile"].get("canvas_id")
+                    existing.canvas_login_id = data["profile"].get("login_id")
+                    existing.courses = json.dumps(courses_with_grades)
+                    existing.upcoming_assignments = json.dumps(data.get("assignments", []))
+                    existing.missing_assignments = json.dumps(data.get("missing", []))
+                    existing.grades = json.dumps(data.get("grades", {}))
+                    existing.gradebook = json.dumps(data.get("gradebook", {}))
+                    existing.updated_at = datetime.now(timezone.utc)
+                else:
+                    canvas_record = CanvasStudentData(
+                        user_id=user_id,
+                        canvas_user_id=data["profile"].get("canvas_id"),
+                        canvas_login_id=data["profile"].get("login_id"),
+                        courses=json.dumps(courses_with_grades),
+                        upcoming_assignments=json.dumps(data.get("assignments", [])),
+                        missing_assignments=json.dumps(data.get("missing", [])),
+                        grades=json.dumps(data.get("grades", {})),
+                        gradebook=json.dumps(data.get("gradebook", {})),
+                    )
+                    db.add(canvas_record)
+                db.commit()
+            except Exception as e:
+                print(f"[ERROR] Canvas DB save failed: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'detail': 'Failed to save Canvas data. Please try again.'})}\n\n"
+                return
+
+            # Build summary
+            summary = {
+                "courses_count": len(courses_with_grades),
+                "upcoming_count": len(data.get("assignments", [])),
+                "missing_count": len(data.get("missing", [])),
+                "courses": courses_with_grades,
+                "name": data["profile"].get("name"),
+                "login_id": data["profile"].get("login_id"),
+            }
+
+            yield f"data: {json.dumps({'type': 'done', 'summary': summary})}\n\n"
+
+        except Exception as e:
+            print(f"[ERROR] Canvas sync failed: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'detail': 'Canvas sync failed. Please try again.'})}\n\n"
+
+    return StreamingResponse(
+        generate_sse(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+    )
+
+
+
+@app.get("/api/canvas")
+async def get_canvas_data(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get stored Canvas data for the current user."""
+    canvas = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user["user_id"]).first()
+    if not canvas:
+        return {"connected": False}
+
+    return {
+        "connected": True,
+        "canvas_login_id": canvas.canvas_login_id,
+        "courses": json.loads(canvas.courses) if canvas.courses else [],
+        "upcoming_assignments": json.loads(canvas.upcoming_assignments) if canvas.upcoming_assignments else [],
+        "missing_assignments": json.loads(canvas.missing_assignments) if canvas.missing_assignments else [],
+        "grades": json.loads(canvas.grades) if canvas.grades else {},
+        "gradebook": json.loads(canvas.gradebook) if canvas.gradebook else {},
+        "synced_at": canvas.synced_at.isoformat() if canvas.synced_at else None,
+        "updated_at": canvas.updated_at.isoformat() if canvas.updated_at else None,
+    }
+
+
+@app.delete("/api/canvas/disconnect")
+async def disconnect_canvas(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Remove Canvas data for the current user."""
+    canvas = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user["user_id"]).first()
+    if canvas:
+        db.delete(canvas)
+        db.commit()
+    return {"success": True, "message": "Canvas disconnected"}
+
+
+# ==============================================================================
+# MOMENTUM SCORE - Academic Performance Index
+# ==============================================================================
+from services.canvas_analytics import compute_momentum_score
+
+@app.get("/api/momentum-score")
+async def momentum_score(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Compute academic momentum score from Canvas + DegreeWorks + Banner data."""
+    canvas = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user["user_id"]).first()
+    dw = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
+    banner = db.query(BannerStudentData).filter(BannerStudentData.user_id == user["user_id"]).first()
+
+    canvas_dict = {
+        "courses": canvas.courses,
+        "gradebook": canvas.gradebook,
+        "missing_assignments": canvas.missing_assignments,
+    } if canvas else None
+
+    dw_dict = {
+        "overall_gpa": dw.overall_gpa,
+        "total_credits_earned": dw.total_credits_earned,
+        "credits_required": dw.credits_required,
+        "classification": dw.classification,
+    } if dw else None
+
+    banner_dict = {
+        "cumulative_gpa": banner.cumulative_gpa,
+    } if banner else None
+
+    return compute_momentum_score(canvas_dict, dw_dict, banner_dict)
+
+
+# ==============================================================================
+# RIPPLE EFFECT - Prerequisite Dependency Graph
+# ==============================================================================
+from services.prereq_engine import build_prerequisite_graph
+
+@app.get("/api/ripple-effect")
+async def ripple_effect(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get prerequisite dependency graph with student status overlay."""
+    dw_dict = await asyncio.to_thread(_fetch_dw_sync, user["user_id"])
+    canvas_dict = await asyncio.to_thread(_fetch_canvas_sync, user["user_id"])
+    return build_prerequisite_graph(dw_dict, canvas_dict)
+
+
+# ==============================================================================
+# GRADE SURGEON - Canvas Grade Analysis
+# ==============================================================================
+from services.canvas_analytics import analyze_course_grade, get_all_courses_summary, parse_gradebook
+
+@app.get("/api/grade-analysis")
+async def grade_analysis_all(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get grade analysis summary for all courses."""
+    canvas = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user["user_id"]).first()
+    if not canvas or not canvas.gradebook:
+        raise HTTPException(404, "No gradebook data. Please sync Canvas first.")
+    gradebook = parse_gradebook(canvas.gradebook)
+    courses = json.loads(canvas.courses) if canvas.courses else []
+    return {
+        "courses": get_all_courses_summary(gradebook, courses),
+        "synced_at": canvas.synced_at.isoformat() if canvas.synced_at else None,
+        "updated_at": canvas.updated_at.isoformat() if canvas.updated_at else None,
+    }
+
+@app.get("/api/grade-analysis/{course_id}")
+async def grade_analysis_course(course_id: str, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get detailed grade analysis for a specific course."""
+    canvas = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user["user_id"]).first()
+    if not canvas or not canvas.gradebook:
+        raise HTTPException(404, "No gradebook data. Please sync Canvas first.")
+    gradebook = parse_gradebook(canvas.gradebook)
+    if course_id not in gradebook:
+        raise HTTPException(404, f"Course {course_id} not found in gradebook.")
+    courses = json.loads(canvas.courses) if canvas.courses else []
+    course_name = next((c.get("name", "") for c in courses if str(c.get("id", "")) == course_id), "Unknown")
+    return analyze_course_grade(gradebook[course_id], course_name)
+
+
+# ==============================================================================
+# PARALLEL DB HELPERS (Thread-safe, each creates its own session)
+# ==============================================================================
+
+def _fetch_dw_sync(user_id: int) -> Optional[dict]:
+    """Fetch DegreeWorks + Banner data in a separate DB session for parallel execution."""
+    db = SessionLocal()
+    try:
+        dw = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user_id).first()
+        if not dw:
+            return None
+        result = {
+            "student_name": dw.student_name,
+            "student_id": dw.student_id,
+            "classification": dw.classification,
+            "degree_program": dw.degree_program,
+            "overall_gpa": dw.overall_gpa,
+            "major_gpa": dw.major_gpa,
+            "total_credits_earned": dw.total_credits_earned,
+            "credits_required": dw.credits_required,
+            "credits_remaining": dw.credits_remaining,
+            "advisor": dw.advisor,
+            "catalog_year": dw.catalog_year,
+            "courses_completed": dw.courses_completed,
+            "courses_in_progress": dw.courses_in_progress,
+            "courses_remaining": dw.courses_remaining,
+            "raw_data": dw.raw_data,
+            "data_source": getattr(dw, 'data_source', None) or "manual_entry",
+        }
+
+        # Also fetch Banner data if available
+        banner = db.query(BannerStudentData).filter(BannerStudentData.user_id == user_id).first()
+        if banner:
+            result["banner"] = {
+                "current_term": banner.current_term,
+                "registered_courses": banner.registered_courses,
+                "total_registered_credits": banner.total_registered_credits,
+                "registration_history": banner.registration_history,
+                "grade_history": banner.grade_history,
+                "cumulative_gpa": banner.cumulative_gpa,
+                "total_credits_earned": banner.total_credits_earned,
+                "total_credits_attempted": banner.total_credits_attempted,
+                "deans_list_terms": banner.deans_list_terms,
+            }
+
+        return result
+    finally:
+        db.close()
+
+
+def _fetch_canvas_sync(user_id: int) -> Optional[dict]:
+    """Fetch Canvas LMS data in a separate DB session for parallel execution."""
+    db = SessionLocal()
+    try:
+        canvas = db.query(CanvasStudentData).filter(CanvasStudentData.user_id == user_id).first()
+        if not canvas:
+            return None
+        return {
+            "courses": canvas.courses,
+            "upcoming_assignments": canvas.upcoming_assignments,
+            "missing_assignments": canvas.missing_assignments,
+            "grades": canvas.grades,
+            "gradebook": canvas.gradebook,
+            "synced_at": str(canvas.synced_at) if canvas.synced_at else None,
+            "updated_at": str(canvas.updated_at) if canvas.updated_at else None,
+        }
+    finally:
+        db.close()
+
+
+# Context builders extracted to services/context_builders.py
+from services.context_builders import (
+    sanitize_canvas_field as _sanitize_canvas_field,
+    format_short_date as _format_short_date,
+    build_canvas_context as _build_canvas_context,
+)
+
+# Tier 1: Query rewriting for follow-up resolution
+from services.query_rewriter import rewrite_query, is_likely_followup
+
+# Tier 2: Long-term user memory
+from services.memory_service import fetch_user_memories_sync, build_memory_context
+from services.course_context import build_course_context
+
+
+def _fetch_history_sync(user_id: int, session_id: str, limit: int = 10) -> list:
+    """Fetch chat history in a separate DB session for parallel execution."""
+    db = SessionLocal()
+    try:
+        history = db.query(ChatHistory)\
+            .filter(ChatHistory.user_id == user_id, ChatHistory.session_id == session_id)\
+            .order_by(ChatHistory.timestamp.desc())\
+            .limit(limit)\
+            .all()
+        return [{"user_query": h.user_query, "bot_response": h.bot_response} for h in reversed(history)]
+    finally:
+        db.close()
+
+
+from services.context_builders import (
+    build_student_context as _build_student_context,
+    build_conversation_context as _build_conversation_context,
+)
+
+
 # --- CHAT ROUTES (WITH CONVERSATION MEMORY + PERSONALIZATION) ---
 @app.post("/chat")
 async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: Session = Depends(get_db)):
     if not user: raise HTTPException(401, "Unauthorized")
 
     user_q = req.query.strip()
+    original_q = user_q  # Preserve original for chat history (before rewrite)
     session_id = req.session_id or "default"
 
-    # 🔥 Fetch user's DegreeWorks data for personalization
-    student_context = ""
-    has_student_data = False
-    has_raw_pdf_data = False
-    dw_data = db.query(DegreeWorksData).filter(DegreeWorksData.user_id == user["user_id"]).first()
-    if dw_data:
-        has_student_data = True
-        student_context = "\n" + "="*60 + "\n"
-        student_context += "🎓 THIS STUDENT'S DEGREEWORKS ACADEMIC RECORD:\n"
-        student_context += "="*60 + "\n\n"
-
-        # 🔥 CRITICAL: If we have raw PDF text, inject it directly!
-        # This is the "Chat with PDF" approach - let the LLM read the actual document
-        if dw_data.raw_data and len(dw_data.raw_data) > 100:
-            has_raw_pdf_data = True
-            student_context += "📄 FULL DEGREEWORKS DOCUMENT CONTENT:\n"
-            student_context += "-"*40 + "\n"
-            # Include up to 15000 chars of raw PDF text for context
-            student_context += dw_data.raw_data[:15000] + "\n"
-            student_context += "-"*40 + "\n\n"
-
-        # Also include any parsed fields we found (as a summary)
-        student_context += "📊 PARSED SUMMARY (if available):\n"
-        if dw_data.student_name:
-            student_context += f"• Student Name: {dw_data.student_name}\n"
-        if dw_data.student_id:
-            student_context += f"• Student ID: {dw_data.student_id}\n"
-        if dw_data.classification:
-            student_context += f"• Classification: {dw_data.classification}\n"
-        if dw_data.degree_program:
-            student_context += f"• Degree Program: {dw_data.degree_program}\n"
-        if dw_data.overall_gpa:
-            student_context += f"• Overall GPA: {dw_data.overall_gpa}\n"
-        if dw_data.major_gpa:
-            student_context += f"• Major GPA: {dw_data.major_gpa}\n"
-        if dw_data.total_credits_earned:
-            student_context += f"• Credits Earned: {dw_data.total_credits_earned}\n"
-        if dw_data.credits_required:
-            student_context += f"• Credits Required: {dw_data.credits_required}\n"
-        if dw_data.credits_remaining:
-            student_context += f"• Credits Remaining: {dw_data.credits_remaining}\n"
-        if dw_data.advisor:
-            student_context += f"• Academic Advisor: {dw_data.advisor}\n"
-        if dw_data.catalog_year:
-            student_context += f"• Catalog Year: {dw_data.catalog_year}\n"
-        if dw_data.courses_completed:
-            try:
-                completed = json.loads(dw_data.courses_completed)
-                if completed:
-                    student_context += f"• Courses Completed ({len(completed)} total):\n"
-                    for c in completed[:20]:
-                        grade = c.get('grade', '')
-                        name = c.get('name', '')
-                        student_context += f"  - {c.get('code', '')} {name} (Grade: {grade})\n"
-            except: pass
-        if dw_data.courses_in_progress:
-            try:
-                in_progress = json.loads(dw_data.courses_in_progress)
-                if in_progress:
-                    student_context += f"• Currently Enrolled In:\n"
-                    for c in in_progress:
-                        student_context += f"  - {c.get('code', '')} {c.get('name', '')}\n"
-            except: pass
-        if dw_data.courses_remaining:
-            try:
-                remaining = json.loads(dw_data.courses_remaining)
-                if remaining:
-                    student_context += f"• Still Needs to Complete:\n"
-                    for c in remaining[:10]:
-                        req = c.get('requirement', c.get('code', ''))
-                        student_context += f"  - {req}\n"
-            except: pass
-        student_context += "="*60 + "\n\n"
-
-    # 🔥 Fetch recent conversation history for context (last 6 exchanges)
-    recent_history = db.query(ChatHistory)\
-        .filter(ChatHistory.user_id == user["user_id"])\
-        .filter(ChatHistory.session_id == session_id)\
-        .order_by(ChatHistory.timestamp.desc())\
-        .limit(6)\
-        .all()
-
-    # Reverse to get chronological order
-    recent_history = list(reversed(recent_history))
-
-    # Build conversation context string
-    conversation_context = ""
-    if recent_history:
-        conversation_context = "Previous conversation:\n"
-        for chat in recent_history:
-            conversation_context += f"User: {chat.user_query}\n"
-            conversation_context += f"Assistant: {chat.bot_response}\n"
-        conversation_context += "\n"
-
-    # 1. Check for File Upload in Message (Markdown link)
+    # Detect file upload early to decide what data we need
     file_match = re.search(r'uploads/chat_files/([^\)]+)', user_q)
+    # Always fetch history for follow-up rewriting (Tier 1) + file uploads + legacy path
+    needs_history = True
 
-    if file_match and llm:
-        # User uploaded a file -> Read it and answer based on it
+    # Lazy-load: only fetch Canvas if query mentions grades/assignments/deadlines/course codes
+    CANVAS_KEYWORDS = {"grade", "assignment", "due", "deadline", "missing", "class",
+                       "course", "score", "submit", "canvas", "homework", "quiz",
+                       "test", "exam", "gpa", "taking", "enrolled"}
+    has_course_code = bool(re.search(r'\b[A-Z]{2,4}\s*\d{3}\b', user_q, re.IGNORECASE))
+    needs_canvas = has_course_code or any(kw in user_q.lower() for kw in CANVAS_KEYWORDS)
+
+    # Parallel fetch: DegreeWorks + Canvas (if needed) + chat history (for rewriting) + long-term memory
+    fetch_tasks = [
+        asyncio.to_thread(_fetch_dw_sync, user["user_id"]),
+        asyncio.to_thread(_fetch_history_sync, user["user_id"], session_id, 5),
+        asyncio.to_thread(fetch_user_memories_sync, user["user_id"], 10),
+    ]
+    if needs_canvas:
+        fetch_tasks.append(asyncio.to_thread(_fetch_canvas_sync, user["user_id"]))
+
+    results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+    dw_dict = results[0] if not isinstance(results[0], Exception) else None
+    history_dicts = results[1] if not isinstance(results[1], Exception) else []
+    memory_dicts = results[2] if not isinstance(results[2], Exception) else []
+    canvas_dict = results[3] if needs_canvas and len(results) > 3 and not isinstance(results[3], Exception) else None
+
+    # Tier 1: Rewrite follow-up queries to be self-contained (fixes pronoun resolution)
+    if USE_VERTEX_AGENT and history_dicts and is_likely_followup(user_q):
+        user_q = await asyncio.to_thread(rewrite_query, user_q, history_dicts)
+
+    student_context = _build_student_context(dw_dict) if dw_dict else ""
+    canvas_context = _build_canvas_context(canvas_dict) if canvas_dict else ""
+    memory_context = build_memory_context(memory_dicts)
+    conversation_context = _build_conversation_context(history_dicts)
+
+    # Pre-compute course context (prereq analysis, schedule, eligibility)
+    course_context = build_course_context(dw_dict, user_q) if dw_dict else ""
+    if course_context:
+        # Append to student context so agent sees it alongside DegreeWorks data
+        student_context += f"\n{course_context}"
+
+    if file_match and USE_VERTEX_AGENT:
+        # File uploaded -> include file content as context for the agent
         filename = file_match.group(1)
         filepath = os.path.join(CHAT_FILES_FOLDER, filename)
 
         if os.path.exists(filepath):
             file_content = extract_file_content(filepath)
+            clean_query = re.sub(r'\[.*?\]\(.*?\)', '', user_q).strip()
+            if not clean_query: clean_query = "Summarize this file."
 
-            # Construct Prompt with File Content + Conversation Context + Student Profile
+            file_context = f"{student_context}{canvas_context}{conversation_context}File Content:\n{file_content}\n"
+            answer = query_agent(
+                query=clean_query,
+                user_id=str(user["user_id"]),
+                context=file_context,
+                model=req.model,
+                canvas_context=canvas_context,
+                memory_context=memory_context,
+            )
+        else:
+            answer = "I received the file link, but I cannot find the file on the server to read it."
+
+    elif file_match and llm:
+        # Legacy: File uploaded with old LLM pipeline
+        filename = file_match.group(1)
+        filepath = os.path.join(CHAT_FILES_FOLDER, filename)
+
+        if os.path.exists(filepath):
+            file_content = extract_file_content(filepath)
             system_msg = f"""You are a helpful academic assistant for Morgan State University's Computer Science department.
 Use the provided file content and conversation history to answer the user's question.
-Remember the context of the conversation and provide relevant follow-up information.
-{student_context}
-If you have the student's profile data above, use it to give personalized recommendations."""
+{student_context}"""
 
             clean_query = re.sub(r'\[.*?\]\(.*?\)', '', user_q).strip()
             if not clean_query: clean_query = "Summarize this file."
@@ -2329,9 +2410,29 @@ If you have the student's profile data above, use it to give personalized recomm
         else:
             answer = "I received the file link, but I cannot find the file on the server to read it."
 
+    elif USE_VERTEX_AGENT:
+        # Vertex AI Agent Engine path
+        # Tier 1: Query already rewritten above (follow-ups resolved)
+        # Tier 2: Long-term memory injected via memory_context
+        # NOTE: DegreeWorks = stable context (hashed for session reuse)
+        #       Canvas + Memory = volatile (sent via state_delta per request)
+        try:
+            agent_context = student_context  # DegreeWorks only (stable, for session reuse)
+
+            print(f" Vertex AI query: '{user_q[:50]}...' (user={user['user_id']}, context={len(agent_context)} chars, memory={len(memory_context)} chars, model={req.model})")
+            answer = query_agent(
+                query=user_q,
+                user_id=str(user["user_id"]),
+                context=agent_context,
+                model=req.model,
+                canvas_context=canvas_context,
+                memory_context=memory_context,
+            )
+        except Exception as e:
+            print(f"   Vertex AI Chat Error: {e}")
+            answer = "I'm having trouble processing your request. Please try again."
     elif llm and retriever:
-        # 2. No file -> Use RAG with conversation context
-        # Small talk override
+        # Legacy Pinecone + OpenAI RAG path (fallback)
         norm = re.sub(r'[\s\W]+', '', user_q.lower())
         if re.match(r'^(hi|hello|hey)\b', user_q.lower()):
             answer = "Hello! How can I help you today?"
@@ -2341,201 +2442,238 @@ If you have the student's profile data above, use it to give personalized recomm
             answer = "You're welcome! Let me know if you have any other questions."
         else:
             try:
-                # 🔥 NEW: Detect if this is a follow-up question
-                # IMPORTANT: Include pronouns (him/her/his/their) for person references
-                follow_up_indicators = ['it', 'they', 'them', 'this', 'that', 'more', 'else', 'also',
-                                        'another', 'what about', 'how about', 'tell me more', 'explain',
-                                        'who is', 'what is', 'details', 'specifically',
-                                        'him', 'her', 'his', 'hers', 'their', 'theirs', 'he', 'she']
-                is_follow_up = any(indicator in user_q.lower().split() for indicator in follow_up_indicators) and len(recent_history) > 0
-
-                # 🔥 SMART PRONOUN RESOLUTION: Extract person name from last response
-                referenced_person = None
-                enhanced_query = user_q
-
-                if is_follow_up and recent_history:
-                    last_exchange = recent_history[-1]
-                    prev_query = last_exchange.user_query
-                    prev_response = last_exchange.bot_response
-
-                    # Extract person names from the bot's last response using multiple patterns
-                    name_patterns = [
-                        # "advisor is First Last" - MOST IMPORTANT for advisor questions
-                        r'(?:advisor|Advisor)\s+is\s+([A-Z][a-z]+\s+[A-Z][a-z]+)',
-                        # "Dr. First Last" or "Dr. First Middle Last"
-                        r'(?:Dr\.|Professor|Prof\.)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})',
-                        # Full names with quotes like Shuangbao "Paul" Wang
-                        r'([A-Z][a-z]+\s+["\'][A-Z][a-z]+["\']\s+[A-Z][a-z]+)',
-                        # "First Last is the" or "First Last, the" patterns
-                        r'([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+is\s+the|\s*,\s*the|\s+can\s+be)',
-                        # Chair/Department head patterns
-                        r'(?:Chair|chair|Department\s+Chair|department\s+head)(?:[^.]*?)(?:is\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})',
-                        # General "is First Last" pattern (catches "advisor is X", "chair is X", etc.)
-                        r'\bis\s+([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\.|\,|\s+If|\s+You)',
-                    ]
-
-                    for pattern in name_patterns:
-                        match = re.search(pattern, prev_response)
-                        if match:
-                            referenced_person = match.group(1).strip()
-                            break
-
-                    # If we found a person, replace pronouns in the query for better RAG retrieval
-                    if referenced_person:
-                        print(f"🔍 Pronoun Resolution: Detected reference to '{referenced_person}'")
-                        # Create a query that explicitly mentions the person for RAG
-                        pronoun_query = user_q.lower()
-                        if any(p in pronoun_query for p in ['his ', 'her ', 'him ', 'their ', 'he ', 'she ']):
-                            # Replace pronouns with the person's name for RAG query
-                            rag_query = re.sub(r'\b(his|her|him|their|he|she)\b', referenced_person, user_q, flags=re.IGNORECASE)
-                            enhanced_query = f"{referenced_person} {rag_query}"
-                            print(f"🔍 Enhanced RAG query: '{enhanced_query}'")
-                        else:
-                            enhanced_query = f"{referenced_person} {user_q}"
-                    else:
-                        print(f"⚠️ Pronoun Resolution: Could not extract person name from previous response")
-                        # Fallback: use previous context
-                        enhanced_query = f"""Previous context: {prev_response[:200]}
-Current question: {user_q}"""
-
-                # Get relevant documents from RAG - use person-specific query
-                docs = retriever.get_relevant_documents(enhanced_query if is_follow_up else user_q)
-                context_docs = "\n\n".join([doc.page_content for doc in docs[:8]])  # Increased from 4 to 8 for better coverage
-
-                # Log retrieval for debugging
-                print(f"📚 Retrieved {len(docs)} documents for query: '{user_q[:50]}...'")
-                if docs:
-                    print(f"   Top doc preview: {docs[0].page_content[:100]}...")
-
-                # 🔥 Build smart prompt with conversation history + student profile
-                personalization_note = ""
-                if has_student_data:
-                    if has_raw_pdf_data:
-                        personalization_note = """
-⚠️ CRITICAL - THIS STUDENT HAS UPLOADED THEIR DEGREEWORKS DOCUMENT:
-Below you will see the FULL TEXT of this student's DegreeWorks academic audit.
-READ IT CAREFULLY and use it to answer ANY questions about:
-- Their GPA (look for "GPA", "Overall", "Cumulative" in the document)
-- Their courses completed (look for course codes like COSC 111, MATH 201, etc.)
-- Their credits earned (look for "hours", "credits", "earned")
-- Their classification (Freshman/Sophomore/Junior/Senior)
-- Their degree requirements and what they still need
-
-IMPORTANT: The answer to their question IS IN THE DOCUMENT. Search through it!
-DO NOT say "I don't have access to your data" - the DegreeWorks document is provided below!
-"""
-                    else:
-                        personalization_note = """
-⚠️ CRITICAL - PERSONALIZED RESPONSES REQUIRED:
-This student has synced their DegreeWorks data. Use their personal academic data when answering questions about:
-- Their GPA, courses, classification, advisor, credits, and remaining requirements
-
-DO NOT say "I don't have access to your data" - their profile data is provided below!
-"""
-
-                system_prompt = f"""You are CS Navigator, an intelligent academic assistant for Morgan State University's Computer Science department.
-{personalization_note}
-Your role:
-- Help students with questions about courses, professors, requirements, and academic resources
-- When the student asks about THEIR personal academic info (GPA, courses, credits, advisor), ALWAYS check the DEGREEWORKS DOCUMENT or STUDENT DATA section below first
-- READ the full document content to find the answer - the info IS there
-- Remember the conversation context and provide coherent follow-up responses
-- Be specific and helpful - provide names, details, and actionable information
-
-⚠️ CRITICAL GROUNDING RULES - YOU MUST FOLLOW THESE:
-1. ONLY answer based on the KNOWLEDGE BASE CONTEXT provided below
-2. If the context does NOT contain specific information (like a name, email, or detail):
-   - Say: "I don't have that specific information in my knowledge base. Please contact the CS department at compsci@morgan.edu or (443) 885-3962"
-   - DO NOT generate placeholder text like [INSERT X HERE] or [INSERT PROFESSOR NAME HERE]
-   - DO NOT make up names, emails, phone numbers, or contact information
-3. If you're unsure about an answer, be honest about your limitations
-4. For professor queries: If you can't find the professor in the context, don't guess - admit the limitation
-
-⚠️ CRITICAL - PRONOUN RESOLUTION RULES:
-When the user uses pronouns like "him", "her", "his", "their", "he", "she":
-1. FIRST check the CONVERSATION HISTORY to find who they're referring to
-2. Pronouns refer to the PERSON MENTIONED IN THE PREVIOUS MESSAGES, NOT the student's advisor
-3. Example: If previous message discussed "Dr. Paul Wang", then "his research" means Dr. Paul Wang's research
-4. NEVER assume pronouns refer to the student's advisor unless the advisor was explicitly mentioned
-5. The conversation context section tells you WHO was discussed - use that for pronoun resolution
-
-Important rules:
-1. If a DegreeWorks document is provided, READ it to find GPA, courses, credits, etc.
-2. The answer to personal academic questions is IN the document - search for it
-3. For follow-up questions with pronouns (him/her/his), resolve them to the person in the PREVIOUS conversation, NOT the student's advisor
-4. If you truly can't find something in the document, say so honestly"""
-
-                # Build the full message with context
-                full_message = ""
-
-                # 🔥 CRITICAL: If we detected a referenced person from pronouns, tell the LLM explicitly
-                if referenced_person and is_follow_up:
-                    full_message += f"""
-⚠️ IMPORTANT PRONOUN CONTEXT:
-The user is asking about: **{referenced_person}**
-Any pronouns (his/her/him/their) in the current question refer to {referenced_person}, NOT the student's advisor.
-{"="*60}
-
-"""
-
-                # Add student profile if available
-                if student_context:
-                    full_message += student_context
-
-                if conversation_context:
-                    full_message += conversation_context
-
-                full_message += f"Relevant knowledge base information:\n{context_docs}\n\n"
-                full_message += f"Current question: {user_q}\n\n"
-
-                if referenced_person and is_follow_up:
-                    full_message += f"REMINDER: This question is about {referenced_person}. Answer about {referenced_person}, not the student's advisor.\n\n"
-
-                full_message += "Please provide a helpful, specific answer. If this is a follow-up question, make sure to connect it to the previous conversation context. If you have student profile data, use it to personalize your response."
-
-                # Use LLM directly with full context
+                docs = retriever.get_relevant_documents(user_q)
+                context_docs = "\n\n".join([doc.page_content for doc in docs[:8]])
+                system_prompt = f"""You are CS Navigator, an academic assistant for Morgan State University's CS department.
+{student_context}
+ONLY answer based on the KNOWLEDGE BASE CONTEXT provided. If info is not found, say so honestly."""
+                full_message = f"{conversation_context}Knowledge base:\n{context_docs}\n\nQuestion: {user_q}"
                 response = llm([
                     SystemMessage(content=system_prompt),
                     HumanMessage(content=full_message)
                 ])
                 answer = response.content.strip()
-
             except Exception as e:
-                print(f"❌ Chat Error: {e}")
-                # Fallback to simple QA if enhanced approach fails
-                if qa:
-                    try:
-                        result = qa({"query": user_q})
-                        answer = result["result"].strip()
-                    except:
-                        answer = "I'm having trouble accessing my knowledge base right now."
-                else:
-                    answer = "I'm having trouble processing your request."
-    elif qa:
-        # Fallback to basic QA without LLM
-        try:
-            result = qa({"query": user_q})
-            answer = result["result"].strip()
-        except Exception as e:
-            answer = "I'm having trouble accessing my knowledge base right now."
-            print(f"QA Error: {e}")
+                print(f"   Legacy Chat Error: {e}")
+                answer = "I'm having trouble processing your request."
     else:
-        answer = "AI system is initializing or missing keys."
+        answer = "AI system is initializing. Please try again in a moment."
 
     # 3. SAVE to RDS (User-Specific)
     try:
         new_chat = ChatHistory(
             user_id=user["user_id"],
             session_id=session_id,
-            user_query=user_q,
+            user_query=original_q,
             bot_response=answer
         )
         db.add(new_chat)
         db.commit()
     except Exception as e:
-        print(f"❌ Failed to save chat history: {e}")
+        print(f"[ERROR] Failed to save chat history: {e}")
+
+    # 4. Track failed queries for auto-research agent
+    if answer and "error" not in answer.lower()[:50]:
+        try:
+            from research_agent import detect_and_log_failed_query
+            detect_and_log_failed_query(original_q, answer, user["user_id"], has_student_data=bool(student_context))
+        except Exception:
+            pass
 
     return {"response": answer}
+
+
+# ==============================================================================
+# STREAMING CHAT ENDPOINT (Server-Sent Events)
+# ==============================================================================
+@app.post("/chat/stream")
+async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Streaming chat endpoint using Server-Sent Events (SSE).
+    Returns text chunks as they arrive from the AI agent for faster perceived response time.
+
+    v4.2: Uses async parallel DB fetch and shared _build_student_context helper.
+    Chat history fetch removed (not used in Vertex path, ADK manages its own memory).
+    """
+    if not user:
+        raise HTTPException(401, "Unauthorized")
+
+    user_q = req.query.strip()
+    original_q = user_q  # Keep original for cache key + chat history
+    session_id = req.session_id or "default"
+    user_id = user["user_id"]
+
+    # Lazy-load: only fetch Canvas if query mentions grades/assignments/deadlines/course codes
+    CANVAS_KEYWORDS = {"grade", "assignment", "due", "deadline", "missing", "class",
+                       "course", "score", "submit", "canvas", "homework", "quiz",
+                       "test", "exam", "gpa", "taking", "enrolled"}
+    has_course_code = bool(re.search(r'\b[A-Z]{2,4}\s*\d{3}\b', user_q, re.IGNORECASE))
+    needs_canvas = has_course_code or any(kw in user_q.lower() for kw in CANVAS_KEYWORDS)
+
+    # Non-blocking parallel fetch: DegreeWorks + Canvas (if needed) + history (for rewriting) + memory
+    fetch_tasks = [
+        asyncio.to_thread(_fetch_dw_sync, user_id),
+        asyncio.to_thread(_fetch_history_sync, user_id, session_id, 5),
+        asyncio.to_thread(fetch_user_memories_sync, user_id, 10),
+    ]
+    if needs_canvas:
+        fetch_tasks.append(asyncio.to_thread(_fetch_canvas_sync, user_id))
+
+    results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+    dw_dict = results[0] if not isinstance(results[0], Exception) else None
+    history_dicts = results[1] if not isinstance(results[1], Exception) else []
+    memory_dicts = results[2] if not isinstance(results[2], Exception) else []
+    canvas_dict = results[3] if needs_canvas and len(results) > 3 and not isinstance(results[3], Exception) else None
+
+    # Tier 1: Rewrite follow-up queries (resolve pronouns before KB search)
+    if history_dicts and is_likely_followup(user_q):
+        user_q = await asyncio.to_thread(rewrite_query, user_q, history_dicts)
+
+    student_context = _build_student_context(dw_dict) if dw_dict else ""
+    canvas_context = _build_canvas_context(canvas_dict) if canvas_dict else ""
+    memory_context = build_memory_context(memory_dicts)
+
+    # Pre-compute course context (prereq analysis, schedule, eligibility)
+    course_context = build_course_context(dw_dict, user_q) if dw_dict else ""
+    if course_context:
+        student_context += f"\n{course_context}"
+
+    agent_context = student_context  # DegreeWorks + course analysis (stable, for session reuse)
+
+    # =========================================================================
+    # CACHE CHECK - Return cached response instantly if available
+    # =========================================================================
+    context_hash = get_context_hash(user_id, has_degreeworks=bool(dw_dict), model=req.model, has_canvas=bool(canvas_dict))
+
+    # Skip cache when user taps "Regenerate" for a fresh answer
+    if req.skip_cache:
+        print(f"[CACHE] SKIP (regenerate) for query: {user_q[:50]}...")
+        cached_response = None
+        # Force new ADK session so agent re-queries the search index fresh
+        import time as _time
+        context_hash = f"regen_{int(_time.time())}"
+        reset_session(str(user_id))
+    else:
+        cached_response = query_cache.get(user_q, context_hash)
+
+    if cached_response:
+        print(f"[CACHE] HIT for query: {user_q[:50]}...")
+
+        async def generate_cached_sse():
+            """Return cached response as SSE."""
+            # Send status to show it's from cache
+            yield f"data: {json.dumps({'type': 'status', 'content': 'Retrieved from cache'})}\n\n"
+            # Send the full response immediately
+            yield f"data: {json.dumps({'type': 'done', 'content': cached_response})}\n\n"
+
+            # Still save to chat history (save original query, not rewritten)
+            try:
+                with SessionLocal() as save_db:
+                    new_chat = ChatHistory(
+                        user_id=user_id,
+                        session_id=session_id,
+                        user_query=original_q,
+                        bot_response=cached_response
+                    )
+                    save_db.add(new_chat)
+                    save_db.commit()
+            except Exception as e:
+                print(f"[ERROR] Failed to save cached chat history: {e}")
+
+        return StreamingResponse(
+            generate_cached_sse(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+
+    # =========================================================================
+    # CACHE MISS - Stream from AI agent and cache the result
+    # =========================================================================
+    print(f"[CACHE] MISS for query: {user_q[:50]}...")
+    stream_had_error = False
+
+    async def generate_sse():
+        """SSE generator that streams text chunks from the agent."""
+        nonlocal stream_had_error
+        full_response = ""
+        try:
+            for event in query_agent_stream(
+                query=user_q,
+                user_id=str(user_id),
+                context=agent_context,
+                model=req.model,
+                canvas_context=canvas_context,
+                memory_context=memory_context,
+            ):
+                event_type = event.get("type", "")
+                content = event.get("content", "")
+
+                if event_type == "status":
+                    yield f"data: {json.dumps({'type': 'status', 'content': content})}\n\n"
+
+                elif event_type == "chunk":
+                    full_response += content
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': content})}\n\n"
+
+                elif event_type == "done":
+                    full_response = content or full_response
+                    yield f"data: {json.dumps({'type': 'done', 'content': full_response})}\n\n"
+
+                elif event_type == "error":
+                    stream_had_error = True
+                    yield f"data: {json.dumps({'type': 'error', 'content': content})}\n\n"
+                    full_response = content
+                    break
+
+        except Exception as e:
+            stream_had_error = True
+            print(f"[ERROR] Streaming error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'content': 'An error occurred during streaming.'})}\n\n"
+            full_response = "An error occurred during streaming."
+
+        # Cache the successful response
+        if full_response and "error" not in full_response.lower()[:50]:
+            if query_cache.set(user_q, full_response, context_hash):
+                print(f"[CACHE] Stored response for: {user_q[:50]}...")
+
+        # Save to chat history after stream completes (save original query, not rewritten)
+        try:
+            with SessionLocal() as save_db:
+                new_chat = ChatHistory(
+                    user_id=user_id,
+                    session_id=session_id,
+                    user_query=original_q,
+                    bot_response=full_response
+                )
+                save_db.add(new_chat)
+                save_db.commit()
+        except Exception as e:
+            print(f"[ERROR] Failed to save streamed chat history: {e}")
+
+        # Track failed queries for auto-research agent
+        # Skip detection on error/empty responses (infra errors aren't KB misses)
+        if full_response and not stream_had_error and "error" not in full_response.lower()[:50]:
+            try:
+                from research_agent import detect_and_log_failed_query
+                detect_and_log_failed_query(original_q, full_response, user_id, has_student_data=bool(agent_context))
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        generate_sse(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
 
 # ==============================================================================
 # GUEST CHAT ENDPOINT (No Authentication Required)
@@ -2601,113 +2739,80 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
     elif len(norm) <= 2 or not any(c.isalpha() for c in user_q):
         return {"response": "I'm here to help! Ask me about CS courses, professors, degree requirements, or anything else about Morgan State's Computer Science program."}
 
-    # Use RAG for real questions
-    if llm and retriever:
+    # =========================================================================
+    # CACHE CHECK - Return cached response instantly for guest queries
+    # =========================================================================
+    # Guest queries share cache (no user-specific context)
+    cached_response = query_cache.get(user_q, context_hash="")
+    if cached_response:
+        print(f"[CACHE] HIT (guest) for: {user_q[:50]}...")
+        return {"response": cached_response, "cached": True}
+
+    # Detect personal academic queries and redirect guests to sign up
+    _PERSONAL_KEYWORDS = [
+        "my gpa", "my grade", "my classes", "my schedule", "my advisor",
+        "my courses", "my transcript", "my degree", "my credits",
+        "my assignment", "my canvas", "degreeworks", "degree works",
+        "what am i taking", "what classes am i", "how many credits do i",
+        "my remaining", "my progress", "my academic"
+    ]
+    query_lower = user_q.lower()
+    if any(kw in query_lower for kw in _PERSONAL_KEYWORDS):
+        return {"response": (
+            "To access your personal academic information like GPA, courses, "
+            "and degree progress, you'll need to **create a free account** with your "
+            "Morgan State email. This connects your DegreeWorks and Canvas data securely.\n\n"
+            "**[Create an account here](https://cs.inavigator.ai/register)** to unlock personalized features!"
+        )}
+
+    # Use Vertex AI Agent for real questions
+    if USE_VERTEX_AGENT:
         try:
-            # Get relevant documents from knowledge base
+            # Use a unique guest_user_id per request to prevent session bleed.
+            # Previously IP-based, which caused students on the same campus WiFi
+            # to share ADK sessions and see each other's DegreeWorks data.
+            import uuid
+            guest_user_id = f"guest_{uuid.uuid4().hex[:12]}"
+            print(f"[CACHE] MISS (guest) for: '{user_q[:50]}...'")
+            answer = query_agent(
+                query=user_q,
+                user_id=guest_user_id,
+                context="",
+            )
+
+            # Cache the successful response
+            if answer and "error" not in answer.lower()[:50]:
+                query_cache.set(user_q, answer, context_hash="")
+
+        except Exception as e:
+            print(f"   Guest Vertex AI Error: {e}")
+            answer = "I'm having trouble processing your request. Please try again."
+    elif llm and retriever:
+        # Legacy Pinecone + OpenAI RAG path (fallback)
+        try:
             docs = retriever.get_relevant_documents(user_q)
-            context_docs = "\n\n".join([doc.page_content for doc in docs[:8]])  # Increased from 4 to 8
-
-            # Log retrieval for debugging
-            print(f"📚 [Guest] Retrieved {len(docs)} documents for query: '{user_q[:50]}...'")
-            if docs:
-                print(f"   Top doc preview: {docs[0].page_content[:100]}...")
-
-            # #10 FIX: Handle empty RAG context
+            context_docs = "\n\n".join([doc.page_content for doc in docs[:8]])
             if not context_docs.strip():
-                return {"response": "I don't have specific information about that in my knowledge base. For detailed questions about Morgan State's CS program, please contact the department at compsci@morgan.edu or (443) 885-3962."}
-
-            # Extract guest profile for light personalization
-            guest_profile = req.guestProfile or {}
-            guest_classification = guest_profile.get("classification", "")
-            guest_gpa = guest_profile.get("gpa", "")
-            guest_major = guest_profile.get("major", "")
-
-            # Build guest context string for light personalization
-            guest_context = ""
-            if guest_classification or guest_gpa:
-                profile_parts = []
-                if guest_classification:
-                    profile_parts.append(f"a {guest_classification}")
-                if guest_gpa:
-                    profile_parts.append(f"~{guest_gpa} GPA")
-                if guest_major and guest_major != "Computer Science":
-                    profile_parts.append(f"interested in {guest_major}")
-                if profile_parts:
-                    guest_context = f"\n\n👤 GUEST CONTEXT: This guest is {' with '.join(profile_parts)}. Slightly tailor your response tone to their academic level (e.g., simpler explanations for Freshmen, more detailed for Seniors)."
-
-            # Guest-specific system prompt (with light personalization)
-            guest_system_prompt = f"""You are CS Navigator, an AI assistant for Morgan State University's Computer Science department.
-
-📝 RESPONSE FORMATTING (use Markdown):
-• Use **bold** for course codes, professor names, important terms
-• Use bullet points for lists (clean and scannable)
-• Keep paragraphs short (2-3 sentences)
-• Format courses as: **COSC 311** - Data Structures (3 credits)
-• Format professors as: **Dr. Name** - Research area
-• Put contact info on separate lines
-
-✅ RESPONSE STYLE:
-• Lead with the direct answer first
-• Be concise (3-6 sentences for simple questions)
-• Friendly, professional tone
-• Don't repeat the question back
-
-📋 EXAMPLE FORMAT:
-**Dr. Jane Doe** is the Department Chair.
-
-**Contact:**
-• Email: jane.doe@morgan.edu
-• Office: McMechen Hall 512
-
-She specializes in **cybersecurity** and **network systems**.
-
----
-
-⚠️ GROUNDING RULES (CRITICAL):
-1. ONLY use information from the KNOWLEDGE BASE CONTEXT provided
-2. If info is NOT found, say: "I don't have that specific information. Contact the CS department at compsci@morgan.edu or (443) 885-3962"
-3. NEVER make up names, emails, phone numbers, or details
-4. NEVER use placeholders like [INSERT X HERE]
-5. Be honest about limitations
-
-You are helping a GUEST user. For highly personalized questions (like "what courses should I take next semester?"), encourage them to sign up for a free account for personalized recommendations.{guest_context}
-"""
-
-            user_message = f"""KNOWLEDGE BASE CONTEXT:
-{context_docs}
-
-QUESTION: {user_q}
-
-Provide a well-formatted answer using the context. Use **bold** for key terms and bullet points for lists."""
-
-            response = llm([
-                SystemMessage(content=guest_system_prompt),
-                HumanMessage(content=user_message)
-            ])
-            answer = response.content.strip()
-
-        except Exception as e:
-            print(f"❌ Guest Chat Error: {e}")
-            # Fallback to basic QA
-            if qa:
-                try:
-                    result = qa({"query": user_q})
-                    answer = result["result"].strip()
-                except:
-                    answer = "I'm having trouble processing your request. Please try again."
+                answer = "I don't have specific information about that. Contact the CS department at compsci@morgan.edu or (443) 885-3962."
             else:
-                answer = "I'm having trouble connecting to my knowledge base. Please try again."
-    elif qa:
-        # Fallback to basic QA without LLM
-        try:
-            result = qa({"query": user_q})
-            answer = result["result"].strip()
+                response = llm([
+                    SystemMessage(content="You are CS Navigator for Morgan State University's CS department. ONLY answer from the provided context."),
+                    HumanMessage(content=f"Context:\n{context_docs}\n\nQuestion: {user_q}")
+                ])
+                answer = response.content.strip()
         except Exception as e:
-            answer = "I'm having trouble accessing my knowledge base right now."
-            print(f"Guest QA Error: {e}")
+            print(f"   Guest Legacy Error: {e}")
+            answer = "I'm having trouble processing your request. Please try again."
     else:
         answer = "AI system is initializing. Please try again in a moment."
+
+    # Track failed queries for auto-research agent (guest queries too)
+    if answer and "error" not in answer.lower()[:50]:
+        try:
+            from research_agent import detect_and_log_failed_query
+            detect_and_log_failed_query(user_q, answer)
+        except Exception:
+            pass
 
     return {"response": answer}
 
@@ -2769,168 +2874,46 @@ async def text_to_speech(req: TTSRequest, _user=Depends(get_current_user)):
         raise HTTPException(500, f"TTS generation failed: {str(e)}")
 
 @app.get("/api/popular-questions")
-async def get_popular_questions(db: Session = Depends(get_db)):
-    """
-    Returns 6 questions:
-    - 2 most frequently asked (from user data)
-    - 2 trending (recent popular questions)
-    - 2 general questions (hardcoded)
-    """
-    try:
-        # 2 General questions (always shown)
-        general_questions = [
-            "What internship opportunities are available?",
-            "How do I contact my academic advisor?"
-        ]
+async def get_popular_questions():
+    """Returns 8 randomly selected questions from a curated pool."""
+    import random
 
-        # Query ALL user questions to find most frequent and trending
-        queries = db.query(ChatHistory.user_query)\
-            .filter(ChatHistory.user_query.isnot(None))\
-            .filter(ChatHistory.user_query != "")\
-            .order_by(ChatHistory.timestamp.desc())\
-            .limit(1000)\
-            .all()
+    QUESTION_POOL = [
+        # Course & curriculum
+        "What courses should I take next semester if I'm interested in AI/ML?",
+        "Can you recommend a study plan for the cybersecurity track?",
+        "What are the prerequisites for COSC 450 Operating Systems?",
+        "What electives count toward the CS degree?",
+        "What math courses are required for the CS major?",
+        "What is the recommended course sequence for freshmen CS students?",
+        "Which courses cover data structures and algorithms?",
+        # Department & faculty
+        "Who are the professors in the CS department and what do they teach?",
+        "Who is the chair of the Computer Science department?",
+        "What research areas do CS faculty specialize in?",
+        "How do I find a faculty mentor for my capstone project?",
+        # Career & opportunities
+        "What internship and co-op opportunities are available for CS majors?",
+        "What career paths can I pursue with a CS degree from Morgan State?",
+        "How can I prepare for technical interviews?",
+        "What companies recruit CS students from Morgan State?",
+        # Academic advising & graduation
+        "How do I apply for graduation and what requirements do I need?",
+        "How many credits do I need to graduate with a CS degree?",
+        "What is the difference between a B.S. and B.A. in Computer Science?",
+        "What is the minimum GPA required to stay in the CS program?",
+        # Research & extracurricular
+        "What research labs and projects can I join in the CS department?",
+        "Are there any CS student organizations or clubs at Morgan State?",
+        "How can I get involved in undergraduate research?",
+        "What programming competitions can Morgan State students participate in?",
+        # Frequently asked
+        "How do I contact my academic advisor?",
+        "Where is the Computer Science department located?",
+        "How do I register for CS courses?",
+    ]
 
-        # Clean and normalize questions
-        def normalize_question(q):
-            if not q:
-                return None
-            original = q.strip()
-            normalized = re.sub(r'[^\w\s?]', '', q.lower().strip())
-            # Skip greetings and short phrases
-            skip_words = ['hi', 'hello', 'hey', 'thanks', 'thank you', 'bye', 'goodbye',
-                          'ok', 'okay', 'yes', 'no', 'sure', 'great']
-            if normalized in skip_words or len(normalized) < 15:
-                return None
-            # Skip file uploads and follow-ups
-            if 'uploads' in normalized or 'chat_files' in normalized:
-                return None
-            if any(fu in normalized for fu in ['tell me more', 'what about', 'explain more']):
-                return None
-            # Skip outdated semester-specific questions (past semesters)
-            outdated_patterns = ['fall 2024', 'fall 2025', 'spring 2024', 'spring 2025',
-                                 'summer 2024', 'summer 2025', 'did i take', 'have i taken']
-            if any(op in normalized for op in outdated_patterns):
-                return None
-            return original
-
-        # Count question frequencies
-        question_counts = Counter()
-        for (query,) in queries:
-            normalized = normalize_question(query)
-            if normalized:
-                question_counts[normalized] += 1
-
-        # Get 2 MOST FREQUENTLY asked (highest count overall)
-        frequent_questions = []
-        for question, count in question_counts.most_common(20):
-            if count >= 2 and len(question) > 15:  # Asked at least twice
-                formatted = question[0].upper() + question[1:]
-                if not formatted.endswith('?'):
-                    formatted += '?'
-                frequent_questions.append(formatted)
-                if len(frequent_questions) >= 2:
-                    break
-
-        # Get 2 TRENDING questions (recent but different from frequent)
-        recent_queries = db.query(ChatHistory.user_query)\
-            .filter(ChatHistory.user_query.isnot(None))\
-            .order_by(ChatHistory.timestamp.desc())\
-            .limit(100)\
-            .all()
-
-        recent_counts = Counter()
-        for (query,) in recent_queries:
-            normalized = normalize_question(query)
-            if normalized:
-                recent_counts[normalized] += 1
-
-        trending_questions = []
-        for question, count in recent_counts.most_common(20):
-            # Skip if already in frequent
-            if any(question.lower() in fq.lower() or fq.lower() in question.lower()
-                   for fq in frequent_questions):
-                continue
-            if len(question) > 15:
-                formatted = question[0].upper() + question[1:]
-                if not formatted.endswith('?'):
-                    formatted += '?'
-                trending_questions.append(formatted)
-                if len(trending_questions) >= 2:
-                    break
-
-        # Fallback questions if we don't have enough data
-        fallback_frequent = [
-            "Who is the chair of Computer Science department?",
-            "What are the degree requirements for CS major?"
-        ]
-        fallback_trending = [
-            "What programming languages should I learn?",
-            "When is the deadline for course registration?"
-        ]
-
-        # Fill in with fallbacks if needed
-        while len(frequent_questions) < 2:
-            for fb in fallback_frequent:
-                if fb not in frequent_questions:
-                    frequent_questions.append(fb)
-                    break
-
-        while len(trending_questions) < 2:
-            for fb in fallback_trending:
-                if fb not in trending_questions and fb not in frequent_questions:
-                    trending_questions.append(fb)
-                    break
-
-        # Combine and deduplicate: 2 frequent + 2 trending + 2 general = 6 total
-        seen = set()
-        all_questions = []
-
-        def add_if_unique(question):
-            key = question.lower().strip()
-            if key not in seen:
-                seen.add(key)
-                all_questions.append(question)
-                return True
-            return False
-
-        # Add frequent questions first
-        for q in frequent_questions[:2]:
-            add_if_unique(q)
-
-        # Add trending questions
-        for q in trending_questions[:2]:
-            add_if_unique(q)
-
-        # Add general questions
-        for q in general_questions:
-            add_if_unique(q)
-
-        # If we still don't have 6, add more fallbacks
-        extra_fallbacks = [
-            "What courses should I take for cybersecurity?",
-            "What research opportunities exist in CS?",
-            "Who is the chair of Computer Science?"
-        ]
-        for q in extra_fallbacks:
-            if len(all_questions) >= 6:
-                break
-            add_if_unique(q)
-
-        return {"questions": all_questions[:6]}
-
-    except Exception as e:
-        print(f"Error fetching popular questions: {e}")
-        return {
-            "questions": [
-                "Who is the chair of Computer Science?",
-                "What are the prerequisites for COSC 311?",
-                "What internship opportunities are available?",
-                "How do I contact my academic advisor?",
-                "What courses should I take for cybersecurity?",
-                "What research opportunities exist in CS?"
-            ]
-        }
+    return {"questions": random.sample(QUESTION_POOL, 8)}
 
 # --- Admin / Ingest Routes ---
 @app.post("/ingest")
@@ -2991,11 +2974,16 @@ async def delete_course(code: str, user=Depends(get_current_user)):
 
 @app.get("/api/curriculum")
 async def get_curriculum():
-    """Returns full curriculum data including degree info, courses, and elective requirements"""
+    """Returns full curriculum data including degree info, courses, and elective requirements.
+    Source of truth: courses.txt (KB file). Falls back to classes.json if txt not available."""
     try:
+        # Primary: parse from txt knowledge base (single source of truth)
+        if os.path.exists(KB_COURSES_FILE):
+            return parse_curriculum_from_txt()
+
+        # Fallback: classes.json (legacy)
         data = json.load(open(CLASSES_FILE, encoding="utf-8"))
 
-        # New structure with degree_info, courses, and elective_requirements
         if isinstance(data, dict) and "courses" in data:
             return {
                 "degree_info": data.get("degree_info", {}),
@@ -3003,7 +2991,6 @@ async def get_curriculum():
                 "elective_requirements": data.get("elective_requirements", {})
             }
 
-        # Legacy support for old structure
         if isinstance(data, list):
             return {"degree_info": {}, "courses": data, "elective_requirements": {}}
 
@@ -3012,16 +2999,19 @@ async def get_curriculum():
             if isinstance(arr, list):
                 return {"degree_info": {}, "courses": arr, "elective_requirements": {}}
 
-        cs = data.get("computer_science_courses")
-        if isinstance(cs, dict) and isinstance(cs.get("computer_science_courses"), list):
-            return {"degree_info": {}, "courses": cs["computer_science_courses"], "elective_requirements": {}}
-
         return {"degree_info": {}, "courses": [], "elective_requirements": {}}
     except FileNotFoundError:
         return {"degree_info": {}, "courses": [], "elective_requirements": {}}
 
 @app.get("/health")
 def health():
+    if USE_VERTEX_AGENT:
+        try:
+            result = check_agent_health()
+            ai_status = result.get("status", "offline") if isinstance(result, dict) else "offline"
+        except Exception:
+            ai_status = "offline"
+        return {"status": "ok", "db": "connected", "ai": "ready" if ai_status == "connected" else "offline"}
     return {"status": "ok", "db": "connected", "ai": "ready" if qa else "offline"}
 
 # ==============================================================================
@@ -3131,9 +3121,9 @@ async def get_system_health(user: dict = Depends(get_current_user), db: Session 
 
     health_status = {
         "database": {"status": "unknown", "message": ""},
-        "pinecone": {"status": "unknown", "message": ""},
-        "openai": {"status": "unknown", "message": ""},
-        "vector_count": 0,
+        "vertex_agent": {"status": "unknown", "message": ""},
+        "openai_tts": {"status": "unknown", "message": ""},
+        "mode": "vertex_ai" if USE_VERTEX_AGENT else "legacy_rag",
         "last_check": datetime.now(timezone.utc).isoformat()
     }
 
@@ -3144,28 +3134,31 @@ async def get_system_health(user: dict = Depends(get_current_user), db: Session 
     except Exception as e:
         health_status["database"] = {"status": "error", "message": str(e)[:100]}
 
-    # Check Pinecone
-    try:
-        if PINECONE_API_KEY and PINECONE_INDEX:
-            pc = Pinecone(api_key=PINECONE_API_KEY)
-            idx = pc.Index(PINECONE_INDEX)
-            stats = idx.describe_index_stats()
-            vector_count = stats.get("total_vector_count", 0)
-            health_status["pinecone"] = {"status": "connected", "message": f"Index ready with {vector_count} vectors"}
-            health_status["vector_count"] = vector_count
-        else:
-            health_status["pinecone"] = {"status": "not_configured", "message": "API key or index not set"}
-    except Exception as e:
-        health_status["pinecone"] = {"status": "error", "message": str(e)[:100]}
+    # Check Vertex AI Agent
+    if USE_VERTEX_AGENT:
+        health_status["vertex_agent"] = check_agent_health()
+    else:
+        # Legacy: check Pinecone
+        try:
+            if PINECONE_API_KEY and PINECONE_INDEX and LEGACY_RAG_AVAILABLE:
+                pc_check = Pinecone(api_key=PINECONE_API_KEY)
+                idx = pc_check.Index(PINECONE_INDEX)
+                stats = idx.describe_index_stats()
+                vector_count = stats.get("total_vector_count", 0)
+                health_status["vertex_agent"] = {"status": "n/a (legacy mode)", "message": f"Pinecone: {vector_count} vectors"}
+            else:
+                health_status["vertex_agent"] = {"status": "not_configured", "message": "Legacy mode, keys missing"}
+        except Exception as e:
+            health_status["vertex_agent"] = {"status": "error", "message": str(e)[:100]}
 
-    # Check OpenAI
+    # Check OpenAI TTS
     try:
         if OPENAI_API_KEY:
-            health_status["openai"] = {"status": "configured", "message": "API key present"}
+            health_status["openai_tts"] = {"status": "configured", "message": "TTS API key present"}
         else:
-            health_status["openai"] = {"status": "not_configured", "message": "API key not set"}
+            health_status["openai_tts"] = {"status": "not_configured", "message": "TTS unavailable (no OpenAI key)"}
     except Exception as e:
-        health_status["openai"] = {"status": "error", "message": str(e)[:100]}
+        health_status["openai_tts"] = {"status": "error", "message": str(e)[:100]}
 
     return health_status
 
@@ -3297,14 +3290,18 @@ async def get_kb_file(filename: str, user: dict = Depends(get_current_user)):
     if not filename.endswith(".json"):
         raise HTTPException(status_code=400, detail="Only JSON files allowed")
 
-    filepath = os.path.join(DATA_SOURCES_DIR, filename)
+    # Prevent path traversal: strip directory components
+    safe_filename = os.path.basename(filename)
+    filepath = os.path.join(DATA_SOURCES_DIR, safe_filename)
+    if not os.path.realpath(filepath).startswith(os.path.realpath(DATA_SOURCES_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid filename")
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="File not found")
 
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             content = json.load(f)
-        return {"filename": filename, "content": content}
+        return {"filename": safe_filename, "content": content}
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=500, detail=f"Invalid JSON: {str(e)}")
 
@@ -3317,7 +3314,11 @@ async def update_kb_file(filename: str, content: dict, user: dict = Depends(get_
     if not filename.endswith(".json"):
         raise HTTPException(status_code=400, detail="Only JSON files allowed")
 
-    filepath = os.path.join(DATA_SOURCES_DIR, filename)
+    # Prevent path traversal
+    safe_filename = os.path.basename(filename)
+    filepath = os.path.join(DATA_SOURCES_DIR, safe_filename)
+    if not os.path.realpath(filepath).startswith(os.path.realpath(DATA_SOURCES_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
     # Create backup
     if os.path.exists(filepath):
@@ -3341,12 +3342,189 @@ async def trigger_ingestion(user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Admin access required")
 
     try:
-        # Import and run ingestion
-        from ingestion import ingest_data
-        await ingest_data()
-        return {"message": "Ingestion completed successfully", "timestamp": datetime.now(timezone.utc).isoformat()}
+        # Legacy Pinecone ingestion removed. Using Vertex AI structured datastore now.
+        return {"message": "Ingestion not needed. Using Vertex AI structured datastore (instant updates via admin dashboard)."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+# --- Admin: Cloud Knowledge Base (Vertex AI Datastore) ---
+from datastore_manager import (
+    list_datastore_documents,
+    get_document_content,
+    upload_document,
+    delete_document,
+    update_document,
+    sync_datastore,
+    search_documents as search_cloud_kb,
+)
+
+_cloud_kb_cache = {"docs": None, "ts": 0}
+
+@app.get("/api/admin/cloud-kb/documents")
+async def list_cloud_kb_docs(user: dict = Depends(get_current_user), refresh: bool = False):
+    """List all documents in the Vertex AI Search datastore. Cached for 60s."""
+    import time as _t
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        # Use cached result if fresh (60s TTL) unless forced refresh
+        if not refresh and _cloud_kb_cache["docs"] and _t.time() - _cloud_kb_cache["ts"] < 60:
+            docs = _cloud_kb_cache["docs"]
+            print(f"[CACHE] Cloud KB docs from cache ({len(docs)} docs)")
+        else:
+            docs = await asyncio.to_thread(list_datastore_documents)
+            _cloud_kb_cache["docs"] = docs
+            _cloud_kb_cache["ts"] = _t.time()
+        return {"documents": docs, "total": len(docs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list documents: {e}")
+
+@app.get("/api/admin/cloud-kb/documents/{doc_id}/content")
+async def read_cloud_kb_doc(doc_id: str, uri: str = "", user: dict = Depends(get_current_user)):
+    """Read content of a document from the structured datastore"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        content = get_document_content(doc_id)
+        return {"content": content, "doc_id": doc_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read document: {e}")
+
+@app.post("/api/admin/cloud-kb/upload")
+async def upload_cloud_kb_doc(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user)
+):
+    """Upload a new document to the cloud KB"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    allowed_exts = {'txt', 'pdf', 'html', 'csv', 'json'}
+    ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
+    if ext not in allowed_exts:
+        raise HTTPException(status_code=400, detail=f"Allowed types: {', '.join(allowed_exts)}")
+
+    content = await file.read()
+    content_type = file.content_type or "text/plain"
+
+    result = upload_document(file.filename, content, content_type)
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result["message"])
+    # Auto-clear cache so chatbot uses fresh data
+    cleared = query_cache.clear()
+    result["cache_cleared"] = cleared
+    return result
+
+@app.put("/api/admin/cloud-kb/documents/{doc_id}")
+async def update_cloud_kb_doc(
+    doc_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user)
+):
+    """Update content of an existing document in the cloud KB"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    body = await request.json()
+    content = body.get("content", "")
+    if not content:
+        raise HTTPException(status_code=400, detail="Content required")
+
+    result = update_document(doc_id, content.encode("utf-8"))
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result["message"])
+    # Clear ALL caches + reset ALL ADK sessions so chatbot uses fresh data
+    cleared = query_cache.clear()
+    # Reset all ADK sessions so no agent reuses stale context
+    try:
+        from vertex_agent import _session_cache
+        session_count = len(_session_cache)
+        _session_cache.clear()
+    except Exception:
+        session_count = 0
+    result["cache_cleared"] = cleared
+    result["sessions_reset"] = session_count
+    return result
+
+@app.delete("/api/admin/cloud-kb/documents/{doc_id}")
+async def delete_cloud_kb_doc(doc_id: str, uri: str = "", user: dict = Depends(get_current_user)):
+    """Delete a document from the cloud KB"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    result = delete_document(doc_id, uri)
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result["message"])
+    # Auto-clear cache so chatbot uses fresh data
+    cleared = query_cache.clear()
+    result["cache_cleared"] = cleared
+    return result
+
+@app.post("/api/admin/cloud-kb/sync")
+async def sync_cloud_kb(user: dict = Depends(get_current_user)):
+    """Re-sync all GCS documents into the datastore"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    result = sync_datastore()
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result["message"])
+    # Auto-clear cache so chatbot uses fresh data
+    cleared = query_cache.clear()
+    result["cache_cleared"] = cleared
+    return result
+
+
+# ==============================================================================
+# CACHE MANAGEMENT ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/cache/stats")
+async def get_cache_stats_public():
+    """Get cache statistics (public, read-only)."""
+    stats = query_cache.get_stats()
+    return {
+        "success": True,
+        "cache_stats": stats,
+        "cache_type": "multi-tier (L1: in-memory, L2: Redis)"
+    }
+
+@app.get("/api/admin/cache/stats")
+async def get_cache_stats_admin(user: dict = Depends(get_current_user)):
+    """Get cache statistics - admin version with more details."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    stats = query_cache.get_stats()
+    return {
+        "success": True,
+        "cache_stats": stats
+    }
+
+@app.post("/api/admin/cache/clear")
+async def clear_cache(user: dict = Depends(get_current_user)):
+    """Clear all cached responses"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    cleared_count = query_cache.clear()
+    return {
+        "success": True,
+        "message": f"Cleared {cleared_count} cached items"
+    }
+
+@app.get("/api/admin/cloud-kb/search")
+async def search_cloud_kb_docs(q: str, user: dict = Depends(get_current_user)):
+    """Search across all cloud KB documents"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not q or len(q) < 2:
+        return {"results": []}
+    try:
+        results = search_cloud_kb(q)
+        return {"results": results, "query": q, "total": len(results)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search failed: {e}")
 
 # --- Admin: Analytics ---
 @app.get("/api/admin/analytics")
@@ -3385,6 +3563,460 @@ async def get_analytics(user: dict = Depends(get_current_user), db: Session = De
         "open_tickets": open_tickets,
         "timestamp": now.isoformat()
     }
+
+# ==============================================================================
+# SUPPORT TICKET ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/tickets")
+async def list_tickets(status: str = None, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """List tickets - admins see all, users see their own"""
+    query = db.query(SupportTicket)
+    if user.get("role") != "admin":
+        query = query.filter(SupportTicket.user_id == user["user_id"])
+    if status and status != "all":
+        query = query.filter(SupportTicket.status == status)
+    tickets = query.order_by(SupportTicket.created_at.desc()).all()
+    return {
+        "tickets": [
+            {
+                "id": t.id,
+                "subject": t.subject,
+                "category": t.category,
+                "description": t.description,
+                "status": t.status,
+                "priority": t.priority,
+                "user_email": db.query(User).filter(User.id == t.user_id).first().email if t.user_id else "Unknown",
+                "attachment_name": t.attachment_name,
+                "attachment_data": t.attachment_data if t.attachment_data else None,
+                "admin_notes": t.admin_notes,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+            }
+            for t in tickets
+        ]
+    }
+
+@app.get("/api/tickets/stats/summary")
+async def get_ticket_stats(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get ticket statistics"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    total = db.query(SupportTicket).count()
+    open_count = db.query(SupportTicket).filter(SupportTicket.status == "open").count()
+    in_progress = db.query(SupportTicket).filter(SupportTicket.status == "in_progress").count()
+    resolved = db.query(SupportTicket).filter(SupportTicket.status == "resolved").count()
+    return {"total": total, "open": open_count, "in_progress": in_progress, "resolved": resolved}
+
+@app.post("/api/tickets")
+async def create_ticket(request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Create a new support ticket"""
+    body = await request.json()
+    subject = (body.get("subject", "") or "")[:200]
+    description = (body.get("description", "") or "")[:5000]
+    category = body.get("category", "other") or "other"
+    priority = body.get("priority", "normal") or "normal"
+    attachment_data = body.get("attachment_data")
+    # Cap base64 attachment at ~7.5MB (10MB file base64-encoded)
+    if attachment_data and len(attachment_data) > 10_000_000:
+        raise HTTPException(413, "Attachment too large")
+    ticket = SupportTicket(
+        user_id=user["user_id"],
+        subject=subject,
+        category=category,
+        description=description,
+        priority=priority,
+        attachment_data=attachment_data,
+        attachment_name=(body.get("attachment_name", "") or "")[:255],
+    )
+    db.add(ticket)
+    db.commit()
+    db.refresh(ticket)
+    return {"success": True, "ticket_id": ticket.id}
+
+@app.put("/api/tickets/{ticket_id}")
+async def update_ticket(ticket_id: int, request: Request, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Update ticket status/notes"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    ticket = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    body = await request.json()
+    if "status" in body:
+        ticket.status = body["status"]
+        if body["status"] == "resolved":
+            ticket.resolved_by = user["user_id"]
+            ticket.resolved_at = datetime.now(timezone.utc)
+    if "admin_notes" in body:
+        ticket.admin_notes = body["admin_notes"]
+    db.commit()
+    return {"success": True}
+
+
+# ==============================================================================
+# FEEDBACK ENDPOINTS
+# ==============================================================================
+
+@app.post("/api/feedback")
+async def submit_feedback(request: Request, user: dict = Depends(get_current_user)):
+    """Submit feedback on a bot response (helpful/not_helpful/report)."""
+    body = await request.json()
+    message_text = body.get("message_text", "")
+    feedback_type = body.get("feedback_type", "")
+    report_details = body.get("report_details", "")
+    session_id = body.get("session_id", "default")
+
+    if feedback_type not in ("helpful", "not_helpful", "report"):
+        raise HTTPException(status_code=400, detail="Invalid feedback type")
+
+    with SessionLocal() as db:
+        fb = Feedback(
+            user_id=user.get("user_id"),
+            session_id=session_id,
+            message_text=message_text[:2000],
+            feedback_type=feedback_type,
+            report_details=report_details[:1000] if report_details else None,
+        )
+        db.add(fb)
+        db.commit()
+
+    # If "report" (explicit bug report), log as failed query for research.
+    # "not_helpful" alone is NOT logged - users thumb-down for many reasons
+    # (too verbose, wrong tone, etc.) that don't indicate a KB miss.
+    # Only "report" means "this answer is factually wrong or missing info".
+    if feedback_type == "report" and message_text:
+        try:
+            from models import FailedQuery
+            with SessionLocal() as db:
+                chat = db.query(ChatHistory).filter(
+                    ChatHistory.user_id == user.get("user_id"),
+                    ChatHistory.bot_response.contains(message_text[:100])
+                ).order_by(ChatHistory.timestamp.desc()).first()
+                if chat:
+                    # Don't duplicate: check if this query was already logged
+                    existing = db.query(FailedQuery).filter(
+                        FailedQuery.user_query == chat.user_query.strip(),
+                        FailedQuery.user_id == user.get("user_id"),
+                    ).first()
+                    if not existing:
+                        entry = FailedQuery(
+                            user_query=chat.user_query.strip(),
+                            bot_response=chat.bot_response[:1000],
+                            user_id=user.get("user_id"),
+                            status="new",
+                        )
+                        db.add(entry)
+                        db.commit()
+        except Exception:
+            pass
+
+    return {"success": True}
+
+@app.get("/api/feedback/stats")
+async def get_feedback_stats(user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get feedback statistics"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    total = db.query(Feedback).count()
+    helpful = db.query(Feedback).filter(Feedback.feedback_type == "helpful").count()
+    not_helpful = db.query(Feedback).filter(Feedback.feedback_type == "not_helpful").count()
+    reports = db.query(Feedback).filter(Feedback.feedback_type == "report").count()
+    satisfaction_rate = round((helpful / total * 100) if total > 0 else 0, 1)
+
+    # Recent reports
+    recent_reports = db.query(Feedback).filter(
+        Feedback.feedback_type == "report"
+    ).order_by(Feedback.timestamp.desc()).limit(10).all()
+
+    return {
+        "total": total,
+        "helpful": helpful,
+        "not_helpful": not_helpful,
+        "reports": reports,
+        "satisfaction_rate": satisfaction_rate,
+        "recent_reports": [
+            {
+                "id": r.id,
+                "message_preview": (r.message_text[:150] + "...") if r.message_text and len(r.message_text) > 150 else r.message_text,
+                "details": r.report_details,
+                "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            }
+            for r in recent_reports
+        ]
+    }
+
+@app.get("/api/feedback/all")
+async def get_all_feedback(type: str = None, user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get all feedback entries"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    query = db.query(Feedback)
+    if type and type != "all":
+        query = query.filter(Feedback.feedback_type == type)
+    items = query.order_by(Feedback.timestamp.desc()).limit(100).all()
+    return {
+        "feedback": [
+            {
+                "id": f.id,
+                "user_id": f.user_id,
+                "session_id": f.session_id,
+                "message_text": f.message_text,
+                "feedback_type": f.feedback_type,
+                "report_details": f.report_details,
+                "timestamp": f.timestamp.isoformat() if f.timestamp else None,
+            }
+            for f in items
+        ]
+    }
+
+
+# ==============================================================================
+# AUTO-RESEARCH AGENT ENDPOINTS
+# ==============================================================================
+
+from research_agent import run_research_batch, get_research_stats
+from models import FailedQuery, KBSuggestion
+
+@app.post("/api/admin/research/run")
+async def trigger_research(user: dict = Depends(get_current_user)):
+    """Manually trigger a research batch (admin only)."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    result = await asyncio.to_thread(run_research_batch)
+    return result
+
+@app.get("/api/admin/research/stats")
+async def research_stats_endpoint(user: dict = Depends(get_current_user)):
+    """Get research agent stats for dashboard."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return get_research_stats()
+
+@app.get("/api/admin/research/suggestions")
+async def list_suggestions(status: str = "pending", user: dict = Depends(get_current_user)):
+    """List KB suggestions from the research agent."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    with SessionLocal() as db:
+        query = db.query(KBSuggestion)
+        if status != "all":
+            query = query.filter(KBSuggestion.status == status)
+        suggestions = query.order_by(KBSuggestion.created_at.desc()).limit(100).all()
+        return {"suggestions": [{
+            "id": s.id, "cluster_id": s.cluster_id, "topic": s.topic,
+            "representative_query": s.representative_query, "query_count": s.query_count,
+            "researched_answer": s.researched_answer,
+            "sources": json.loads(s.sources) if s.sources else [],
+            "confidence": s.confidence, "suggested_doc_id": s.suggested_doc_id,
+            "suggested_content": s.suggested_content, "status": s.status,
+            "admin_notes": s.admin_notes,
+            "created_at": s.created_at.isoformat() if s.created_at else "",
+        } for s in suggestions]}
+
+@app.put("/api/admin/research/suggestions/{suggestion_id}")
+async def review_suggestion(suggestion_id: int, request: Request, user: dict = Depends(get_current_user)):
+    """Approve, reject, or edit a KB suggestion."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    body = await request.json()
+    action = body.get("action")
+
+    with SessionLocal() as db:
+        suggestion = db.query(KBSuggestion).filter(KBSuggestion.id == suggestion_id).first()
+        if not suggestion:
+            raise HTTPException(status_code=404, detail="Suggestion not found")
+
+        if action == "approve":
+            suggestion.status = "approved"
+            suggestion.reviewed_by = user.get("user_id")
+            suggestion.reviewed_at = datetime.now(timezone.utc)
+        elif action == "reject":
+            suggestion.status = "rejected"
+            suggestion.admin_notes = body.get("notes", "")
+            suggestion.reviewed_by = user.get("user_id")
+            suggestion.reviewed_at = datetime.now(timezone.utc)
+        elif action == "edit":
+            if "content" in body:
+                suggestion.suggested_content = body["content"]
+            if "doc_id" in body:
+                suggestion.suggested_doc_id = body["doc_id"]
+            if "notes" in body:
+                suggestion.admin_notes = body["notes"]
+
+        db.commit()
+    return {"success": True}
+
+@app.post("/api/admin/research/suggestions/{suggestion_id}/push")
+async def push_suggestion(suggestion_id: int, user: dict = Depends(get_current_user)):
+    """Push an approved suggestion to the live KB datastore."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    with SessionLocal() as db:
+        suggestion = db.query(KBSuggestion).filter(
+            KBSuggestion.id == suggestion_id,
+            KBSuggestion.status == "approved"
+        ).first()
+        if not suggestion:
+            raise HTTPException(status_code=404, detail="Approved suggestion not found")
+
+        doc_id = suggestion.suggested_doc_id
+        content = suggestion.suggested_content
+        if not doc_id or not content:
+            raise HTTPException(status_code=400, detail="Missing doc_id or content")
+
+        # Check if doc exists -> append; otherwise -> create
+        existing = get_document_content(doc_id)
+        if existing and not existing.startswith("Error"):
+            merged = existing.rstrip() + "\n\n" + content
+            result = update_document(doc_id, merged.encode("utf-8"))
+        else:
+            result = upload_document(f"{doc_id}.txt", content.encode("utf-8"))
+
+        if result["success"]:
+            suggestion.status = "pushed"
+            db.commit()
+            query_cache.clear()
+            try:
+                from vertex_agent import _session_cache
+                _session_cache.clear()
+            except Exception:
+                pass
+            return {"success": True, "message": f"Pushed to KB as {doc_id}"}
+        else:
+            raise HTTPException(status_code=500, detail=result["message"])
+
+@app.get("/api/admin/research/failed-queries")
+async def list_failed_queries(status: str = "all", user: dict = Depends(get_current_user)):
+    """List raw failed queries for transparency."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    with SessionLocal() as db:
+        query = db.query(FailedQuery)
+        if status != "all":
+            query = query.filter(FailedQuery.status == status)
+        queries = query.order_by(FailedQuery.created_at.desc()).limit(200).all()
+        return {"queries": [{
+            "id": q.id, "user_query": q.user_query, "bot_response": q.bot_response[:200],
+            "cluster_id": q.cluster_id, "status": q.status,
+            "created_at": q.created_at.isoformat() if q.created_at else "",
+        } for q in queries]}
+
+@app.post("/api/internal/research/run")
+async def internal_research_trigger(request: Request):
+    """Triggered by Cloud Scheduler daily at 2am. Auth via shared secret."""
+    secret = request.headers.get("X-Research-Secret", "")
+    expected = os.getenv("RESEARCH_SECRET", "")
+    if not expected or secret != expected:
+        raise HTTPException(status_code=403, detail="Invalid research secret")
+    result = await asyncio.to_thread(run_research_batch)
+    return result
+
+
+@app.post("/api/internal/memory/consolidate")
+async def internal_memory_consolidate(request: Request):
+    """Triggered by Cloud Scheduler daily at 3am. Consolidates conversations into long-term user memories."""
+    secret = request.headers.get("X-Research-Secret", "")
+    expected = os.getenv("RESEARCH_SECRET", "")
+    if not expected or secret != expected:
+        raise HTTPException(status_code=403, detail="Invalid research secret")
+    from services.memory_service import consolidate_user_memories
+    result = await asyncio.to_thread(consolidate_user_memories, 24)
+    return result
+
+
+@app.post("/api/internal/canvas/sync")
+async def internal_canvas_sync(request: Request):
+    """Triggered by Cloud Scheduler daily at 4am. Refreshes Canvas data for all synced users.
+    Requires canvas_client.refresh_canvas_data() to be implemented."""
+    secret = request.headers.get("X-Research-Secret", "")
+    expected = os.getenv("RESEARCH_SECRET", "")
+    if not expected or secret != expected:
+        raise HTTPException(status_code=403, detail="Invalid research secret")
+
+    # Canvas uses LDAP session auth. Cannot auto-refresh without storing credentials.
+    # This endpoint reports stale records so admins know which students have old data.
+    from models import CanvasStudentData
+    from datetime import timedelta
+
+    db = SessionLocal()
+    try:
+        canvas_records = db.query(CanvasStudentData).all()
+        if not canvas_records:
+            return {"status": "no_canvas_users", "total": 0}
+
+        stale_cutoff = datetime.utcnow() - timedelta(days=3)
+        stale = [r for r in canvas_records if r.synced_at and r.synced_at < stale_cutoff]
+        fresh = [r for r in canvas_records if r.synced_at and r.synced_at >= stale_cutoff]
+
+        return {
+            "status": "report",
+            "note": "Canvas uses LDAP auth. Cannot auto-refresh. Students re-sync manually in Profile.",
+            "total_users": len(canvas_records),
+            "fresh_last_3d": len(fresh),
+            "stale_over_3d": len(stale),
+        }
+    finally:
+        db.close()
+
+
+@app.post("/api/internal/degreeworks/sync")
+async def internal_degreeworks_sync(request: Request):
+    """Triggered by Cloud Scheduler monthly (1st of month at 5am). Refreshes DegreeWorks data.
+    Requires banner_scraper.client.refresh_degreeworks_data() to be implemented."""
+    secret = request.headers.get("X-Research-Secret", "")
+    expected = os.getenv("RESEARCH_SECRET", "")
+    if not expected or secret != expected:
+        raise HTTPException(status_code=403, detail="Invalid research secret")
+
+    # DegreeWorks uses CAS session auth (no API tokens). Cannot auto-refresh
+    # without student credentials. This endpoint reports stale records for admin awareness.
+    from models import DegreeWorksData
+    from datetime import timedelta
+
+    db = SessionLocal()
+    try:
+        dw_records = db.query(DegreeWorksData).all()
+        if not dw_records:
+            return {"status": "no_degreeworks_users", "total": 0}
+
+        stale_cutoff = datetime.utcnow() - timedelta(days=30)
+        stale = [r for r in dw_records if r.synced_at and r.synced_at < stale_cutoff]
+        fresh = [r for r in dw_records if r.synced_at and r.synced_at >= stale_cutoff]
+
+        return {
+            "status": "report",
+            "note": "DegreeWorks requires CAS login. Cannot auto-refresh. Students must re-sync manually.",
+            "total_users": len(dw_records),
+            "fresh_last_30d": len(fresh),
+            "stale_over_30d": len(stale),
+        }
+    finally:
+        db.close()
+
+
+# ==============================================================================
+# CLOUD KB STATS ENDPOINT
+# ==============================================================================
+
+@app.get("/api/admin/cloud-kb/stats")
+async def get_cloud_kb_stats(user: dict = Depends(get_current_user)):
+    """Get cloud KB statistics - doc count, total size, last modified"""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        docs = list_datastore_documents()
+        total_size = sum(d.get("size", 0) for d in docs)
+        last_modified = max((d.get("modified", "") for d in docs), default="") if docs else ""
+        return {
+            "total_documents": len(docs),
+            "total_size": total_size,
+            "last_modified": last_modified,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get stats: {e}")
+
 
 if __name__ == "__main__":
     import uvicorn

@@ -13,11 +13,8 @@ import { FaChartLine } from "@react-icons/all-files/fa/FaChartLine";
 import { FaStar } from "@react-icons/all-files/fa/FaStar";
 import "./CurriculumPage.css";
 
-// API Base URL
-const hostname = window.location.hostname;
-const API_BASE = (hostname === "localhost" || hostname === "127.0.0.1")
-  ? "http://127.0.0.1:8000"
-  : "http://100.48.56.24:5000";
+import { getApiBase } from "../lib/apiBase";
+const API_BASE = getApiBase();
 
 // Helper to get grade color
 const getGradeColor = (grade) => {
@@ -298,20 +295,23 @@ export default function CurriculumPage() {
           <div className="degree-summary">
             <div className="summary-item">
               <span className="summary-label">General Education</span>
-              <span className="summary-value">{degreeInfo.general_education_credits || 44} cr</span>
+              <span className="summary-value">{degreeInfo.general_education_credits ? `${degreeInfo.general_education_credits} cr` : "~44 cr*"}</span>
             </div>
             <div className="summary-item">
               <span className="summary-label">Supporting Courses</span>
-              <span className="summary-value">{degreeInfo.supporting_credits || 15} cr</span>
+              <span className="summary-value">{degreeInfo.supporting_credits ? `${degreeInfo.supporting_credits} cr` : "~15 cr*"}</span>
             </div>
             <div className="summary-item">
               <span className="summary-label">Major Requirements</span>
-              <span className="summary-value">{degreeInfo.major_credits || 65} cr</span>
+              <span className="summary-value">{degreeInfo.major_credits ? `${degreeInfo.major_credits} cr` : "~65 cr*"}</span>
             </div>
             <div className="summary-item total">
               <span className="summary-label">Total for Degree</span>
-              <span className="summary-value">{degreeInfo.total_credits || 120} cr</span>
+              <span className="summary-value">{degreeInfo.total_credits ? `${degreeInfo.total_credits} cr` : "~120 cr*"}</span>
             </div>
+            {(!degreeInfo.general_education_credits || !degreeInfo.total_credits) && (
+              <p style={{ fontSize: "0.75rem", color: "#888", marginTop: "4px" }}>*Approximate values. Sync DegreeWorks for exact numbers.</p>
+            )}
           </div>
         </div>
       </div>
@@ -329,9 +329,9 @@ export default function CurriculumPage() {
           <FaStar size={24} />
           <div>
             <div className="stat-number">
-              {curriculumData.filter(c => c.requirement_type === "required" || c.requirement_type === "supporting").length}
+              {curriculumData.filter(c => c.requirement_type === "required" || c.requirement_type === "supporting" || c.requirement_type === "elective").length}
             </div>
-            <div className="stat-label">Required Courses</div>
+            <div className="stat-label">Total Degree Courses</div>
           </div>
         </div>
         <div className="stat-card">
