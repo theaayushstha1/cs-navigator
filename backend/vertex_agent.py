@@ -52,6 +52,45 @@ _SKIP_GROUNDING_RE = re.compile(
 # Detects when Gemini self-reports a KB access failure (transient Vertex AI Search issue)
 _KB_FAIL_RE = re.compile(r"having trouble (accessing|connecting to) my knowledge base", re.IGNORECASE)
 
+# =============================================================================
+# FAITHFULNESS GATE: Entity Whitelist
+# =============================================================================
+# Catches hallucinated professor names that Gemini 2.0 Flash sometimes generates.
+# When a "Dr./Professor X" is found in the response but X isn't in the CS dept,
+# the response is flagged and re-generated with the more faithful 2.5 Flash model.
+#
+# Source of truth: backend/kb_structured/academic_faculty.json
+# Last synced: 2026-04-05
+
+_FACULTY_LAST_NAMES = {
+    "ali", "chouchane", "shushane", "dabaghchian", "dacon", "guo",
+    "heydari", "mack", "mao", "ojeme", "paudel", "sakk", "stojkovic",
+    "oladunni", "xu", "steele", "tannouri", "smith", "wang", "tchounwou",
+}
+
+_PROF_NAME_RE = re.compile(
+    r'(?:Dr\.|Professor|Prof\.)\s+(?:[A-Z][a-z]+\s+)?([A-Z][a-zA-Z\-]+)',
+)
+
+_FAITHFULNESS_DISCLAIMER = (
+    "\n\n---\n*Some names in this response may not match our department records. "
+    "Please verify faculty names at the [CS department page](https://www.morgan.edu/computer-science) "
+    "or contact compsci@morgan.edu.*"
+)
+
+
+def _check_faculty_faithfulness(text: str) -> list[str]:
+    """Check if the response mentions professor names not in the CS department.
+    Returns list of hallucinated names (empty if all names check out)."""
+    if not text:
+        return []
+    matches = _PROF_NAME_RE.findall(text)
+    hallucinated = []
+    for surname in matches:
+        if surname.lower().rstrip(".,;:!?'\"") not in _FACULTY_LAST_NAMES:
+            hallucinated.append(surname)
+    return hallucinated
+
 
 def _apply_grounding_gate(text: str, chunks: int, has_student_data: bool = False) -> str:
     """Append a disclaimer when the agent answered with NO data source at all.
@@ -359,6 +398,26 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
             has_data = bool(context or canvas_context)
             final_text = _apply_grounding_gate(final_text, grounding_chunks, has_student_data=has_data)
 
+            # Faithfulness gate: catch hallucinated professor names from 2.0 Flash.
+            # If bad names detected, retry the query with the more faithful 2.5 Flash.
+            if model == "inav-1.0" and not retried:
+                hallucinated = _check_faculty_faithfulness(final_text)
+                if hallucinated:
+                    print(f"   [FAITHFULNESS] Hallucinated names: {hallucinated} — retrying with inav-1.1")
+                    _session_cache.pop(user_id, None)
+                    state = {}
+                    if context:
+                        state["degreeworks"] = context
+                    if canvas_context:
+                        state["canvas"] = canvas_context
+                    if memory_context:
+                        state["memory"] = memory_context
+                    state["model_preference"] = "inav-1.1"
+                    fallback_session = _create_session(user_id, state=state)
+                    if fallback_session:
+                        _cache_session(user_id, fallback_session, context, "inav-1.1")
+                        return _run_query(message, user_id, fallback_session, retried=True, context=context, model="inav-1.1", canvas_context=canvas_context, memory_context=memory_context)
+
             return final_text
         else:
             return "I'm sorry, I couldn't generate a response. Please try rephrasing your question."
@@ -590,9 +649,17 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
         has_data = bool(context or canvas_context)
         final = _apply_grounding_gate(full_text.strip(), grounding_chunks, has_student_data=has_data)
         if final != full_text.strip():
-            # Stream the disclaimer as a final chunk
             disclaimer = final[len(full_text.strip()):]
             yield {"type": "chunk", "content": disclaimer}
+
+        # Faithfulness gate: catch hallucinated professor names in streamed response.
+        # Can't un-send chunks, so append disclaimer + signal frontend to regenerate.
+        if model == "inav-1.0":
+            hallucinated = _check_faculty_faithfulness(final)
+            if hallucinated:
+                print(f"   [FAITHFULNESS] Hallucinated names in stream: {hallucinated}")
+                yield {"type": "chunk", "content": _FAITHFULNESS_DISCLAIMER}
+                final += _FAITHFULNESS_DISCLAIMER
 
         yield {"type": "done", "content": final}
 

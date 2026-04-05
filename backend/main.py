@@ -1051,7 +1051,10 @@ async def change_password(req: PasswordChangeRequest, user: dict = Depends(get_c
     
     if not verify_password(req.currentPassword, db_user.password_hash):
         raise HTTPException(401, "Current password incorrect")
-    
+
+    if verify_password(req.newPassword, db_user.password_hash):
+        raise HTTPException(400, "New password must be different from your current password")
+
     db_user.password_hash = hash_password(req.newPassword)
     db.commit()
     return {"message": "Password changed"}
