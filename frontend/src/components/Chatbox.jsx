@@ -837,7 +837,18 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                             const isOutage = errMsg.includes("temporarily") || errMsg.includes("knowledge base") || errMsg.includes("system issue");
 
                             if (isOutage) {
-                                // Show toast notification instead of polluting the chat
+                                // Silent retry once before showing toast (ADK cold-connect)
+                                if (!skipCache && !window._lastRetried) {
+                                    window._lastRetried = true;
+                                    setMessages((prev) => prev.slice(0, -1)); // remove placeholder
+                                    setIsLoading(false);
+                                    setTimeout(() => {
+                                        handleSend(null, finalMessage, false);
+                                        setTimeout(() => { window._lastRetried = false; }, 10000);
+                                    }, 2000);
+                                    return;
+                                }
+                                window._lastRetried = false;
                                 toast("Warming up! Try your question again.", {
                                     duration: 6000,
                                     style: {
@@ -895,7 +906,22 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
         const isNetworkDown = err.message?.includes("Failed to fetch") || err.message?.includes("NetworkError") || err.message?.includes("network");
 
         if (isNetworkDown) {
-            // Backend unreachable: show deploy toast, remove placeholder bot message
+            // Silent retry once before showing toast (backend cold-connect)
+            if (!window._lastRetried) {
+                window._lastRetried = true;
+                setMessages((prev) => {
+                    const last = prev[prev.length - 1];
+                    if (last && last.sender === "bot" && last.isStreaming) return prev.slice(0, -1);
+                    return prev;
+                });
+                setIsLoading(false);
+                setTimeout(() => {
+                    handleSend(null, finalMessage, false);
+                    setTimeout(() => { window._lastRetried = false; }, 10000);
+                }, 2000);
+                return;
+            }
+            window._lastRetried = false;
             toast("Warming up! Try your question again.", {
                 duration: 6000,
                 style: {
