@@ -78,6 +78,47 @@ from vertex_agent import query_agent, query_agent_stream, check_agent_health, re
 from cache import query_cache, get_context_hash, log_cache_stats
 
 
+# =============================================================================
+# COURSE FAITHFULNESS CHECK
+# =============================================================================
+# Catches when the agent recommends courses the student already completed or is
+# currently taking. Scans bullet/numbered list items (recommendation format) for
+# course codes that appear in the student's DegreeWorks record.
+
+_COURSE_CODE_IN_LIST_RE = re.compile(
+    r'(?:^|\n)\s*(?:[\*\-•]|\d+\.)\s*\*?\*?\s*([A-Z]{2,4}\s*\d{3})',
+    re.MULTILINE,
+)
+
+def _check_course_faithfulness(text: str, dw_dict: dict) -> list[str]:
+    """Check if the response recommends courses the student already took or is taking.
+    Only checks course codes in bullet/numbered list format (recommendation context).
+    Returns list of bad course codes."""
+    if not text or not dw_dict:
+        return []
+    forbidden = set()
+    for field in ("courses_completed", "courses_in_progress"):
+        raw = dw_dict.get(field, "")
+        if not raw:
+            continue
+        try:
+            courses = json.loads(raw) if isinstance(raw, str) else raw
+            for c in courses:
+                code = re.sub(r'([A-Z]+)\s*(\d+)', r'\1 \2', c.get("code", "").strip().upper())
+                if code:
+                    forbidden.add(code)
+        except Exception:
+            continue
+    if not forbidden:
+        return []
+    recommended = set()
+    for match in _COURSE_CODE_IN_LIST_RE.findall(text.upper()):
+        code = re.sub(r'([A-Z]+)\s*(\d+)', r'\1 \2', match.strip())
+        recommended.add(code)
+    bad = sorted(recommended & forbidden)
+    return bad
+
+
 # Legacy imports kept for /ingest endpoint and file analysis fallback
 try:
     from langchain.text_splitter import TokenTextSplitter
@@ -2431,6 +2472,12 @@ Use the provided file content and conversation history to answer the user's ques
                 canvas_context=canvas_context,
                 memory_context=memory_context,
             )
+            # Course faithfulness check
+            bad_courses = _check_course_faithfulness(answer, dw_dict) if dw_dict else []
+            if bad_courses:
+                codes = ", ".join(bad_courses)
+                answer += f"\n\n---\n*Correction: {codes} {'is' if len(bad_courses) == 1 else 'are'} already in your academic record. Please disregard {'this recommendation' if len(bad_courses) == 1 else 'these recommendations'}.*"
+                print(f"   [FAITHFULNESS] Recommended already-taken courses: {bad_courses}")
         except Exception as e:
             print(f"   Vertex AI Chat Error: {e}")
             answer = "I'm having trouble processing your request. Please try again."
@@ -2625,6 +2672,14 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
 
                 elif event_type == "done":
                     full_response = content or full_response
+                    # Course faithfulness check: flag courses student already took/is taking
+                    bad_courses = _check_course_faithfulness(full_response, dw_dict) if dw_dict else []
+                    if bad_courses:
+                        codes = ", ".join(bad_courses)
+                        correction = f"\n\n---\n*Correction: {codes} {'is' if len(bad_courses) == 1 else 'are'} already in your academic record. Please disregard {'this recommendation' if len(bad_courses) == 1 else 'these recommendations'}.*"
+                        full_response += correction
+                        print(f"   [FAITHFULNESS] Recommended already-taken courses: {bad_courses}")
+                        yield f"data: {json.dumps({'type': 'chunk', 'content': correction})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'content': full_response})}\n\n"
 
                 elif event_type == "error":
