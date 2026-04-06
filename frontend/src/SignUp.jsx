@@ -59,6 +59,8 @@ function getPasswordStrength(password) {
 
 export default function Signup({ onRegistered }) {
   const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [studentId, setStudentId] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
@@ -95,7 +97,7 @@ export default function Signup({ onRegistered }) {
       const res = await fetch(`${API_BASE}/api/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), password }),
+        body: JSON.stringify({ email: email.trim(), password, name: name.trim() || undefined, student_id: studentId.trim() || undefined }),
       });
 
       if (!res.ok) throw new Error(await parseResponseError(res));
@@ -138,6 +140,34 @@ export default function Signup({ onRegistered }) {
               placeholder="you@morgan.edu"
               autoComplete="email"
               required
+            />
+          </div>
+        </div>
+
+        <div className="field">
+          <label htmlFor="signup-name">Full Name <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", fontWeight: 400 }}>(optional)</span></label>
+          <div className="field__control">
+            <input
+              id="signup-name"
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Rohan Saini"
+              autoComplete="name"
+            />
+          </div>
+        </div>
+
+        <div className="field">
+          <label htmlFor="signup-student-id">Student ID <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", fontWeight: 400 }}>(optional)</span></label>
+          <div className="field__control">
+            <input
+              id="signup-student-id"
+              type="text"
+              value={studentId}
+              onChange={(e) => setStudentId(e.target.value)}
+              placeholder="e.g. 12345678"
+              autoComplete="off"
             />
           </div>
         </div>

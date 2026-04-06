@@ -533,6 +533,8 @@ def allowed_file(filename: str) -> bool:
 class RegisterRequest(BaseModel):
     email: str
     password: str
+    name: Optional[str] = None
+    student_id: Optional[str] = None
 
     @staticmethod
     def validate_email_format(v):
@@ -931,7 +933,8 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
 
     hashed = hash_password(req.password)
     token = generate_token()
-    student = User(email=req.email, password_hash=hashed, role="student", email_verified=False, verification_token=token)
+    student = User(email=req.email, password_hash=hashed, role="student", email_verified=False, verification_token=token,
+                   name=req.name.strip() if req.name else None, student_id=req.student_id.strip() if req.student_id else None)
     db.add(student)
     db.commit()
     db.refresh(student)
