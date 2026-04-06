@@ -66,6 +66,7 @@ _FACULTY_LAST_NAMES = {
     "ali", "chouchane", "shushane", "dabaghchian", "dacon", "guo",
     "heydari", "mack", "mao", "ojeme", "paudel", "sakk", "stojkovic",
     "oladunni", "xu", "steele", "tannouri", "smith", "wang", "tchounwou",
+    "rahman", "shrestha",
 }
 
 _PROF_NAME_RE = re.compile(
