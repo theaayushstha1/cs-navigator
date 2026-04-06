@@ -176,15 +176,31 @@ def build_student_context(dw: dict) -> str:
             pass
 
     if not has_real_remaining:
-        ctx += (
-            "HOW TO FIND REMAINING COURSES (you MUST do this, do NOT say you don't have access):\n"
-            "The student's specific remaining courses are NOT listed above, but you have their COMPLETED and IN-PROGRESS courses.\n"
-            "Step 1: Search the KB for 'Computer Science degree requirements' or 'CS curriculum'\n"
-            "Step 2: Get the full list of required courses for a B.S. in Computer Science\n"
-            "Step 3: Remove every course from that list that appears in COMPLETED or IN-PROGRESS above\n"
-            "Step 4: The result is what the student still needs. Recommend from THAT list only.\n"
-            "NEVER say 'I don't have access to your remaining courses' - you CAN compute them.\n\n"
-        )
+        # Pre-compute remaining courses using the prereq engine (same graph Ripple Effect uses)
+        try:
+            from services.prereq_engine import build_prerequisite_graph
+            graph = build_prerequisite_graph(dw, None)
+            future_nodes = [n for n in graph["nodes"] if n["status"] == "future"]
+            if future_nodes:
+                # Sort: Required first, then Supporting, then Electives
+                cat_order = {"Required": 0, "Supporting": 1}
+                future_nodes.sort(key=lambda n: (cat_order.get(n["category"], 2), n["id"]))
+                eligible = [n for n in future_nodes if not n["blocked_by"] or all(
+                    any(bn == done["id"] for done in graph["nodes"] if done["status"] in ("completed", "in_progress"))
+                    for bn in n["blocked_by"]
+                )]
+                blocked = [n for n in future_nodes if n not in eligible]
+                ctx += "COURSES STUDENT STILL NEEDS (pre-computed, recommend from this list ONLY):\n"
+                for n in eligible:
+                    ctx += f"  - {n['id']} - {n['name']} ({n['credits']}cr, {n['category']}) [ELIGIBLE]\n"
+                for n in blocked:
+                    ctx += f"  - {n['id']} - {n['name']} ({n['credits']}cr, {n['category']}) [BLOCKED by {', '.join(n['blocked_by'])}]\n"
+                ctx += f"\nRECOMMEND only ELIGIBLE courses. Max 18 credits per semester. Group by priority: Required > Supporting > Electives.\n"
+                ctx += f"Stats: {graph['stats']['completed']} completed, {graph['stats']['in_progress']} in-progress, {graph['stats']['future']} remaining.\n\n"
+            else:
+                ctx += "REMAINING COURSES: Student has completed all CS curriculum requirements.\n\n"
+        except Exception as e:
+            ctx += "REMAINING COURSES: Could not compute (search KB for CS degree requirements and subtract completed courses above).\n\n"
 
     ctx += "INSTRUCTION: Do NOT recommend courses from the completed or enrolled lists above. Search the knowledge base for available courses.\n"
 
