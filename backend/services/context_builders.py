@@ -156,16 +156,24 @@ def build_student_context(dw: dict) -> str:
         except Exception:
             pass
 
-    # Remaining requirements
+    # Remaining requirements - only include entries with actual course codes
+    # Skip vague category labels like "University Requirements" or "IF Statement"
     if dw.get("courses_remaining"):
         try:
             remaining = json.loads(dw["courses_remaining"]) if isinstance(dw["courses_remaining"], str) else dw["courses_remaining"]
-            if remaining:
+            # Filter: only keep entries that have a course code (e.g. COSC 350, MATH 241)
+            import re as _re
+            has_code = [c for c in remaining if c.get("code") and _re.search(r'[A-Z]{2,4}\s*\d{3}', c.get("code", ""))]
+            if has_code:
                 ctx += "STILL NEEDS TO COMPLETE (PRIORITIZE THESE FOR RECOMMENDATIONS):\n"
-                for c in remaining[:10]:
-                    req = c.get('requirement', c.get('code', ''))
-                    ctx += f"  - {req}\n"
+                for c in has_code[:15]:
+                    code = c.get('code', '')
+                    name = c.get('name', '')
+                    ctx += f"  - {code} {name}\n".strip() + "\n"
                 ctx += "\n"
+            else:
+                # No real course codes in remaining data - tell agent to compute from KB
+                ctx += "REMAINING COURSES: Not available in student record. You MUST search the KB for CS degree requirements and subtract the completed + in-progress courses above to determine what this student still needs.\n\n"
         except Exception:
             pass
 
