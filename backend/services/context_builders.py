@@ -158,24 +158,33 @@ def build_student_context(dw: dict) -> str:
 
     # Remaining requirements - only include entries with actual course codes
     # Skip vague category labels like "University Requirements" or "IF Statement"
+    has_real_remaining = False
     if dw.get("courses_remaining"):
         try:
             remaining = json.loads(dw["courses_remaining"]) if isinstance(dw["courses_remaining"], str) else dw["courses_remaining"]
-            # Filter: only keep entries that have a course code (e.g. COSC 350, MATH 241)
             import re as _re
             has_code = [c for c in remaining if c.get("code") and _re.search(r'[A-Z]{2,4}\s*\d{3}', c.get("code", ""))]
             if has_code:
+                has_real_remaining = True
                 ctx += "STILL NEEDS TO COMPLETE (PRIORITIZE THESE FOR RECOMMENDATIONS):\n"
                 for c in has_code[:15]:
                     code = c.get('code', '')
                     name = c.get('name', '')
                     ctx += f"  - {code} {name}\n".strip() + "\n"
                 ctx += "\n"
-            else:
-                # No real course codes in remaining data - tell agent to compute from KB
-                ctx += "REMAINING COURSES: Not available in student record. You MUST search the KB for CS degree requirements and subtract the completed + in-progress courses above to determine what this student still needs.\n\n"
         except Exception:
             pass
+
+    if not has_real_remaining:
+        ctx += (
+            "HOW TO FIND REMAINING COURSES (you MUST do this, do NOT say you don't have access):\n"
+            "The student's specific remaining courses are NOT listed above, but you have their COMPLETED and IN-PROGRESS courses.\n"
+            "Step 1: Search the KB for 'Computer Science degree requirements' or 'CS curriculum'\n"
+            "Step 2: Get the full list of required courses for a B.S. in Computer Science\n"
+            "Step 3: Remove every course from that list that appears in COMPLETED or IN-PROGRESS above\n"
+            "Step 4: The result is what the student still needs. Recommend from THAT list only.\n"
+            "NEVER say 'I don't have access to your remaining courses' - you CAN compute them.\n\n"
+        )
 
     ctx += "INSTRUCTION: Do NOT recommend courses from the completed or enrolled lists above. Search the knowledge base for available courses.\n"
 
