@@ -8,4 +8,4 @@ COPY cs_navigator_unified/ ./cs_navigator_unified/
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "python -m google.adk.cli web . --port 8080 --host 0.0.0.0 --session_service_uri ${ADK_SESSION_DB_URI}"]
+CMD ["sh", "-c", "if [ -n \"$ADK_SESSION_DB_URI\" ]; then python -m google.adk.cli web . --port 8080 --host 0.0.0.0 --session_service_uri $ADK_SESSION_DB_URI; else python -m google.adk.cli web . --port 8080 --host 0.0.0.0; fi"]
