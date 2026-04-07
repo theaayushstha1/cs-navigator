@@ -411,10 +411,16 @@ def _calc_weighted_targets(group_map: dict, current: Optional[float]) -> dict:
         else:
             # target = (weighted_earned + required_avg * remaining_weight) / total_weight
             needed = ((target * total_weight) - weighted_earned) / remaining_weight
-            result[key] = {
-                "required_avg": round(needed, 1),
-                "achievable": needed <= 100,
-            }
+            if needed <= 0:
+                result[key] = {
+                    "required_avg": None,
+                    "achievable": True,
+                }
+            else:
+                result[key] = {
+                    "required_avg": round(needed, 1),
+                    "achievable": needed <= 100,
+                }
     return result
 
 
@@ -435,10 +441,16 @@ def _calc_total_points_targets(group_map: dict) -> dict:
         else:
             needed_points = (target / 100) * total_all - total_earned
             required_pct = (needed_points / total_remaining) * 100
-            result[key] = {
-                "required_avg": round(required_pct, 1),
-                "achievable": required_pct <= 100,
-            }
+            if required_pct <= 0:
+                result[key] = {
+                    "required_avg": None,
+                    "achievable": True,
+                }
+            else:
+                result[key] = {
+                    "required_avg": round(required_pct, 1),
+                    "achievable": required_pct <= 100,
+                }
     return result
 
 
