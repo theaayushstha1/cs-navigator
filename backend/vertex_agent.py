@@ -399,26 +399,6 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
             has_data = bool(context or canvas_context)
             final_text = _apply_grounding_gate(final_text, grounding_chunks, has_student_data=has_data)
 
-            # Faithfulness gate: catch hallucinated professor names from 2.0 Flash.
-            # If bad names detected, retry the query with the more faithful 2.5 Flash.
-            if model == "inav-1.0" and not retried:
-                hallucinated = _check_faculty_faithfulness(final_text)
-                if hallucinated:
-                    print(f"   [FAITHFULNESS] Hallucinated names: {hallucinated} — retrying with inav-1.1")
-                    _session_cache.pop(user_id, None)
-                    state = {}
-                    if context:
-                        state["degreeworks"] = context
-                    if canvas_context:
-                        state["canvas"] = canvas_context
-                    if memory_context:
-                        state["memory"] = memory_context
-                    state["model_preference"] = "inav-1.1"
-                    fallback_session = _create_session(user_id, state=state)
-                    if fallback_session:
-                        _cache_session(user_id, fallback_session, context, "inav-1.1")
-                        return _run_query(message, user_id, fallback_session, retried=True, context=context, model="inav-1.1", canvas_context=canvas_context, memory_context=memory_context)
-
             return final_text
         else:
             return "I'm sorry, I couldn't generate a response. Please try rephrasing your question."
@@ -652,15 +632,6 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
         if final != full_text.strip():
             disclaimer = final[len(full_text.strip()):]
             yield {"type": "chunk", "content": disclaimer}
-
-        # Faithfulness gate: catch hallucinated professor names in streamed response.
-        # Can't un-send chunks, so append disclaimer + signal frontend to regenerate.
-        if model == "inav-1.0":
-            hallucinated = _check_faculty_faithfulness(final)
-            if hallucinated:
-                print(f"   [FAITHFULNESS] Hallucinated names in stream: {hallucinated}")
-                yield {"type": "chunk", "content": _FAITHFULNESS_DISCLAIMER}
-                final += _FAITHFULNESS_DISCLAIMER
 
         yield {"type": "done", "content": final}
 

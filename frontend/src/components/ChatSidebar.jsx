@@ -587,7 +587,7 @@ export default function ChatSidebar({
           </button>
         </div>
         <div className="sidebar-dev-credit">
-          <a href="https://github.com/theaayushstha1/cs-chatbot-morganstate" target="_blank" rel="noopener noreferrer">
+          <a href="https://github.com/theaayushstha1/cs-navigator" target="_blank" rel="noopener noreferrer">
             <FaGithub size={10} style={{ marginRight: 4, verticalAlign: 'middle' }} />
             Open Source
           </a>

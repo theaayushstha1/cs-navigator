@@ -90,12 +90,22 @@ _COURSE_CODE_IN_LIST_RE = re.compile(
     re.MULTILINE,
 )
 
-def _check_course_faithfulness(text: str, dw_dict: dict) -> list[str]:
+_RECOMMENDATION_KEYWORDS = {"recommend", "should take", "should i take", "next semester", "can take",
+                            "courses to take", "what to take", "course choices", "available for",
+                            "offered in", "consider taking", "suggest", "eligible"}
+
+def _check_course_faithfulness(text: str, dw_dict: dict, query: str = "") -> list[str]:
     """Check if the response recommends courses the student already took or is taking.
-    Only checks course codes in bullet/numbered list format (recommendation context).
+    Only runs when the query is about course recommendations (not history lookups).
     Returns list of bad course codes."""
     if not text or not dw_dict:
         return []
+    # Skip check if query is about history/past courses, not recommendations
+    if query:
+        q_lower = query.lower()
+        is_recommendation = any(kw in q_lower for kw in _RECOMMENDATION_KEYWORDS)
+        if not is_recommendation:
+            return []
     forbidden = set()
     for field in ("courses_completed", "courses_in_progress"):
         raw = dw_dict.get(field, "")
@@ -518,7 +528,9 @@ def get_current_user(
         return {
             "user_id": user.id,
             "email": user.email,
-            "role": user.role
+            "role": user.role,
+            "name": user.name,
+            "student_id": user.student_id,
         }
     except JWTError as e:
         print(f"JWT decode error: {e}")
@@ -2402,6 +2414,15 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     memory_context = build_memory_context(memory_dicts)
     conversation_context = _build_conversation_context(history_dicts)
 
+    # Inject basic profile info so agent knows who they're talking to
+    profile_parts = []
+    if user.get("name"): profile_parts.append(f"Name: {user['name']}")
+    if user.get("email"): profile_parts.append(f"Email: {user['email']}")
+    if user.get("student_id"): profile_parts.append(f"Student ID: {user['student_id']}")
+    if profile_parts:
+        profile_ctx = "STUDENT PROFILE (from account):\n" + "\n".join(profile_parts) + "\n"
+        student_context = profile_ctx + student_context
+
     # Pre-compute course context (prereq analysis, schedule, eligibility)
     course_context = build_course_context(dw_dict, user_q) if dw_dict else ""
     if course_context:
@@ -2475,12 +2496,6 @@ Use the provided file content and conversation history to answer the user's ques
                 canvas_context=canvas_context,
                 memory_context=memory_context,
             )
-            # Course faithfulness check
-            bad_courses = _check_course_faithfulness(answer, dw_dict) if dw_dict else []
-            if bad_courses:
-                codes = ", ".join(bad_courses)
-                answer += f"\n\n---\n*Correction: {codes} {'is' if len(bad_courses) == 1 else 'are'} already in your academic record. Please disregard {'this recommendation' if len(bad_courses) == 1 else 'these recommendations'}.*"
-                print(f"   [FAITHFULNESS] Recommended already-taken courses: {bad_courses}")
         except Exception as e:
             print(f"   Vertex AI Chat Error: {e}")
             answer = "I'm having trouble processing your request. Please try again."
@@ -2587,6 +2602,15 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     canvas_context = _build_canvas_context(canvas_dict) if canvas_dict else ""
     memory_context = build_memory_context(memory_dicts)
 
+    # Inject basic profile info (email, name, student ID) so agent knows who they're talking to
+    profile_parts = []
+    if user.get("name"): profile_parts.append(f"Name: {user['name']}")
+    if user.get("email"): profile_parts.append(f"Email: {user['email']}")
+    if user.get("student_id"): profile_parts.append(f"Student ID: {user['student_id']}")
+    if profile_parts:
+        profile_ctx = "STUDENT PROFILE (from account):\n" + "\n".join(profile_parts) + "\n"
+        student_context = profile_ctx + student_context
+
     # Pre-compute course context (prereq analysis, schedule, eligibility)
     course_context = build_course_context(dw_dict, user_q) if dw_dict else ""
     if course_context:
@@ -2675,14 +2699,6 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
 
                 elif event_type == "done":
                     full_response = content or full_response
-                    # Course faithfulness check: flag courses student already took/is taking
-                    bad_courses = _check_course_faithfulness(full_response, dw_dict) if dw_dict else []
-                    if bad_courses:
-                        codes = ", ".join(bad_courses)
-                        correction = f"\n\n---\n*Correction: {codes} {'is' if len(bad_courses) == 1 else 'are'} already in your academic record. Please disregard {'this recommendation' if len(bad_courses) == 1 else 'these recommendations'}.*"
-                        full_response += correction
-                        print(f"   [FAITHFULNESS] Recommended already-taken courses: {bad_courses}")
-                        yield f"data: {json.dumps({'type': 'chunk', 'content': correction})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'content': full_response})}\n\n"
 
                 elif event_type == "error":
@@ -2774,7 +2790,7 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
     # Greetings (including typos) - only if short message
     greeting_patterns = ['hi', 'hey', 'heyt', 'hii', 'heyy', 'hello', 'helo', 'howdy', 'sup', 'yo', 'hola', 'greetings']
     if word_count <= 2 and (norm in greeting_patterns or re.match(r'^(hi+|hey+t?|hello+)$', norm)):
-        return {"response": "Hello! I'm CS Navigator. How can I help you learn about Morgan State's Computer Science program today?"}
+        return {"response": "Hello! I'm CS Navigator, a chatbot for Morgan State CS students. What questions do you have?"}
 
     # #8 FIX: "what's up", "how are you" patterns
     elif norm in ['whatsup', 'wassup', 'wazzup', 'whatsgood', 'howareyou', 'howru', 'howreyou', 'howyoudoing']:

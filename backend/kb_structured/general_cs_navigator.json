@@ -3,7 +3,7 @@
   "title": "CS Navigator - About This Application",
   "category": "general",
   "subcategory": "cs_navigator",
-  "content": "CS NAVIGATOR - ABOUT THIS APPLICATION\n\nCS Navigator is an AI-powered academic advising chatbot for Computer Science students at Morgan State University.\n\nDeveloped by: Morgan State University Computer Science Student Lab\nDepartment: Computer Science, School of Computer, Mathematical and Natural Sciences\nFaculty Advisor: Dr. Shuangbao \"Paul\" Wang, Department Chair\n\nWebsite: https://cs.inavigator.ai\nAPI: https://api.inavigator.ai\n\nCS Navigator helps students with:\n- Course recommendations and degree planning\n- Prerequisite checking and course eligibility\n- Registration procedures and forms\n- Faculty and staff contact information\n- Financial aid, scholarships, and tuition\n- Campus resources and student organizations\n- DegreeWorks degree audit integration\n- Canvas LMS grade and assignment tracking\n\nCS Navigator is an open-source project. Contributions from students and developers are welcome.\n\nFor questions or feedback about CS Navigator, contact the CS department at (443) 885-3962 or compsci@morgan.edu.\n",
+  "content": "CS NAVIGATOR - ABOUT THIS APPLICATION\n\nCS Navigator is a chatbot developed by Morgan State University students for students in the Computer Science Department.\n\nWebsite: https://cs.inavigator.ai\n\nCS Navigator can help answer questions about:\n- Courses, prerequisites, and schedules\n- Degree requirements and registration\n- Faculty and staff contact information\n- Financial aid, scholarships, and tuition\n- Campus resources and student organizations\n- DegreeWorks degree progress\n- Canvas LMS grades and assignments\n\nFor questions or feedback about CS Navigator, contact the CS department at (443) 885-3962 or compsci@morgan.edu.\n",
   "source_file": "general_cs_navigator.txt",
-  "size_bytes": 950
+  "size_bytes": 650
 }

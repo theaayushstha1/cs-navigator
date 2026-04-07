@@ -18,6 +18,22 @@ const LockIcon = (props) => (
   </svg>
 );
 
+const UserIcon = (props) => (
+  <svg {...props} width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+    <circle cx="12" cy="7" r="4"/>
+  </svg>
+);
+
+const IdCardIcon = (props) => (
+  <svg {...props} width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="2" y="5" width="20" height="14" rx="2"/>
+    <line x1="2" y1="10" x2="22" y2="10"/>
+    <line x1="6" y1="14" x2="6" y2="14.01"/>
+    <line x1="10" y1="14" x2="14" y2="14"/>
+  </svg>
+);
+
 const CheckIcon = (props) => (
   <svg {...props} width="16" height="16" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="20 6 9 17 4 12"/>
@@ -147,6 +163,7 @@ export default function Signup({ onRegistered }) {
         <div className="field">
           <label htmlFor="signup-name">Full Name <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", fontWeight: 400 }}>(optional)</span></label>
           <div className="field__control">
+            <UserIcon className="field__icon" aria-hidden="true" />
             <input
               id="signup-name"
               type="text"
@@ -161,6 +178,7 @@ export default function Signup({ onRegistered }) {
         <div className="field">
           <label htmlFor="signup-student-id">Student ID <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", fontWeight: 400 }}>(optional)</span></label>
           <div className="field__control">
+            <IdCardIcon className="field__icon" aria-hidden="true" />
             <input
               id="signup-student-id"
               type="text"
