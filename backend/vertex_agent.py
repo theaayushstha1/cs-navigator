@@ -389,6 +389,19 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
             # Clean up citation artifacts from Gemini grounding
             final_text = re.sub(r'\s*\[cite:\s*[^\]]*\]', '', final_text).strip()
 
+            # Strip empty code blocks (Gemini 2.0 Flash sometimes returns ``` with nothing)
+            if final_text.strip() in ("```", "``` ```", "``````"):
+                final_text = "I wasn't able to generate a proper response. Please try asking again."
+
+            # Catch 429 rate limit errors leaked into response
+            if "429" in final_text and "RESOURCE_EXHAUSTED" in final_text:
+                final_text = "The system is busy right now. Please try again in a moment."
+
+            # Strip self-disclosure phrases (Gemini sometimes ignores instruction)
+            final_text = re.sub(r'I am programmed to be a helpful[^.]*\.', 'I can only help with Morgan State University academic questions.', final_text)
+            final_text = re.sub(r'I am still under development[^.]*\.', '', final_text).strip()
+            final_text = re.sub(r'I am a language model[^.]*\.', '', final_text).strip()
+
             # Retry once if Gemini self-reported a KB access failure (transient Vertex AI Search issue)
             if _KB_FAIL_RE.search(final_text) and not retried:
                 print("   [RETRY] Gemini reported KB access failure, retrying once...")
@@ -626,11 +639,20 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
             yield {"type": "error", "content": _OUTAGE_MSG}
             return
 
+        # Post-process: catch 429 errors and empty code blocks in streamed text
+        cleaned = full_text.strip()
+        if cleaned in ("```", "``` ```", "``````", ""):
+            cleaned = "I wasn't able to generate a proper response. Please try asking again."
+            yield {"type": "chunk", "content": cleaned}
+        if "429" in cleaned and "RESOURCE_EXHAUSTED" in cleaned:
+            cleaned = "The system is busy right now. Please try again in a moment."
+            yield {"type": "chunk", "content": cleaned}
+
         # Grounding validation gate: append disclaimer if low-grounded
         has_data = bool(context or canvas_context)
-        final = _apply_grounding_gate(full_text.strip(), grounding_chunks, has_student_data=has_data)
-        if final != full_text.strip():
-            disclaimer = final[len(full_text.strip()):]
+        final = _apply_grounding_gate(cleaned, grounding_chunks, has_student_data=has_data)
+        if final != cleaned:
+            disclaimer = final[len(cleaned):]
             yield {"type": "chunk", "content": disclaimer}
 
         yield {"type": "done", "content": final}

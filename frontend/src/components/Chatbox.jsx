@@ -73,7 +73,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const [voiceStatus, setVoiceStatus] = useState("idle"); // idle, listening, processing, speaking
 
   // Model selector state
-  const [selectedModel, setSelectedModel] = useState("inav-1.0"); // "inav-1.0" (quick, default) or "inav-1.1" (pro)
+  const [selectedModel, setSelectedModel] = useState("inav-1.1"); // "inav-1.1" (pro, default) or "inav-1.0" (quick)
 
   // 🔥 Feedback State
   const [feedbackMenuOpen, setFeedbackMenuOpen] = useState(null); // index of message with open menu
