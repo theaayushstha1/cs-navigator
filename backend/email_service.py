@@ -20,6 +20,7 @@ SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USER or "noreply@inavigator.ai")
 APP_URL = os.getenv("APP_URL", "https://cs.inavigator.ai")
+API_URL = os.getenv("API_URL", "https://api.inavigator.ai")
 
 
 def generate_token() -> str:
@@ -55,7 +56,7 @@ def _send_email(to_email: str, subject: str, html_body: str) -> bool:
 
 def send_verification_email(to_email: str, token: str) -> bool:
     """Send email verification link."""
-    verify_url = f"{APP_URL}/verify-email?token={token}"
+    verify_url = f"{API_URL}/api/verify-email?token={token}"
     html = f"""
     <div style="font-family: 'Google Sans', Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
         <div style="text-align: center; margin-bottom: 24px;">
