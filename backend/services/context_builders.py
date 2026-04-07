@@ -179,10 +179,31 @@ def build_student_context(dw: dict) -> str:
         # Pre-compute remaining courses using the prereq engine (same graph Ripple Effect uses)
         try:
             from services.prereq_engine import build_prerequisite_graph
+            from collections import Counter
+
             graph = build_prerequisite_graph(dw, None)
-            future_nodes = [n for n in graph["nodes"] if n["status"] == "future"]
+
+            # Count completed per elective group to check if group requirement is already met
+            GROUP_REQS = {"Group A Elective": 3, "Group B Elective": 2, "Group C Elective": 4, "Group D Elective": 1}
+            completed_cats = Counter()
+            for n in graph["nodes"]:
+                if n["status"] in ("completed", "in_progress"):
+                    completed_cats[n["category"]] += 1
+
+            # Filter future courses: skip elective groups that are already satisfied
+            future_nodes = []
+            for n in graph["nodes"]:
+                if n["status"] != "future":
+                    continue
+                cat = n["category"]
+                if cat in GROUP_REQS:
+                    needed = GROUP_REQS[cat]
+                    have = completed_cats.get(cat, 0)
+                    if have >= needed:
+                        continue  # This group is done, skip
+                future_nodes.append(n)
+
             if future_nodes:
-                # Sort: Required first, then Supporting, then Electives
                 cat_order = {"Required": 0, "Supporting": 1}
                 future_nodes.sort(key=lambda n: (cat_order.get(n["category"], 2), n["id"]))
                 eligible = [n for n in future_nodes if not n["blocked_by"] or all(
@@ -190,17 +211,42 @@ def build_student_context(dw: dict) -> str:
                     for bn in n["blocked_by"]
                 )]
                 blocked = [n for n in future_nodes if n not in eligible]
-                ctx += "COURSES STUDENT STILL NEEDS (pre-computed, recommend from this list ONLY):\n"
+
+                # Build group status summary
+                ctx += "CS DEGREE PROGRESS:\n"
+                for cat, needed in GROUP_REQS.items():
+                    have = completed_cats.get(cat, 0)
+                    remaining = max(0, needed - have)
+                    if remaining > 0:
+                        ctx += f"  {cat}: {have}/{needed} done, NEED {remaining} more\n"
+                    else:
+                        ctx += f"  {cat}: COMPLETE ({have}/{needed})\n"
+                req_done = completed_cats.get("Required", 0)
+                sup_done = completed_cats.get("Supporting", 0)
+                ctx += f"  Required: {'COMPLETE' if req_done >= 12 else f'{req_done}/12'}\n"
+                ctx += f"  Supporting: {'COMPLETE' if sup_done >= 5 else f'{sup_done}/5'}\n\n"
+
+                ctx += "COURSES STUDENT STILL NEEDS (only from incomplete groups):\n"
                 for n in eligible:
                     ctx += f"  - {n['id']} - {n['name']} ({n['credits']}cr, {n['category']}) [ELIGIBLE]\n"
                 for n in blocked:
                     ctx += f"  - {n['id']} - {n['name']} ({n['credits']}cr, {n['category']}) [BLOCKED by {', '.join(n['blocked_by'])}]\n"
-                ctx += f"\nRECOMMEND only ELIGIBLE courses. Max 18 credits per semester. Group by priority: Required > Supporting > Electives.\n"
-                ctx += f"Stats: {graph['stats']['completed']} completed, {graph['stats']['in_progress']} in-progress, {graph['stats']['future']} remaining.\n\n"
+                if not eligible and not blocked:
+                    ctx += "  (none - all group requirements satisfied)\n"
+                ctx += f"\nMax 18 credits per semester. Only recommend from INCOMPLETE groups above.\n\n"
             else:
-                ctx += "REMAINING COURSES: Student has completed all CS curriculum requirements.\n\n"
+                ctx += "REMAINING CS COURSES: All CS curriculum group requirements are complete.\n\n"
         except Exception as e:
             ctx += "REMAINING COURSES: Could not compute (search KB for CS degree requirements and subtract completed courses above).\n\n"
+
+    # Gen ed progress (pre-computed from DegreeWorks course tags)
+    try:
+        from services.gened_engine import build_gened_context
+        gened_ctx = build_gened_context(dw)
+        if gened_ctx:
+            ctx += gened_ctx
+    except Exception:
+        pass
 
     ctx += "INSTRUCTION: Do NOT recommend courses from the completed or enrolled lists above. Search the knowledge base for available courses.\n"
 

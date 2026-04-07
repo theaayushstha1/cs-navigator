@@ -85,9 +85,34 @@ export default function Login({ onLoggedIn }) {
       onLoggedIn?.(jwt);
       navigate("/", { replace: true });
     } catch (err) {
-      setError(err?.message || "Login failed");
+      const msg = err?.message || "Login failed";
+      setError(msg);
+      setNeedsVerification(msg.toLowerCase().includes("verify"));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const [needsVerification, setNeedsVerification] = useState(false);
+  const [resending, setResending] = useState(false);
+
+  const handleResendVerification = async () => {
+    if (!email.trim()) return;
+    setResending(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/resend-verification`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      const data = await res.json();
+      setSuccess(data.message || "Verification email sent! Check your inbox.");
+      setError("");
+      setNeedsVerification(false);
+    } catch {
+      setError("Failed to resend verification email. Try again.");
+    } finally {
+      setResending(false);
     }
   };
 
@@ -118,7 +143,23 @@ export default function Login({ onLoggedIn }) {
       )}
 
       {error && (
-        <div className="auth__error" role="alert">{error}</div>
+        <div className="auth__error" role="alert">
+          {error}
+          {needsVerification && (
+            <button
+              type="button"
+              onClick={handleResendVerification}
+              disabled={resending}
+              style={{
+                display: "block", marginTop: "10px", background: "none", border: "1px solid currentColor",
+                color: "inherit", padding: "6px 14px", borderRadius: "8px", cursor: "pointer",
+                fontSize: "0.85rem", width: "100%",
+              }}
+            >
+              {resending ? "Sending..." : "Resend verification email"}
+            </button>
+          )}
+        </div>
       )}
 
       <form onSubmit={handleSubmit}>

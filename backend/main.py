@@ -2426,8 +2426,27 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     # Pre-compute course context (prereq analysis, schedule, eligibility)
     course_context = build_course_context(dw_dict, user_q) if dw_dict else ""
     if course_context:
-        # Append to student context so agent sees it alongside DegreeWorks data
         student_context += f"\n{course_context}"
+
+    # Schedule planner state machine
+    from services.schedule_planner import (
+        detect_planning_intent, get_planner_state, set_planner_state,
+        clear_planner_state, process_planner_turn, build_planner_context,
+    )
+    from services.course_context import _SCHEDULES
+
+    planner_state = get_planner_state(user["user_id"], session_id)
+    if planner_state:
+        planner_state = process_planner_turn(planner_state, user_q, dw_dict, _SCHEDULES)
+        if planner_state:
+            set_planner_state(user["user_id"], session_id, planner_state)
+            student_context += build_planner_context(planner_state)
+        else:
+            clear_planner_state(user["user_id"], session_id)
+    elif detect_planning_intent(user_q) and dw_dict:
+        planner_state = {"phase": "ask_semester"}
+        set_planner_state(user["user_id"], session_id, planner_state)
+        student_context += build_planner_context(planner_state)
 
     if file_match and USE_VERTEX_AGENT:
         # File uploaded -> include file content as context for the agent
@@ -2616,7 +2635,27 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     if course_context:
         student_context += f"\n{course_context}"
 
-    agent_context = student_context  # DegreeWorks + course analysis (stable, for session reuse)
+    # Schedule planner state machine (conversational course planning)
+    from services.schedule_planner import (
+        detect_planning_intent, get_planner_state, set_planner_state,
+        clear_planner_state, process_planner_turn, build_planner_context,
+    )
+    from services.course_context import _SCHEDULES
+
+    planner_state = get_planner_state(user_id, session_id)
+    if planner_state:
+        planner_state = process_planner_turn(planner_state, user_q, dw_dict, _SCHEDULES)
+        if planner_state:
+            set_planner_state(user_id, session_id, planner_state)
+            student_context += build_planner_context(planner_state)
+        else:
+            clear_planner_state(user_id, session_id)
+    elif detect_planning_intent(user_q) and dw_dict:
+        planner_state = {"phase": "ask_semester"}
+        set_planner_state(user_id, session_id, planner_state)
+        student_context += build_planner_context(planner_state)
+
+    agent_context = student_context  # DegreeWorks + course analysis + planner (stable, for session reuse)
 
     # =========================================================================
     # CACHE CHECK - Return cached response instantly if available
