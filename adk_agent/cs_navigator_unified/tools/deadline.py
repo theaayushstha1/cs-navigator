@@ -36,12 +36,12 @@ def check_deadline(deadline_date: str) -> dict:
         Dict with status (EXPIRED, TODAY, URGENT, UPCOMING, OPEN) and days_remaining.
     """
     try:
-        deadline = datetime.strptime(deadline_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        deadline = datetime.strptime(deadline_date, "%Y-%m-%d").date()
     except ValueError:
         return {"status": "INVALID", "message": f"Could not parse date: {deadline_date}"}
 
-    now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    delta = (deadline - now).days
+    today = datetime.now(timezone.utc).date()
+    delta = (deadline - today).days
 
     if delta < 0:
         return {"status": "EXPIRED", "days_remaining": delta}
