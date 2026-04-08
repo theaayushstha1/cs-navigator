@@ -1,5 +1,5 @@
 # backend/models.py
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Float, ForeignKey, func
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Float, ForeignKey, func, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 from db import Base
@@ -249,3 +249,19 @@ class KBSuggestion(Base):
     reviewed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class CourseMaterialMapping(Base):
+    __tablename__ = "course_material_mappings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    canvas_course_id = Column(String(50), nullable=False)
+    course_name = Column(String(255), nullable=False)
+    datastore_id = Column(String(500), nullable=True)
+    file_count = Column(Integer, default=0)
+    last_synced = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "canvas_course_id", name="uq_user_course"),
+    )
