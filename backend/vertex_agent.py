@@ -194,7 +194,7 @@ def _cache_session(user_id: str, session_id: str, context: str = "", model: str 
     }
 
 
-def query_agent(query: str, user_id: str = "default", context: str = "", model: str = "", canvas_context: str = "", memory_context: str = "") -> str:
+def query_agent(query: str, user_id: str = "default", context: str = "", model: str = "", canvas_context: str = "", memory_context: str = "", tutor_context: str = "") -> str:
     """
     Send a query to the CS Navigator agent and return the final text response.
 
@@ -220,6 +220,8 @@ def query_agent(query: str, user_id: str = "default", context: str = "", model: 
             state["canvas"] = canvas_context
         if memory_context:
             state["memory"] = memory_context
+        if tutor_context:
+            state["tutor_progress"] = tutor_context
         if model:
             state["model_preference"] = model
         session_id = _create_session(user_id, state=state if state else None)
@@ -227,7 +229,7 @@ def query_agent(query: str, user_id: str = "default", context: str = "", model: 
             return _OUTAGE_MSG
         _cache_session(user_id, session_id, context, model)
 
-    return _run_query(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context, memory_context=memory_context)
+    return _run_query(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context, memory_context=memory_context, tutor_context=tutor_context)
 
 
 # Per-request grounding metadata. In async single-worker (uvicorn default),
@@ -242,7 +244,7 @@ def _set_grounding(kb_grounded: bool, chunks: int, coverage: float):
     _grounding_local.data = {"kb_grounded": kb_grounded, "grounding_chunks": chunks, "grounding_coverage": coverage}
 
 
-def _run_query(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = "", memory_context: str = "") -> str:
+def _run_query(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = "", memory_context: str = "", tutor_context: str = "") -> str:
     """Send a query to the ADK and parse the SSE response."""
     try:
         payload = {
@@ -254,7 +256,7 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
                 "parts": [{"text": message}],
             },
         }
-        # Send volatile data via state_delta (Canvas/memory change often, model per-request)
+        # Send volatile data via state_delta (Canvas/memory/tutor change often, model per-request)
         state_delta = {}
         if model:
             state_delta["model_preference"] = model
@@ -262,6 +264,8 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
             state_delta["canvas"] = canvas_context
         if memory_context:
             state_delta["memory"] = memory_context
+        if tutor_context:
+            state_delta["tutor_progress"] = tutor_context
         if state_delta:
             payload["state_delta"] = state_delta
 
@@ -419,7 +423,7 @@ def reset_session(user_id: str) -> None:
     _session_cache.pop(user_id, None)
 
 
-def query_agent_stream(query: str, user_id: str = "default", context: str = "", model: str = "", canvas_context: str = "", memory_context: str = ""):
+def query_agent_stream(query: str, user_id: str = "default", context: str = "", model: str = "", canvas_context: str = "", memory_context: str = "", tutor_context: str = ""):
     """
     Send a query to the CS Navigator agent and stream text chunks as they arrive.
 
@@ -436,6 +440,8 @@ def query_agent_stream(query: str, user_id: str = "default", context: str = "", 
             state["canvas"] = canvas_context
         if memory_context:
             state["memory"] = memory_context
+        if tutor_context:
+            state["tutor_progress"] = tutor_context
         if model:
             state["model_preference"] = model
         session_id = _create_session(user_id, state=state if state else None)
@@ -444,10 +450,10 @@ def query_agent_stream(query: str, user_id: str = "default", context: str = "", 
             return
         _cache_session(user_id, session_id, context, model)
 
-    yield from _run_query_stream(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context, memory_context=memory_context)
+    yield from _run_query_stream(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context, memory_context=memory_context, tutor_context=tutor_context)
 
 
-def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = "", memory_context: str = ""):
+def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = "", memory_context: str = "", tutor_context: str = ""):
     """Stream query results from ADK, yielding text chunks as they arrive."""
     try:
         payload = {
@@ -466,6 +472,8 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
             state_delta["canvas"] = canvas_context
         if memory_context:
             state_delta["memory"] = memory_context
+        if tutor_context:
+            state_delta["tutor_progress"] = tutor_context
         if state_delta:
             payload["state_delta"] = state_delta
 
