@@ -2127,6 +2127,96 @@ async def disconnect_canvas(user: dict = Depends(get_current_user), db: Session 
 
 
 # ==============================================================================
+# TUTOR PROGRESS
+# ==============================================================================
+
+@app.get("/api/tutor/progress/{user_id}")
+async def get_tutor_progress(user_id: int, user=Depends(get_current_user)):
+    """Get tutor progress data from Firestore for a student."""
+    try:
+        progress = fetch_tutor_progress(str(user_id))
+        return {"status": "ok", "progress": progress}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "progress": {
+            "weak_topics": [], "strong_topics": [],
+            "recent_quiz_scores": [], "session_count": 0,
+        }}
+
+
+# ==============================================================================
+# MATERIAL SYNC
+# ==============================================================================
+
+class SyncMaterialsRequest(BaseModel):
+    course_id: int
+    course_name: str
+
+
+@app.post("/api/canvas/sync-materials")
+async def sync_canvas_materials(
+    req: SyncMaterialsRequest,
+    user=Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Sync a Canvas course's files to GCS and create a search datastore.
+
+    Uses the student's stored Canvas session. Requires Canvas to be synced first.
+    """
+    from services.material_sync import sync_course_files, get_or_create_datastore, import_documents
+
+    canvas_data = db.query(CanvasStudentData).filter_by(user_id=user["user_id"]).first()
+    if not canvas_data:
+        raise HTTPException(400, "Canvas not synced. Please sync Canvas first.")
+
+    canvas_login = canvas_data.canvas_login_id if hasattr(canvas_data, 'canvas_login_id') else None
+    if not canvas_login:
+        raise HTTPException(400, "Canvas login ID not found. Please re-sync Canvas.")
+
+    import httpx
+    canvas_token = os.getenv("CANVAS_API_TOKEN", "")
+    if not canvas_token:
+        raise HTTPException(400, "CANVAS_API_TOKEN not configured for material sync.")
+
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {canvas_token}"},
+        timeout=60.0,
+    ) as client:
+        sync_result = await sync_course_files(client, req.course_id, req.course_name)
+
+    datastore_id = get_or_create_datastore(str(req.course_id), req.course_name)
+    op_name = import_documents(str(req.course_id))
+
+    from models import CourseMaterialMapping
+    existing = db.query(CourseMaterialMapping).filter_by(
+        user_id=user["user_id"],
+        canvas_course_id=str(req.course_id),
+    ).first()
+    if existing:
+        existing.datastore_id = datastore_id
+        existing.file_count = sync_result["files_uploaded"]
+        existing.last_synced = datetime.utcnow()
+        existing.course_name = req.course_name
+    else:
+        mapping = CourseMaterialMapping(
+            user_id=user["user_id"],
+            canvas_course_id=str(req.course_id),
+            course_name=req.course_name,
+            datastore_id=datastore_id,
+            file_count=sync_result["files_uploaded"],
+            last_synced=datetime.utcnow(),
+        )
+        db.add(mapping)
+    db.commit()
+
+    return {
+        "status": "syncing",
+        "sync_result": sync_result,
+        "datastore_id": datastore_id,
+        "import_operation": op_name,
+    }
+
+
+# ==============================================================================
 # MOMENTUM SCORE - Academic Performance Index
 # ==============================================================================
 from services.canvas_analytics import compute_momentum_score
@@ -2287,6 +2377,8 @@ from services.query_rewriter import rewrite_query, is_likely_followup
 # Tier 2: Long-term user memory
 from services.memory_service import fetch_user_memories_sync, build_memory_context
 from services.course_context import build_course_context
+from services.tutor_progress import fetch_tutor_progress
+from services.context_builders import build_tutor_context
 
 
 def _fetch_history_sync(user_id: int, session_id: str, limit: int = 10) -> list:
@@ -2330,11 +2422,12 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     has_course_code = bool(re.search(r'\b[A-Z]{2,4}\s*\d{3}\b', user_q, re.IGNORECASE))
     needs_canvas = has_course_code or any(kw in user_q.lower() for kw in CANVAS_KEYWORDS)
 
-    # Parallel fetch: DegreeWorks + Canvas (if needed) + chat history (for rewriting) + long-term memory
+    # Parallel fetch: DegreeWorks + Canvas (if needed) + chat history (for rewriting) + long-term memory + tutor progress
     fetch_tasks = [
         asyncio.to_thread(_fetch_dw_sync, user["user_id"]),
         asyncio.to_thread(_fetch_history_sync, user["user_id"], session_id, 5),
         asyncio.to_thread(fetch_user_memories_sync, user["user_id"], 10),
+        asyncio.to_thread(fetch_tutor_progress, str(user["user_id"])),
     ]
     if needs_canvas:
         fetch_tasks.append(asyncio.to_thread(_fetch_canvas_sync, user["user_id"]))
@@ -2344,7 +2437,8 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     dw_dict = results[0] if not isinstance(results[0], Exception) else None
     history_dicts = results[1] if not isinstance(results[1], Exception) else []
     memory_dicts = results[2] if not isinstance(results[2], Exception) else []
-    canvas_dict = results[3] if needs_canvas and len(results) > 3 and not isinstance(results[3], Exception) else None
+    tutor_progress = results[3] if not isinstance(results[3], Exception) else {}
+    canvas_dict = results[4] if needs_canvas and len(results) > 4 and not isinstance(results[4], Exception) else None
 
     # Tier 1: Rewrite follow-up queries to be self-contained (fixes pronoun resolution)
     if USE_VERTEX_AGENT and history_dicts and is_likely_followup(user_q):
@@ -2353,6 +2447,7 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     student_context = _build_student_context(dw_dict) if dw_dict else ""
     canvas_context = _build_canvas_context(canvas_dict) if canvas_dict else ""
     memory_context = build_memory_context(memory_dicts)
+    tutor_context = build_tutor_context(tutor_progress)
     conversation_context = _build_conversation_context(history_dicts)
 
     # Pre-compute course context (prereq analysis, schedule, eligibility)
@@ -2379,6 +2474,7 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
                 model=req.model,
                 canvas_context=canvas_context,
                 memory_context=memory_context,
+                tutor_context=tutor_context,
             )
         else:
             answer = "I received the file link, but I cannot find the file on the server to read it."
@@ -2427,6 +2523,7 @@ Use the provided file content and conversation history to answer the user's ques
                 model=req.model,
                 canvas_context=canvas_context,
                 memory_context=memory_context,
+                tutor_context=tutor_context,
             )
         except Exception as e:
             print(f"   Vertex AI Chat Error: {e}")
@@ -2510,11 +2607,12 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     has_course_code = bool(re.search(r'\b[A-Z]{2,4}\s*\d{3}\b', user_q, re.IGNORECASE))
     needs_canvas = has_course_code or any(kw in user_q.lower() for kw in CANVAS_KEYWORDS)
 
-    # Non-blocking parallel fetch: DegreeWorks + Canvas (if needed) + history (for rewriting) + memory
+    # Non-blocking parallel fetch: DegreeWorks + Canvas (if needed) + history (for rewriting) + memory + tutor progress
     fetch_tasks = [
         asyncio.to_thread(_fetch_dw_sync, user_id),
         asyncio.to_thread(_fetch_history_sync, user_id, session_id, 5),
         asyncio.to_thread(fetch_user_memories_sync, user_id, 10),
+        asyncio.to_thread(fetch_tutor_progress, str(user_id)),
     ]
     if needs_canvas:
         fetch_tasks.append(asyncio.to_thread(_fetch_canvas_sync, user_id))
@@ -2524,7 +2622,8 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     dw_dict = results[0] if not isinstance(results[0], Exception) else None
     history_dicts = results[1] if not isinstance(results[1], Exception) else []
     memory_dicts = results[2] if not isinstance(results[2], Exception) else []
-    canvas_dict = results[3] if needs_canvas and len(results) > 3 and not isinstance(results[3], Exception) else None
+    tutor_progress = results[3] if not isinstance(results[3], Exception) else {}
+    canvas_dict = results[4] if needs_canvas and len(results) > 4 and not isinstance(results[4], Exception) else None
 
     # Tier 1: Rewrite follow-up queries (resolve pronouns before KB search)
     if history_dicts and is_likely_followup(user_q):
@@ -2533,6 +2632,7 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     student_context = _build_student_context(dw_dict) if dw_dict else ""
     canvas_context = _build_canvas_context(canvas_dict) if canvas_dict else ""
     memory_context = build_memory_context(memory_dicts)
+    tutor_context = build_tutor_context(tutor_progress)
 
     # Pre-compute course context (prereq analysis, schedule, eligibility)
     course_context = build_course_context(dw_dict, user_q) if dw_dict else ""
@@ -2609,6 +2709,7 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
                 model=req.model,
                 canvas_context=canvas_context,
                 memory_context=memory_context,
+                tutor_context=tutor_context,
             ):
                 event_type = event.get("type", "")
                 content = event.get("content", "")
