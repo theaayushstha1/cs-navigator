@@ -53,13 +53,34 @@ def build_canvas_context(canvas: dict) -> str:
         except Exception:
             pass
 
-    # Upcoming assignments (capped at 8)
+    # Upcoming assignments (capped at 8, filtered to future-only)
     if canvas.get("upcoming_assignments"):
         try:
+            from datetime import datetime as _dt, timezone as _tz
+            now = _dt.now(_tz.utc)
             assignments = json.loads(canvas["upcoming_assignments"]) if isinstance(canvas["upcoming_assignments"], str) else canvas["upcoming_assignments"]
-            if assignments:
+            # Filter out past-due assignments (stale from old syncs)
+            future = []
+            for a in assignments:
+                due_str = a.get("due_at", "")
+                if due_str:
+                    try:
+                        due_dt = _dt.fromisoformat(due_str.replace("Z", "+00:00"))
+                        if due_dt < now:
+                            continue
+                    except Exception:
+                        pass
+                future.append(a)
+            # Sort by due date (soonest first)
+            def _sort_key(a):
+                try:
+                    return _dt.fromisoformat(a.get("due_at", "").replace("Z", "+00:00"))
+                except Exception:
+                    return _dt.max.replace(tzinfo=_tz.utc)
+            future.sort(key=_sort_key)
+            if future:
                 ctx += "Upcoming:\n"
-                for a in assignments[:8]:
+                for a in future[:8]:
                     title = sanitize_canvas_field(a.get("title", ""))
                     course = sanitize_canvas_field(a.get("course_name", ""))
                     due = format_short_date(a.get("due_at", ""))
