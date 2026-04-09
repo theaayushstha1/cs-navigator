@@ -8,4 +8,6 @@ COPY cs_navigator_unified/ ./cs_navigator_unified/
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "python -m google.adk.cli web . --port 8080 --host 0.0.0.0 --session_service_uri ${ADK_SESSION_DB_URI}"]
+# If ADK_SESSION_DB_URI is set, use it (prod Cloud SQL). Otherwise fall back
+# to in-memory sessions so dev deployments boot without a DB.
+CMD ["sh", "-c", "if [ -n \"$ADK_SESSION_DB_URI\" ]; then exec python -m google.adk.cli web . --port 8080 --host 0.0.0.0 --session_service_uri \"$ADK_SESSION_DB_URI\"; else exec python -m google.adk.cli web . --port 8080 --host 0.0.0.0; fi"]
