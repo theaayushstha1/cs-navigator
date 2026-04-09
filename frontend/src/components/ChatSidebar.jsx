@@ -586,12 +586,11 @@ export default function ChatSidebar({
             <FaSignOutAlt size={16} />
           </button>
         </div>
-        <div className="sidebar-dev-credit">
-          <a href="https://github.com/theaayushstha1/cs-navigator" target="_blank" rel="noopener noreferrer">
-            <FaGithub size={10} style={{ marginRight: 4, verticalAlign: 'middle' }} />
-            Open Source
-          </a>
-        </div>
+        <a className="sidebar-opensource-badge" href="https://github.com/theaayushstha1/cs-navigator" target="_blank" rel="noopener noreferrer">
+          <FaGithub size={14} />
+          <span>Open Source</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{opacity:0.4}}><path d="M7 17L17 7"/><path d="M7 7h10v10"/></svg>
+        </a>
       </div>
 
       {/* 🎫 Support Ticket Modal */}

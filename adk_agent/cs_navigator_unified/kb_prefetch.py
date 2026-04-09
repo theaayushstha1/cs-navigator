@@ -54,14 +54,11 @@ def _tokenize(text: str) -> list[str]:
     return [w for w in words if w not in _STOPWORDS]
 
 
-def _load_cache() -> dict[str, dict]:
-    """Fetch all docs from Discovery Engine, cache with 5-min TTL."""
-    global _cache_ts
-    now = time.time()
-    with _cache_lock:
-        if _cache and now - _cache_ts < _CACHE_TTL:
-            return dict(_cache)
+_bg_loading = False
 
+def _load_cache_sync():
+    """Fetch all docs from Discovery Engine into memory."""
+    global _cache_ts, _bg_loading
     client = discoveryengine.DocumentServiceClient(
         client_options=ClientOptions(api_endpoint=API_ENDPOINT)
     )
@@ -76,14 +73,36 @@ def _load_cache() -> dict[str, dict]:
             new_cache[doc_id] = data
     except Exception as e:
         log.warning(f"[KB_PREFETCH] Failed to load docs: {e}")
-        return {}
+        _bg_loading = False
+        return
 
     with _cache_lock:
         _cache.clear()
         _cache.update(new_cache)
-        _cache_ts = now
+        _cache_ts = time.time()
+    _bg_loading = False
     log.info(f"[KB_PREFETCH] Cached {len(new_cache)} docs")
-    return dict(new_cache)
+
+
+def _load_cache() -> dict[str, dict]:
+    """Return cached docs. If cache is cold, trigger background load and return empty.
+    This ensures the first request is never blocked by the cache warm-up."""
+    global _bg_loading
+    now = time.time()
+    with _cache_lock:
+        if _cache and now - _cache_ts < _CACHE_TTL:
+            return dict(_cache)
+
+    # Cache is cold. Don't block the request. Load in background.
+    if not _bg_loading:
+        _bg_loading = True
+        t = threading.Thread(target=_load_cache_sync, daemon=True)
+        t.start()
+        log.info("[KB_PREFETCH] Cache cold, loading in background...")
+
+    # Return whatever we have (empty on first call, stale data on refresh)
+    with _cache_lock:
+        return dict(_cache)
 
 
 def prefetch_kb_context(query: str, top_k: int = 3) -> str:

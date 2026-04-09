@@ -84,9 +84,6 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
     { id: "inav-2.0", name: "iNav Pro", desc: "Most capable", icon: (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/></svg>
     )},
-    { id: "inav-1.0", name: "iNav Lite", desc: "Quickest responses", icon: (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-    )},
   ];
 
   // Close dropdown when clicking outside
