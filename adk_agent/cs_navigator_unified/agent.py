@@ -59,8 +59,7 @@ UNIFIED_KB_ID = os.getenv(
 )
 
 # Default model (fallback when no preference set)
-# gemini-2.0-flash: fastest, most reliable, highest rate limits.
-AGENT_MODEL = os.getenv('AGENT_MODEL', 'gemini-2.0-flash')
+AGENT_MODEL = os.getenv('AGENT_MODEL', 'gemini-2.0-flash-lite-001')
 
 # Model selector: maps frontend choice to Gemini model ID
 # Note: Gemini 3 models only available in 'global' region, not us-central1 (where our datastore is)
