@@ -78,12 +78,8 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const modelDropdownRef = useRef(null);
 
   const MODEL_OPTIONS = [
-    { id: "inav-1.1", name: "iNav", desc: "Fast & accurate", icon: (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-    )},
-    { id: "inav-2.0", name: "iNav Pro", desc: "Most capable", icon: (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/></svg>
-    )},
+    { id: "inav-1.1", name: "iNav", desc: "Fast & accurate" },
+    { id: "inav-2.0", name: "iNav Pro", desc: "Deeper thinking, may take longer" },
   ];
 
   // Close dropdown when clicking outside
@@ -1097,7 +1093,6 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 className={`model-dropdown-item ${selectedModel === model.id ? 'active' : ''}`}
                 onClick={() => { setSelectedModel(model.id); setModelDropdownOpen(false); }}
               >
-                <span className="model-dropdown-icon">{model.icon}</span>
                 <div className="model-dropdown-info">
                   <span className="model-dropdown-name">{model.name}</span>
                   <span className="model-dropdown-desc">{model.desc}</span>
