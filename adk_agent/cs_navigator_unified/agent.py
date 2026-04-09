@@ -59,9 +59,8 @@ UNIFIED_KB_ID = os.getenv(
 )
 
 # Default model (fallback when no preference set)
-# gemini-2.5-flash: best balance of speed, accuracy, and rate limits.
-# flash-lite has stricter rate limits that cause 429s under normal usage.
-AGENT_MODEL = os.getenv('AGENT_MODEL', 'gemini-2.5-flash')
+# gemini-2.0-flash: fastest, most reliable, highest rate limits.
+AGENT_MODEL = os.getenv('AGENT_MODEL', 'gemini-2.0-flash')
 
 # Model selector: maps frontend choice to Gemini model ID
 # Note: Gemini 3 models only available in 'global' region, not us-central1 (where our datastore is)
@@ -77,42 +76,16 @@ unified_kb = VertexAiSearchTool(data_store_id=UNIFIED_KB_ID)
 
 
 def _select_model(callback_context, llm_request):
-    """Override model per-request and inject KB context on first turn."""
+    """Override model per-request based on session state 'model_preference'."""
     pref = callback_context.state.get("model_preference", "")
     if pref in MODEL_MAP:
         llm_request.model = MODEL_MAP[pref]
-
-    # Inject pre-fetched KB docs on first turn (belt-and-suspenders grounding)
-    has_tool_response = any(
-        hasattr(c, 'parts') and any(
-            hasattr(p, 'function_response') and p.function_response
-            for p in (c.parts or [])
-        )
-        for c in (llm_request.contents or [])
-    )
-
-    if not has_tool_response:
-        # Extract user query from the last user message
-        user_text = ""
-        for c in reversed(llm_request.contents or []):
-            if hasattr(c, 'role') and c.role == 'user' and c.parts:
-                for p in c.parts:
-                    if hasattr(p, 'text') and p.text:
-                        user_text = p.text
-                        break
-                if user_text:
-                    break
-
-        if user_text and len(user_text) > 10:
-            try:
-                from .kb_prefetch import prefetch_kb_context
-                kb_ctx = prefetch_kb_context(user_text)
-                if kb_ctx:
-                    llm_request.append_instructions(kb_ctx)
-            except Exception as e:
-                pass  # Fail silently, agent still has VertexAiSearchTool
-
     return None
+
+    # NOTE: kb_prefetch was disabled because it calls the Discovery Engine API
+    # on every request, which contributes to 429 rate limit exhaustion.
+    # The agent's VertexAiSearchTool + strong grounding instructions handle
+    # retrieval. kb_prefetch.py is still available as an admin utility.
 
 
 # =============================================================================
