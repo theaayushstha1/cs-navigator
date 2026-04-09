@@ -59,12 +59,16 @@ UNIFIED_KB_ID = os.getenv(
 )
 
 # Default model (fallback when no preference set)
-AGENT_MODEL = os.getenv('AGENT_MODEL', 'gemini-2.5-flash')
+# gemini-2.5-flash-lite: fast, cheap, 10/10 accuracy. Gemini 3 not yet in us-central1.
+AGENT_MODEL = os.getenv('AGENT_MODEL', 'gemini-2.5-flash-lite')
 
 # Model selector: maps frontend choice to Gemini model ID
+# Note: Gemini 3 models only available in 'global' region, not us-central1 (where our datastore is)
+# Will switch to Gemini 3 when Google rolls it out to us-central1
 MODEL_MAP = {
     "inav-1.0": "gemini-2.0-flash",
-    "inav-1.1": "gemini-2.5-flash",
+    "inav-1.1": "gemini-2.5-flash-lite",
+    "inav-2.0": "gemini-2.5-flash",
 }
 
 # Single search tool for the unified knowledge base

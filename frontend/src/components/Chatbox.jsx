@@ -73,7 +73,32 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const [voiceStatus, setVoiceStatus] = useState("idle"); // idle, listening, processing, speaking
 
   // Model selector state
-  const [selectedModel, setSelectedModel] = useState("inav-1.1"); // "inav-1.1" (pro, default) or "inav-1.0" (quick)
+  const [selectedModel, setSelectedModel] = useState("inav-1.1");
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  const modelDropdownRef = useRef(null);
+
+  const MODEL_OPTIONS = [
+    { id: "inav-1.1", name: "iNav", desc: "Fast & accurate", icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+    )},
+    { id: "inav-2.0", name: "iNav Pro", desc: "Most capable", icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/></svg>
+    )},
+    { id: "inav-1.0", name: "iNav Lite", desc: "Quickest responses", icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+    )},
+  ];
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target)) {
+        setModelDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // 🔥 Feedback State
   const [feedbackMenuOpen, setFeedbackMenuOpen] = useState(null); // index of message with open menu
@@ -1053,6 +1078,44 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {/* Model selector dropdown */}
+      <div className="model-selector-header" ref={modelDropdownRef}>
+        <button
+          className="model-selector-trigger"
+          onClick={() => setModelDropdownOpen(prev => !prev)}
+          disabled={isLoading}
+        >
+          <span className="model-selector-name">
+            {MODEL_OPTIONS.find(m => m.id === selectedModel)?.name || "iNav"}
+          </span>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.5, marginLeft: 4 }}>
+            <path d="M4 6L8 10L12 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
+        {modelDropdownOpen && (
+          <div className="model-dropdown">
+            {MODEL_OPTIONS.map(model => (
+              <button
+                key={model.id}
+                className={`model-dropdown-item ${selectedModel === model.id ? 'active' : ''}`}
+                onClick={() => { setSelectedModel(model.id); setModelDropdownOpen(false); }}
+              >
+                <span className="model-dropdown-icon">{model.icon}</span>
+                <div className="model-dropdown-info">
+                  <span className="model-dropdown-name">{model.name}</span>
+                  <span className="model-dropdown-desc">{model.desc}</span>
+                </div>
+                {selectedModel === model.id && (
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" className="model-dropdown-check">
+                    <path d="M6.5 12.5L2 8l1.5-1.5L6.5 9.5 12.5 3.5 14 5z"/>
+                  </svg>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Hidden audio element for TTS playback */}
       <audio ref={audioRef} style={{ display: 'none' }} />
 
@@ -1421,16 +1484,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 <BsArrowUpCircleFill size={24} />
             </button>
 
-            {/* Model toggle */}
-            <button
-                type="button"
-                className={`model-toggle ${selectedModel === 'inav-1.1' ? 'pro' : ''}`}
-                onClick={() => setSelectedModel(prev => prev === 'inav-1.0' ? 'inav-1.1' : 'inav-1.0')}
-                disabled={isLoading}
-                title={selectedModel === 'inav-1.0' ? 'iNav 1.0 (Quick) — click for Pro' : 'iNav 1.1 (Pro) — click for Quick'}
-            >
-                <span className="model-toggle-label">{selectedModel === 'inav-1.0' ? '1.0' : '1.1'}</span>
-            </button>
+            {/* Model toggle removed - now in header dropdown */}
 
             {/* Live Voice Mode Button */}
             <button
