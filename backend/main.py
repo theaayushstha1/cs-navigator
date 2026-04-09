@@ -2385,7 +2385,8 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     # Lazy-load: only fetch Canvas if query mentions grades/assignments/deadlines/course codes
     CANVAS_KEYWORDS = {"grade", "assignment", "due", "deadline", "missing", "class",
                        "course", "score", "submit", "canvas", "homework", "quiz",
-                       "test", "exam", "gpa", "taking", "enrolled"}
+                       "test", "exam", "gpa", "taking", "enrolled", "recommend",
+                       "suggest", "should i take", "what to take", "schedule"}
     has_course_code = bool(re.search(r'\b[A-Z]{2,4}\s*\d{3}\b', user_q, re.IGNORECASE))
     needs_canvas = has_course_code or any(kw in user_q.lower() for kw in CANVAS_KEYWORDS)
 
@@ -2593,7 +2594,8 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     # Lazy-load: only fetch Canvas if query mentions grades/assignments/deadlines/course codes
     CANVAS_KEYWORDS = {"grade", "assignment", "due", "deadline", "missing", "class",
                        "course", "score", "submit", "canvas", "homework", "quiz",
-                       "test", "exam", "gpa", "taking", "enrolled"}
+                       "test", "exam", "gpa", "taking", "enrolled", "recommend",
+                       "suggest", "should i take", "what to take", "schedule"}
     has_course_code = bool(re.search(r'\b[A-Z]{2,4}\s*\d{3}\b', user_q, re.IGNORECASE))
     needs_canvas = has_course_code or any(kw in user_q.lower() for kw in CANVAS_KEYWORDS)
 
@@ -2660,7 +2662,12 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     # =========================================================================
     # CACHE CHECK - Return cached response instantly if available
     # =========================================================================
-    context_hash = get_context_hash(user_id, has_degreeworks=bool(dw_dict), model=req.model, has_canvas=bool(canvas_dict))
+    _dw_hash = ""
+    if dw_dict:
+        import hashlib as _hl
+        _dw_key = f"{dw_dict.get('overall_gpa','')}{dw_dict.get('total_credits_earned','')}{dw_dict.get('credits_remaining','')}"
+        _dw_hash = _hl.md5(_dw_key.encode()).hexdigest()[:8]
+    context_hash = get_context_hash(user_id, has_degreeworks=bool(dw_dict), model=req.model, has_canvas=bool(canvas_dict), dw_hash=_dw_hash)
 
     # Skip cache when user taps "Regenerate" for a fresh answer
     if req.skip_cache:
@@ -2743,17 +2750,20 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
                 elif event_type == "error":
                     stream_had_error = True
                     yield f"data: {json.dumps({'type': 'error', 'content': content})}\n\n"
-                    full_response = content
+                    # Preserve partial response for chat history instead of overwriting
+                    if not full_response:
+                        full_response = content
                     break
 
         except Exception as e:
             stream_had_error = True
             print(f"[ERROR] Streaming error: {e}")
             yield f"data: {json.dumps({'type': 'error', 'content': 'An error occurred during streaming.'})}\n\n"
-            full_response = "An error occurred during streaming."
+            if not full_response:
+                full_response = "An error occurred during streaming."
 
         # Cache the successful response
-        if full_response and "error" not in full_response.lower()[:50]:
+        if full_response and "error" not in full_response.lower()[:50] and "I may not have complete information" not in full_response:
             if query_cache.set(user_q, full_response, context_hash):
                 print(f"[CACHE] Stored response for: {user_q[:50]}...")
 
@@ -2873,7 +2883,10 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
         "my remaining", "my progress", "my academic"
     ]
     query_lower = user_q.lower()
-    if any(kw in query_lower for kw in _PERSONAL_KEYWORDS):
+    # Don't trigger personal redirect if asking about a process/procedure (not personal data)
+    _PROCEDURE_OVERRIDES = ["substitution", "waiver", "exception", "how do", "how to", "what is", "process", "submit"]
+    is_procedure_q = any(p in query_lower for p in _PROCEDURE_OVERRIDES)
+    if not is_procedure_q and any(kw in query_lower for kw in _PERSONAL_KEYWORDS):
         return {"response": (
             "To access your personal academic information like GPA, courses, "
             "and degree progress, you'll need to **create a free account** with your "
@@ -2897,7 +2910,7 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
             )
 
             # Cache the successful response
-            if answer and "error" not in answer.lower()[:50]:
+            if answer and "error" not in answer.lower()[:50] and "I may not have complete information" not in answer:
                 query_cache.set(user_q, answer, context_hash="")
 
         except Exception as e:
@@ -3476,6 +3489,44 @@ async def trigger_ingestion(user: dict = Depends(get_current_user)):
         return {"message": "Ingestion not needed. Using Vertex AI structured datastore (instant updates via admin dashboard)."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+
+@app.post("/api/admin/knowledge-base/sync-all")
+async def sync_all_kb(user: dict = Depends(get_current_user)):
+    """One-click: Re-index Pinecone from Vertex AI datastore + clear all caches.
+    Call this after updating KB docs to ensure both search systems are in sync."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    results = {"pinecone": None, "cache": None}
+
+    # Step 1: Re-ingest KB docs to Pinecone (hybrid search index)
+    try:
+        from services.hybrid_retrieval import reingest_to_pinecone, is_pinecone_available
+        if is_pinecone_available():
+            ingest_result = await asyncio.to_thread(reingest_to_pinecone)
+            results["pinecone"] = {
+                "status": "ok" if ingest_result.get("failed", 0) == 0 else "partial",
+                "upserted": ingest_result.get("upserted", 0),
+                "failed": ingest_result.get("failed", 0),
+            }
+        else:
+            results["pinecone"] = {"status": "skipped", "reason": "Pinecone not configured"}
+    except Exception as e:
+        results["pinecone"] = {"status": "error", "reason": str(e)[:200]}
+
+    # Step 2: Clear all caches (L1 + L2 + semantic)
+    try:
+        cleared = query_cache.clear()
+        results["cache"] = {"status": "ok", "cleared": cleared}
+    except Exception as e:
+        results["cache"] = {"status": "error", "reason": str(e)[:200]}
+
+    return {
+        "success": True,
+        "message": f"Pinecone: {results['pinecone'].get('upserted', 0)} docs synced. Cache: cleared.",
+        "details": results,
+    }
 
 # --- Admin: Cloud Knowledge Base (Vertex AI Datastore) ---
 from datastore_manager import (

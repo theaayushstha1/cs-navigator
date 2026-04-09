@@ -22,10 +22,74 @@ import hashlib
 import time as time_module
 import requests
 from typing import Optional
+# Plan B: Verification Gate (retrieval now uses fast in-memory search)
+try:
+    from services.verification_gate import verify_response
+    _GATES_AVAILABLE = True
+except ImportError:
+    _GATES_AVAILABLE = False
+    print("   [GATES] Verification gate not available")
 
 # Configuration
 ADK_BASE_URL = os.getenv("ADK_BASE_URL", "http://127.0.0.1:8080")
 ADK_APP_NAME = os.getenv("ADK_APP_NAME", "cs_navigator_unified")
+
+# ---------------------------------------------------------------------------
+# Procedure Guide Links: maps keywords to Drive doc links.
+# If the agent's response mentions a procedure but omits the Drive link,
+# the post-processor appends it so students always get the source doc.
+# ---------------------------------------------------------------------------
+_PROCEDURE_LINKS = {
+    "academic appeal": ("Academic Appeal Guide", "https://drive.google.com/file/d/13VaJNv3-9nF41y-eVZtvaDXi-mtmkVBE/view"),
+    "change of catalog": ("Change of Catalog Guide", "https://drive.google.com/file/d/1ok9YDZMmll8TLVvB24CRGENDrud3-H7s/view"),
+    "change of major": ("Change of Major Guide", "https://drive.google.com/file/d/1z7vIvSsI3BPIQcOk_enNVymjR94Zq6Hq/view"),
+    "change your major": ("Change of Major Guide", "https://drive.google.com/file/d/1z7vIvSsI3BPIQcOk_enNVymjR94Zq6Hq/view"),
+    "enrollment verification": ("Enrollment Verification Guide", "https://drive.google.com/file/d/17Zqw8TcJSDo-4ImteZGLGbxlGNfGdItR/view"),
+    "degree verification": ("Enrollment/Degree Verification Guide", "https://drive.google.com/file/d/17Zqw8TcJSDo-4ImteZGLGbxlGNfGdItR/view"),
+    "excess credit": ("Excess Credits Guide", "https://drive.google.com/file/d/1oDsY_32JM-xAJFClpCnnvHGILVBSMoHm/view"),
+    "ferpa": ("FERPA Guide", "https://drive.google.com/file/d/1IGdgVnKAh-CudkTQRNgSm6UgXGSTWOV0/view"),
+    "off campus": ("Permission to Take Course Off-Campus Guide", "https://drive.google.com/file/d/1vl5hq6xJT_X4w_xYOyzCMiZKtOJ7A_5K/view"),
+    "off-campus": ("Permission to Take Course Off-Campus Guide", "https://drive.google.com/file/d/1vl5hq6xJT_X4w_xYOyzCMiZKtOJ7A_5K/view"),
+    "personal information update": ("Personal Information Update Guide", "https://drive.google.com/file/d/1KKDuj6XyGxyTtPosl4fcloZIS-0wsdmT/view"),
+    "update your personal": ("Personal Information Update Guide", "https://drive.google.com/file/d/1KKDuj6XyGxyTtPosl4fcloZIS-0wsdmT/view"),
+    "senior citizen tuition": ("Senior Citizen Tuition Waiver Guide", "https://drive.google.com/file/d/1ahCzHUAWESnIHeATKa_eBOvNNhG5aIBb/view"),
+    "time conflict": ("Time Conflict Guide", "https://drive.google.com/file/d/1ka3UrzhH_tmvKbsl2KRwAJO58oEdhInw/view"),
+    "withdrawal": ("Cancellation/Withdrawal Guide", "https://drive.google.com/file/d/1ghXcLsWhYQu2bSdXYi5UWtuv7dt7wuBy/view"),
+    "cancellation": ("Cancellation/Withdrawal Guide", "https://drive.google.com/file/d/1ghXcLsWhYQu2bSdXYi5UWtuv7dt7wuBy/view"),
+    "grade change": ("Grade Changes & Incompletes Guide", "https://drive.google.com/file/d/174ixCMl1kZ1Q7U2RKNknUz-XGd_tMlIn/view"),
+    "incomplete grade": ("Grade Changes & Incompletes Guide", "https://drive.google.com/file/d/174ixCMl1kZ1Q7U2RKNknUz-XGd_tMlIn/view"),
+    "degreeworks substitution": ("Degreeworks Substitution Guide", "https://drive.google.com/file/d/11kWv3UIqp7rpGSWrcYxz6533cq4SE1Xl/view"),
+    "course substitution": ("Degreeworks Substitution Guide", "https://drive.google.com/file/d/11kWv3UIqp7rpGSWrcYxz6533cq4SE1Xl/view"),
+    "proficiency exam": ("Proficiency Exam Guide", "https://drive.google.com/file/d/1r8JXU9w4-Rp1jZr-byJXoJLXPfEwpxTO/view"),
+    "correct a submitted": ("Student Correction Guide", "https://drive.google.com/file/d/1gjyk5iVkQ5qkjY1RkPPrTvgll3mh8U6T/view"),
+    "make a correction": ("Student Correction Guide", "https://drive.google.com/file/d/1gjyk5iVkQ5qkjY1RkPPrTvgll3mh8U6T/view"),
+    "correct a form": ("Student Correction Guide", "https://drive.google.com/file/d/1gjyk5iVkQ5qkjY1RkPPrTvgll3mh8U6T/view"),
+    "corrections to": ("Student Correction Guide", "https://drive.google.com/file/d/1gjyk5iVkQ5qkjY1RkPPrTvgll3mh8U6T/view"),
+}
+
+
+def _inject_procedure_links(response_text: str) -> str:
+    """Append Drive guide links if the response discusses procedures but lacks the links."""
+    if "drive.google.com" in response_text:
+        return response_text  # Already has a Drive link, skip
+
+    lower = response_text.lower()
+    seen_urls = set()
+    matches = []
+    for keyword, (label, url) in _PROCEDURE_LINKS.items():
+        if keyword in lower and url not in seen_urls:
+            matches.append((label, url))
+            seen_urls.add(url)
+
+    if matches:
+        links = "\n".join(f"- [{label}]({url})" for label, url in matches)
+        if len(matches) == 1:
+            label, url = matches[0]
+            return response_text.rstrip() + f"\n\nFor the full official guide with screenshots, view: [{label}]({url})"
+        else:
+            return response_text.rstrip() + f"\n\n**Related guides:**\n{links}"
+    return response_text
+
 
 # User-facing message when ADK is down. Clearly says it's a system issue,
 # NOT a knowledge gap. Prevents users from thinking the bot can't answer.
@@ -36,7 +100,7 @@ _OUTAGE_MSG = (
 )
 
 # Grounding validation: minimum thresholds before flagging a response
-_GROUNDING_MIN_CHUNKS = 1       # At least 1 KB doc must be cited
+_GROUNDING_MIN_CHUNKS = 2       # At least 2 KB docs must be cited
 _GROUNDING_DISCLAIMER = (
     "\n\n---\n*I may not have complete information on this topic in my knowledge base. "
     "Please verify with the CS department at (443) 885-3962 or compsci@morgan.edu.*"
@@ -45,7 +109,7 @@ _GROUNDING_DISCLAIMER = (
 # Patterns that are inherently non-KB (greetings, security refusals, outages)
 # These responses don't need KB grounding so skip the gate
 _SKIP_GROUNDING_RE = re.compile(
-    r'^(Hey!|Hello!|I can only help with Morgan State|I\'m temporarily having trouble|You\'re welcome)',
+    r'^(Hey!|Hello!|CS Navigator was developed|I can only help with Morgan State|I\'m temporarily having trouble|You\'re welcome)',
     re.IGNORECASE,
 )
 
@@ -93,25 +157,30 @@ def _check_faculty_faithfulness(text: str) -> list[str]:
     return hallucinated
 
 
-def _apply_grounding_gate(text: str, chunks: int, has_student_data: bool = False) -> str:
-    """Append a disclaimer when the agent answered with NO data source at all.
+def _apply_grounding_gate(text: str, chunks: int, coverage: float = 0.0, has_student_data: bool = False) -> str:
+    """Append a disclaimer when the agent answered with insufficient data sources.
 
-    Data sources: KB search (chunks > 0) or student records (DegreeWorks/Canvas).
-    If either is present, the answer is grounded in real data. No disclaimer needed.
-    Disclaimer only fires when: 0 KB chunks AND no student data = pure model generation.
+    Checks both chunk count AND coverage ratio. A response needs either:
+    - At least 2 KB chunks cited, OR
+    - Coverage >= 0.3 (30% of response backed by KB), OR
+    - Student data present (DegreeWorks/Canvas)
+
+    This prevents responses that cite 1 chunk but are 90% hallucinated from passing.
     """
     if not text or _SKIP_GROUNDING_RE.match(text):
         return text
-    if chunks >= _GROUNDING_MIN_CHUNKS:
-        return text
     if has_student_data:
         return text
-    print(f"   [GROUNDING] No data source ({chunks} chunks, no student data) - appending disclaimer")
+    if chunks >= _GROUNDING_MIN_CHUNKS:
+        return text
+    if coverage >= 0.3:
+        return text
+    print(f"   [GROUNDING] Low confidence ({chunks} chunks, {coverage:.1%} coverage, no student data) - appending disclaimer")
     return text + _GROUNDING_DISCLAIMER
 
 
 # Session reuse settings
-SESSION_TTL = 86400  # 24 hours: sessions persist all day, context hash handles data changes
+SESSION_TTL = 28800  # 8 hours: shorter TTL prevents stale context
 
 # Session cache: user_id -> {"session_id", "created_at", "context_hash"}
 _session_cache: dict[str, dict] = {}
@@ -196,7 +265,7 @@ def _create_session(user_id: str, state: Optional[dict] = None) -> str:
     return ""
 
 
-def _get_valid_session(user_id: str, context: str = "", model: str = "") -> Optional[str]:
+def _get_valid_session(user_id: str, context: str = "", model: str = "", canvas_context: str = "") -> Optional[str]:
     """Return a cached session ID if it exists, hasn't expired, and context/model matches."""
     cached = _session_cache.get(user_id)
     if not cached:
@@ -215,6 +284,12 @@ def _get_valid_session(user_id: str, context: str = "", model: str = "") -> Opti
         _session_cache.pop(user_id, None)
         return None
 
+    canvas_hash = _compute_context_hash(canvas_context)
+    if cached.get("canvas_hash", "") != canvas_hash:
+        print(f"   ADK session Canvas data changed, creating new")
+        _session_cache.pop(user_id, None)
+        return None
+
     if cached.get("model", "") != model:
         print(f"   ADK session model changed ({cached.get('model', '')} -> {model}), creating new")
         _session_cache.pop(user_id, None)
@@ -224,12 +299,13 @@ def _get_valid_session(user_id: str, context: str = "", model: str = "") -> Opti
     return cached["session_id"]
 
 
-def _cache_session(user_id: str, session_id: str, context: str = "", model: str = ""):
+def _cache_session(user_id: str, session_id: str, context: str = "", model: str = "", canvas_context: str = ""):
     """Store a session in the reuse cache."""
     _session_cache[user_id] = {
         "session_id": session_id,
         "created_at": time_module.time(),
         "context_hash": _compute_context_hash(context),
+        "canvas_hash": _compute_context_hash(canvas_context),
         "model": model,
     }
 
@@ -249,8 +325,8 @@ def query_agent(query: str, user_id: str = "default", context: str = "", model: 
         canvas_context: Canvas LMS data (sent via state_delta, volatile)
         memory_context: Long-term user memory (sent via state_delta, volatile)
     """
-    # Session reuse: hash only DegreeWorks (stable), NOT Canvas/memory (volatile)
-    session_id = _get_valid_session(user_id, context, model)
+    # Session reuse: hash DegreeWorks + Canvas for invalidation
+    session_id = _get_valid_session(user_id, context, model, canvas_context=canvas_context)
 
     if not session_id:
         state = {}
@@ -265,7 +341,7 @@ def query_agent(query: str, user_id: str = "default", context: str = "", model: 
         session_id = _create_session(user_id, state=state if state else None)
         if not session_id:
             return _OUTAGE_MSG
-        _cache_session(user_id, session_id, context, model)
+        _cache_session(user_id, session_id, context, model, canvas_context=canvas_context)
 
     return _run_query(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context, memory_context=memory_context)
 
@@ -283,7 +359,14 @@ def _set_grounding(kb_grounded: bool, chunks: int, coverage: float):
 
 
 def _run_query(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = "", memory_context: str = "") -> str:
-    """Send a query to the ADK and parse the SSE response."""
+    """Send a query to the ADK and parse the SSE response.
+
+    Fast in-memory retrieval runs BEFORE the ADK call (<5ms) to collect
+    doc_texts for the post-agent VERIFICATION gate. The agent has its own
+    VertexAiSearchTool for context; retrieval results here are only for
+    verification.
+    """
+    # Build ADK payload (no retrieval context injected; agent searches KB itself)
     try:
         payload = {
             "app_name": ADK_APP_NAME,
@@ -304,6 +387,16 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
             state_delta["memory"] = memory_context
         if state_delta:
             payload["state_delta"] = state_delta
+
+        # Fast in-memory retrieval for verification (replaces slow hybrid gate)
+        retrieval_doc_texts = []
+        if _GATES_AVAILABLE:
+            try:
+                from services.fast_retrieval import fast_search
+                fast_result = fast_search(message)
+                retrieval_doc_texts = fast_result.doc_texts
+            except Exception as e:
+                print(f"   [FAST] Retrieval error: {e}")
 
         resp = requests.post(
             f"{ADK_BASE_URL}/run_sse",
@@ -328,7 +421,7 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
                 state["model_preference"] = model
             new_session_id = _create_session(user_id, state=state if state else None)
             if new_session_id:
-                _cache_session(user_id, new_session_id, context, model)
+                _cache_session(user_id, new_session_id, context, model, canvas_context=canvas_context)
                 return _run_query(message, user_id, new_session_id, retried=True, context=context, model=model, canvas_context=canvas_context, memory_context=memory_context)
             return _OUTAGE_MSG
 
@@ -366,7 +459,8 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
                     )
                     grounding_coverage = grounded_chars / total_chars if total_chars > 0 else 0.0
                 elif chunks:
-                    grounding_coverage = 1.0  # Has chunks but no segment info
+                    grounding_coverage = 0.5  # Has chunks but no segment info
+                    print(f"   [GROUNDING] Chunks present ({grounding_chunks}) but no segment data - using conservative 0.5 coverage")
 
             # Extract text from model responses (skip function_call / function_response)
             content = event.get("content", {})
@@ -410,7 +504,22 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
 
             # Grounding validation gate: flag low-grounded responses
             has_data = bool(context or canvas_context)
-            final_text = _apply_grounding_gate(final_text, grounding_chunks, has_student_data=has_data)
+            final_text = _apply_grounding_gate(final_text, grounding_chunks, coverage=grounding_coverage, has_student_data=has_data)
+
+            # Inject procedure guide Drive links if the agent omitted them
+            final_text = _inject_procedure_links(final_text)
+
+            # Plan B: Post-agent verification gate
+            # Skip if grounding gate already added a disclaimer (avoid stacking two disclaimers)
+            has_disclaimer = "I may not have complete information" in final_text
+            if _GATES_AVAILABLE and retrieval_doc_texts and not has_disclaimer:
+                try:
+                    vresult = verify_response(final_text, retrieval_doc_texts, message)
+                    if vresult.claims_unverified > 0:
+                        print(f"   [VERIFY] {vresult.claims_verified}/{vresult.claims_total} verified, {vresult.claims_unverified} unverified")
+                    final_text = vresult.verified
+                except Exception as e:
+                    print(f"   [VERIFY] Gate error (proceeding without): {e}")
 
             return final_text
         else:
@@ -478,8 +587,8 @@ def query_agent_stream(query: str, user_id: str = "default", context: str = "", 
 
     Session reuse based on DegreeWorks (stable). Canvas + memory sent via state_delta (volatile).
     """
-    # Session reuse: hash only DegreeWorks (stable), NOT Canvas/memory
-    session_id = _get_valid_session(user_id, context, model)
+    # Session reuse: hash DegreeWorks + Canvas for invalidation
+    session_id = _get_valid_session(user_id, context, model, canvas_context=canvas_context)
 
     if not session_id:
         state = {}
@@ -495,13 +604,28 @@ def query_agent_stream(query: str, user_id: str = "default", context: str = "", 
         if not session_id:
             yield {"type": "error", "content": _OUTAGE_MSG}
             return
-        _cache_session(user_id, session_id, context, model)
+        _cache_session(user_id, session_id, context, model, canvas_context=canvas_context)
 
     yield from _run_query_stream(query, user_id, session_id, context=context, model=model, canvas_context=canvas_context, memory_context=memory_context)
 
 
 def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool = False, context: str = "", model: str = "", canvas_context: str = "", memory_context: str = ""):
-    """Stream query results from ADK, yielding text chunks as they arrive."""
+    """Stream query results from ADK, yielding text chunks as they arrive.
+
+    Fast in-memory retrieval runs BEFORE the ADK call (<5ms) to collect
+    doc_texts for the post-stream VERIFICATION gate. The agent has its own
+    VertexAiSearchTool for context.
+    """
+    # Fast in-memory retrieval for verification (replaces slow hybrid gate)
+    retrieval_doc_texts = []
+    if _GATES_AVAILABLE:
+        try:
+            from services.fast_retrieval import fast_search
+            fast_result = fast_search(message)
+            retrieval_doc_texts = fast_result.doc_texts
+        except Exception as e:
+            print(f"   [FAST] Retrieval error: {e}")
+
     try:
         payload = {
             "app_name": ADK_APP_NAME,
@@ -545,7 +669,7 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
                 state["model_preference"] = model
             new_session_id = _create_session(user_id, state=state if state else None)
             if new_session_id:
-                _cache_session(user_id, new_session_id, context, model)
+                _cache_session(user_id, new_session_id, context, model, canvas_context=canvas_context)
                 yield from _run_query_stream(message, user_id, new_session_id, retried=True, context=context, model=model, canvas_context=canvas_context, memory_context=memory_context)
                 return
             yield {"type": "error", "content": _OUTAGE_MSG}
@@ -590,7 +714,8 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
                     )
                     grounding_coverage = grounded_chars / total_chars if total_chars > 0 else 0.0
                 elif chunks:
-                    grounding_coverage = 1.0
+                    grounding_coverage = 0.5
+                    print(f"   [GROUNDING] Chunks present ({grounding_chunks}) but no segment data - using conservative 0.5 coverage")
 
             content = event.get("content", {})
             if not isinstance(content, dict):
@@ -650,10 +775,29 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
 
         # Grounding validation gate: append disclaimer if low-grounded
         has_data = bool(context or canvas_context)
-        final = _apply_grounding_gate(cleaned, grounding_chunks, has_student_data=has_data)
+        final = _apply_grounding_gate(cleaned, grounding_chunks, coverage=grounding_coverage, has_student_data=has_data)
         if final != cleaned:
             disclaimer = final[len(cleaned):]
             yield {"type": "chunk", "content": disclaimer}
+
+        # Inject procedure guide Drive links if the agent omitted them
+        before_inject = final
+        final = _inject_procedure_links(final)
+        if final != before_inject:
+            link_chunk = final[len(before_inject):]
+            yield {"type": "chunk", "content": link_chunk}
+
+        # Plan B: Post-agent verification gate (streaming)
+        if _GATES_AVAILABLE and retrieval_doc_texts:
+            try:
+                from services.verification_gate import verify_response
+                vresult = verify_response(final, retrieval_doc_texts, message)
+                if vresult.verified != final:
+                    disclaimer_chunk = vresult.verified[len(final):]
+                    yield {"type": "chunk", "content": disclaimer_chunk}
+                    final = vresult.verified
+            except Exception as e:
+                print(f"   [VERIFY] Stream gate error: {e}")
 
         yield {"type": "done", "content": final}
 

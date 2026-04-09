@@ -79,6 +79,10 @@ def build_canvas_context(canvas: dict) -> str:
         except Exception:
             pass
 
+    # Keep Canvas context compact
+    if len(ctx) > 2000:
+        ctx = ctx[:1900] + "\n[...more courses truncated...]\n"
+
     return ctx
 
 
@@ -86,6 +90,13 @@ def build_student_context(dw: dict) -> str:
     """Build the DegreeWorks student context string from a dict of fields."""
     data_source = dw.get("data_source", "manual_entry")
     is_manual = data_source == "manual_entry"
+
+    # Check if DW data has minimum useful content
+    has_gpa = bool(dw.get("overall_gpa"))
+    has_courses = bool(dw.get("courses_completed") or dw.get("courses_in_progress"))
+    has_name = bool(dw.get("student_name"))
+    if not has_gpa and not has_courses and not has_name:
+        return "\nSTUDENT DATA: No DegreeWorks data available. Ask the student to sync their DegreeWorks in the Profile page.\n"
 
     ctx = "\n" + "=" * 60 + "\n"
     if is_manual:
@@ -320,6 +331,13 @@ def build_student_context(dw: dict) -> str:
                 pass
 
     ctx += "=" * 60 + "\n\n"
+
+    # Cap total context to prevent "lost in the middle" effect
+    # LLMs pay most attention to start and end of context
+    if len(ctx) > 6000:
+        ctx = ctx[:5800] + "\n[...truncated for brevity...]\n" + ctx[-200:]
+
+    ctx += "\nCRITICAL: Always search the KB before answering. Never answer Morgan State questions from training data.\n"
     return ctx
 
 

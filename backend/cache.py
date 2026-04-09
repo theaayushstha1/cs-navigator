@@ -38,11 +38,11 @@ L1_CACHE_MAX_SIZE = 500  # Smaller since Redis is L2
 L1_CACHE_TTL_SECONDS = 3600  # 1 hour for L1 (hot cache)
 
 # L2 (Redis) Settings
-L2_CACHE_TTL_SECONDS = 86400  # 24 hours for Redis
+L2_CACHE_TTL_SECONDS = 28800  # 8 hours for Redis
 
 # Semantic Cache Settings
-SEMANTIC_SIMILARITY_THRESHOLD = 0.78  # Cosine sim threshold (raised from 0.70 to avoid cross-topic false positives)
-SEMANTIC_MAX_ENTRIES = 200  # Max cached embeddings in memory
+SEMANTIC_SIMILARITY_THRESHOLD = 0.95  # Cosine sim threshold (0.95 = near-exact match only, prevents cross-topic false positives)
+SEMANTIC_MAX_ENTRIES = 100  # Max cached embeddings in memory
 SEMANTIC_EMBEDDING_MODEL = 'text-embedding-004'
 SEMANTIC_EMBEDDING_DIMS = 256  # Matryoshka truncation, 256 is fast + accurate enough
 
@@ -544,8 +544,14 @@ class MultiTierCache:
         if not self._should_cache(query):
             return False
 
-        # Don't cache error responses
+        # Don't cache error responses or outage messages
         if "error" in response.lower()[:50] or "unavailable" in response.lower()[:50]:
+            return False
+        if "trouble connecting" in response.lower() or "system issue" in response.lower():
+            return False
+
+        # Don't cache responses with grounding disclaimers (they indicate low confidence)
+        if "I may not have complete information" in response or "Please verify with the CS department" in response:
             return False
 
         key = self._generate_key(query, context_hash)
@@ -611,7 +617,7 @@ query_cache = MultiTierCache()
 # HELPER FUNCTIONS (Backwards Compatible)
 # ============================================================================
 
-def get_context_hash(user_id: int = None, has_degreeworks: bool = False, model: str = "", has_canvas: bool = False) -> str:
+def get_context_hash(user_id: int = None, has_degreeworks: bool = False, model: str = "", has_canvas: bool = False, dw_hash: str = "") -> str:
     """
     Generate a context hash for cache key differentiation.
     Includes model and data sources so different contexts get separate cache entries.
@@ -621,6 +627,8 @@ def get_context_hash(user_id: int = None, has_degreeworks: bool = False, model: 
         parts.append(f"user:{user_id}")
     if has_degreeworks:
         parts.append("dw")
+    if dw_hash:
+        parts.append(f"dwh:{dw_hash}")
     if has_canvas:
         parts.append("canvas")
     if model:

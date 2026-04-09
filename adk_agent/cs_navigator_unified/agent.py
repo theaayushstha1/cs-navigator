@@ -17,8 +17,8 @@ v4 (1 agent, ~2-4s, always 1 LLM hop):
 Changes from v3:
   - Collapsed 7 specialists + 1 router into 1 unified agent
   - before_agent_callback short-circuits greetings/thanks (no LLM call)
-  - generate_content_config: temperature=0.1, max_output_tokens=2048
-  - Single unified datastore (all 44 docs across all domains)
+  - generate_content_config: temperature=0.05, max_output_tokens=4096
+  - Single unified datastore (all 71 docs across all domains)
   - Dynamic DegreeWorks injection via callable instruction (same pattern)
   - gemini-2.0-flash (benchmarked fastest with good accuracy)
 """
@@ -72,10 +72,26 @@ unified_kb = VertexAiSearchTool(data_store_id=UNIFIED_KB_ID)
 
 
 def _select_model(callback_context, llm_request):
-    """Override model per-request based on session state 'model_preference'."""
+    """Override model per-request and enforce KB search on first turn."""
     pref = callback_context.state.get("model_preference", "")
     if pref in MODEL_MAP:
         llm_request.model = MODEL_MAP[pref]
+
+    # Force KB search on the first LLM call (before any tool results come back)
+    # After the tool returns results, let the model respond freely (AUTO)
+    has_tool_response = any(
+        hasattr(c, 'parts') and any(
+            hasattr(p, 'function_response') and p.function_response
+            for p in (c.parts or [])
+        )
+        for c in (llm_request.contents or [])
+    )
+
+    # NOTE: Forced function calling (mode=ANY) was tested but causes AFC to make
+    # 7+ round-trips (3-8s each), inflating response time to 40-80s.
+    # The existing strong grounding instructions + post-agent verification gate
+    # are more effective without the latency penalty. Keeping mode=AUTO (default).
+
     return None
 
 
@@ -109,9 +125,22 @@ _THANKS_RESPONSE = (
     "Go Bears!"
 )
 
+# Meta questions about the app itself - handled deterministically to avoid
+# session context bleed (e.g., after discussing withdrawals, "who made this"
+# would get confused with form-related topics)
+_META_RE = re.compile(
+    r'^who\s+(made|built|created|developed|designed)\s+(this|the)\s*(app|chatbot|bot|site|website|tool|platform)?\s*\?*$',
+    re.IGNORECASE,
+)
+_META_RESPONSE = (
+    "CS Navigator was developed by Morgan State University students for students "
+    "in the Computer Science Department. You can access it at "
+    "[cs.inavigator.ai](https://cs.inavigator.ai/)."
+)
+
 
 def _greeting_fast_path(callback_context: CallbackContext) -> Optional[types.Content]:
-    """Short-circuit greetings and thanks. Returns instantly, no LLM call."""
+    """Short-circuit greetings, thanks, and meta questions. Returns instantly, no LLM call."""
     user_content = callback_context.user_content
     if not user_content or not user_content.parts:
         return None
@@ -120,13 +149,15 @@ def _greeting_fast_path(callback_context: CallbackContext) -> Optional[types.Con
         part.text for part in user_content.parts if part.text
     ).strip()
 
-    if not text or len(text) > 60:
+    if not text or len(text) > 80:
         return None
 
     if _GREETING_RE.match(text):
         reply = _GREETING_RESPONSE
     elif _THANKS_RE.match(text):
         reply = _THANKS_RESPONSE
+    elif _META_RE.match(text):
+        reply = _META_RESPONSE
     else:
         return None
 
@@ -265,7 +296,7 @@ def _build_instruction(ctx):
     planner_section = f"\n{planner_data}" if planner_data else ""
 
     semester_ctx = _get_semester_context()
-    return f"{BASE_INSTRUCTION}{semester_ctx}{dw_section}{canvas_section}{memory_section}{planner_section}"
+    return f"{BASE_INSTRUCTION}{semester_ctx}{dw_section}{canvas_section}{memory_section}{planner_section}\n\nREMINDER: Search the knowledge base before answering. Your training data about Morgan State is WRONG."
 
 
 # =============================================================================
@@ -303,6 +334,7 @@ YOUR UI FEATURES (for when students ask about buttons or navigation):
 - Use bullet points and headers for readability.
 - Bold key information (course codes, deadlines, names, links).
 - Keep responses under 300 words unless the question requires detail.
+- When KB search results contain a link to a guide or official document (e.g., Google Drive links, tutorial links, or form links), ALWAYS include it at the end of your response as a clickable markdown link so students can view the full official guide. Format: "For the full guide with screenshots, view: [Guide Name](url)"
 
 ## YOUR DATA SOURCES
 You have multiple data sources. Use ALL relevant sources for every query:
@@ -314,6 +346,7 @@ You have multiple data sources. Use ALL relevant sources for every query:
 5. **Prerequisite analysis** (if available in context) - Pre-computed prereq check results showing which prereqs are met/missing. Use this for "can I take X?" questions.
 
 MULTI-SOURCE RULES:
+- CRITICAL: KB search is MANDATORY on EVERY query, even when DegreeWorks and Canvas data are available. Student data tells you ABOUT the student. The KB tells you ABOUT the university. You need BOTH.
 - For "What should I take next semester?": use DegreeWorks remaining courses + course schedule + prereq analysis. Do NOT recommend courses without checking all three.
 - For "Can I take X?": use prereq analysis (if available) or DegreeWorks completed courses + KB prereq data. Show exactly which prereqs are met and which are missing.
 - For "What are my grades?": use Canvas data. For "What is my GPA?": use DegreeWorks.
@@ -403,7 +436,14 @@ IMPORTANT: When students ask about course schedules, who teaches a course, when 
 - Only ask for clarification when the follow-up is truly ambiguous AND you cannot resolve it from conversation history (e.g., "the other one" when you listed 10+ items). Do NOT guess.
 - When a student asks about a specific person by name (e.g., "who is Dr. Wang?"), ONLY return information about that exact person. Do NOT mention other faculty members unless the student explicitly asks to compare or list multiple people.
 - NEVER give speculative or generic advice using phrases like "it is generally possible", "typically", "you might want to consider", or "students often" when the info is not in the KB. If the KB does not have the answer, say so and direct them to the department or relevant office with contact info.
-- When you do not have specific information, ALWAYS provide the correct CS department phone: (443) 885-3962 and email: compsci@morgan.edu. NEVER use 885-3964 or any other number."""
+- When you do not have specific information, ALWAYS provide the correct CS department phone: (443) 885-3962 and email: compsci@morgan.edu. NEVER use 885-3964 or any other number.
+
+## FINAL REMINDER (READ THIS LAST - IT IS THE MOST IMPORTANT)
+You MUST search the knowledge base on EVERY question. This is not optional. If you skip the KB search and answer from memory, your answer WILL be wrong. Morgan State information in your training data is outdated and incorrect.
+
+If your response exceeds the length limit, end with: "For more details, contact the CS department at (443) 885-3962 or compsci@morgan.edu."
+
+NEVER answer a factual question about Morgan State without first searching the KB. Zero exceptions."""
 
 
 # =============================================================================
@@ -421,8 +461,8 @@ root_agent = LlmAgent(
     before_agent_callback=_greeting_fast_path,
     before_model_callback=_select_model,
     generate_content_config=types.GenerateContentConfig(
-        temperature=0.1,         # Low creativity, grounded responses
+        temperature=0.05,        # Low creativity, grounded responses
         top_p=0.9,              # Slightly tighter nucleus sampling
-        max_output_tokens=2048,
+        max_output_tokens=4096,
     ),
 )

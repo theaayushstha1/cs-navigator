@@ -38,6 +38,10 @@ _SHORT_FOLLOWUP_RE = re.compile(
 _gemini_client = None
 _gemini_init_attempted = False
 
+_rewrite_call_count = 0
+_rewrite_window_start = 0
+_REWRITE_MAX_PER_MINUTE = 30
+
 
 def _get_client():
     """Get or create the cached Gemini client. Returns None if unavailable."""
@@ -271,6 +275,18 @@ def rewrite_query(query: str, history: list[dict]) -> str:
     # Layer 2: LLM rewriter for complex cases
     # If the LLM can't confidently rewrite, it returns the original query unchanged
     # and the agent (which has full session history) handles it or asks for clarification
+    # Rate limit LLM rewrite calls (max 30/min to prevent Gemini quota burn)
+    import time as _time
+    global _rewrite_call_count, _rewrite_window_start
+    now = _time.time()
+    if now - _rewrite_window_start > 60:
+        _rewrite_call_count = 0
+        _rewrite_window_start = now
+    if _rewrite_call_count >= _REWRITE_MAX_PER_MINUTE:
+        print(f"   [REWRITE] Rate limited ({_rewrite_call_count}/min), skipping LLM rewrite")
+        return query
+    _rewrite_call_count += 1
+
     client = _get_client()
     if not client:
         return query  # No LLM available, agent handles it with session context
@@ -306,6 +322,18 @@ def rewrite_query(query: str, history: list[dict]) -> str:
             # If the rewriter just returned the same thing, let the agent handle it
             if rewritten.lower().strip("?. ") == query.lower().strip("?. "):
                 print(f"   [REWRITE] Unchanged -> agent will handle with session context")
+                return query
+            # Safety: verify rewrite didn't completely change the topic
+            # Extract key nouns/entities from both and check overlap
+            orig_words = set(re.findall(r'\b[a-z]{4,}\b', query.lower()))
+            new_words = set(re.findall(r'\b[a-z]{4,}\b', rewritten.lower()))
+            # Also check course codes
+            orig_codes = set(_COURSE_RE.findall(query.upper()))
+            new_codes = set(_COURSE_RE.findall(rewritten.upper()))
+            shared = orig_words & new_words
+            # If rewrite shares fewer than 2 content words AND no course codes match, reject it
+            if len(shared) < 2 and not (orig_codes & new_codes) and not orig_codes.issubset(new_codes):
+                print(f"   [REWRITE] Rejected (intent drift): '{query}' -> '{rewritten}' (shared: {shared})")
                 return query
             print(f"   [REWRITE] '{query}' -> '{rewritten}'")
             return rewritten
