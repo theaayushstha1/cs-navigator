@@ -76,16 +76,42 @@ unified_kb = VertexAiSearchTool(data_store_id=UNIFIED_KB_ID)
 
 
 def _select_model(callback_context, llm_request):
-    """Override model per-request based on session state 'model_preference'."""
+    """Override model per-request and inject KB context on first turn."""
     pref = callback_context.state.get("model_preference", "")
     if pref in MODEL_MAP:
         llm_request.model = MODEL_MAP[pref]
-    return None
 
-    # NOTE: kb_prefetch was disabled because it calls the Discovery Engine API
-    # on every request, which contributes to 429 rate limit exhaustion.
-    # The agent's VertexAiSearchTool + strong grounding instructions handle
-    # retrieval. kb_prefetch.py is still available as an admin utility.
+    # Inject pre-fetched KB docs on first turn (belt-and-suspenders grounding)
+    # Uses Discovery Engine API (NOT Gemini), cached in memory for 5 min. Zero LLM quota impact.
+    has_tool_response = any(
+        hasattr(c, 'parts') and any(
+            hasattr(p, 'function_response') and p.function_response
+            for p in (c.parts or [])
+        )
+        for c in (llm_request.contents or [])
+    )
+
+    if not has_tool_response:
+        user_text = ""
+        for c in reversed(llm_request.contents or []):
+            if hasattr(c, 'role') and c.role == 'user' and c.parts:
+                for p in c.parts:
+                    if hasattr(p, 'text') and p.text:
+                        user_text = p.text
+                        break
+                if user_text:
+                    break
+
+        if user_text and len(user_text) > 10:
+            try:
+                from .kb_prefetch import prefetch_kb_context
+                kb_ctx = prefetch_kb_context(user_text)
+                if kb_ctx:
+                    llm_request.append_instructions(kb_ctx)
+            except Exception:
+                pass  # Fail silently, agent still has VertexAiSearchTool
+
+    return None
 
 
 # =============================================================================
