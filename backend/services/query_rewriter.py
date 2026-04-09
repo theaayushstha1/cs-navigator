@@ -272,20 +272,11 @@ def rewrite_query(query: str, history: list[dict]) -> str:
         if focused:
             return focused
 
-    # Layer 2: LLM rewriter for complex cases
-    # If the LLM can't confidently rewrite, it returns the original query unchanged
-    # and the agent (which has full session history) handles it or asks for clarification
-    # Rate limit LLM rewrite calls (max 30/min to prevent Gemini quota burn)
-    import time as _time
-    global _rewrite_call_count, _rewrite_window_start
-    now = _time.time()
-    if now - _rewrite_window_start > 60:
-        _rewrite_call_count = 0
-        _rewrite_window_start = now
-    if _rewrite_call_count >= _REWRITE_MAX_PER_MINUTE:
-        print(f"   [REWRITE] Rate limited ({_rewrite_call_count}/min), skipping LLM rewrite")
+    # Layer 2: LLM rewriter - only for very short ambiguous follow-ups.
+    # For 5+ word queries, the ADK agent has full session context and handles them fine.
+    # This saves ~200-400ms per follow-up by skipping the Gemini Flash call.
+    if len(query.split()) >= 5:
         return query
-    _rewrite_call_count += 1
 
     client = _get_client()
     if not client:

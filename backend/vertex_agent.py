@@ -22,13 +22,9 @@ import hashlib
 import time as time_module
 import requests
 from typing import Optional
-# Plan B: Verification Gate (retrieval now uses fast in-memory search)
-try:
-    from services.verification_gate import verify_response
-    _GATES_AVAILABLE = True
-except ImportError:
-    _GATES_AVAILABLE = False
-    print("   [GATES] Verification gate not available")
+# Gates (retrieval_gate, verification_gate, fast_retrieval) available as admin utilities
+# but removed from the hot path. The agent's built-in VertexAiSearchTool handles
+# retrieval. The grounding gate + faculty faithfulness check handle quality.
 
 # Configuration
 ADK_BASE_URL = os.getenv("ADK_BASE_URL", "http://127.0.0.1:8080")
@@ -388,16 +384,6 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
         if state_delta:
             payload["state_delta"] = state_delta
 
-        # Fast in-memory retrieval for verification (replaces slow hybrid gate)
-        retrieval_doc_texts = []
-        if _GATES_AVAILABLE:
-            try:
-                from services.fast_retrieval import fast_search
-                fast_result = fast_search(message)
-                retrieval_doc_texts = fast_result.doc_texts
-            except Exception as e:
-                print(f"   [FAST] Retrieval error: {e}")
-
         resp = requests.post(
             f"{ADK_BASE_URL}/run_sse",
             headers={"Content-Type": "application/json"},
@@ -509,18 +495,6 @@ def _run_query(message: str, user_id: str, session_id: str, retried: bool = Fals
             # Inject procedure guide Drive links if the agent omitted them
             final_text = _inject_procedure_links(final_text)
 
-            # Plan B: Post-agent verification gate
-            # Skip if grounding gate already added a disclaimer (avoid stacking two disclaimers)
-            has_disclaimer = "I may not have complete information" in final_text
-            if _GATES_AVAILABLE and retrieval_doc_texts and not has_disclaimer:
-                try:
-                    vresult = verify_response(final_text, retrieval_doc_texts, message)
-                    if vresult.claims_unverified > 0:
-                        print(f"   [VERIFY] {vresult.claims_verified}/{vresult.claims_total} verified, {vresult.claims_unverified} unverified")
-                    final_text = vresult.verified
-                except Exception as e:
-                    print(f"   [VERIFY] Gate error (proceeding without): {e}")
-
             return final_text
         else:
             return "I'm sorry, I couldn't generate a response. Please try rephrasing your question."
@@ -616,16 +590,6 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
     doc_texts for the post-stream VERIFICATION gate. The agent has its own
     VertexAiSearchTool for context.
     """
-    # Fast in-memory retrieval for verification (replaces slow hybrid gate)
-    retrieval_doc_texts = []
-    if _GATES_AVAILABLE:
-        try:
-            from services.fast_retrieval import fast_search
-            fast_result = fast_search(message)
-            retrieval_doc_texts = fast_result.doc_texts
-        except Exception as e:
-            print(f"   [FAST] Retrieval error: {e}")
-
     try:
         payload = {
             "app_name": ADK_APP_NAME,
@@ -786,18 +750,6 @@ def _run_query_stream(message: str, user_id: str, session_id: str, retried: bool
         if final != before_inject:
             link_chunk = final[len(before_inject):]
             yield {"type": "chunk", "content": link_chunk}
-
-        # Plan B: Post-agent verification gate (streaming)
-        if _GATES_AVAILABLE and retrieval_doc_texts:
-            try:
-                from services.verification_gate import verify_response
-                vresult = verify_response(final, retrieval_doc_texts, message)
-                if vresult.verified != final:
-                    disclaimer_chunk = vresult.verified[len(final):]
-                    yield {"type": "chunk", "content": disclaimer_chunk}
-                    final = vresult.verified
-            except Exception as e:
-                print(f"   [VERIFY] Stream gate error: {e}")
 
         yield {"type": "done", "content": final}
 
