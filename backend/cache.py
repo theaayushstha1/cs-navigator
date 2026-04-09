@@ -528,13 +528,13 @@ class MultiTierCache:
             self.l1.set(key, response)
             return response
 
-        # Semantic cache disabled from hot path: at 0.95 threshold it's effectively
-        # exact match with an extra embedding API call (~50ms). L1+L2 handle this.
-        # if not context_hash:
-        #     response = self.semantic.get(query)
-        #     if response is not None:
-        #         self.l1.set(key, response)
-        #         return response
+        # L3: Semantic similarity (catches rephrased versions of the same question)
+        # 0.95 threshold = safe, only near-identical matches. Saves a full Gemini call (~4s)
+        if not context_hash:
+            response = self.semantic.get(query)
+            if response is not None:
+                self.l1.set(key, response)
+                return response
 
         logger.info(f"[CACHE] MISS for: {query[:50]}...")
         return None
@@ -560,11 +560,11 @@ class MultiTierCache:
         self.l1.set(key, response)
         self.l2.set(key, response)
 
-        # Semantic cache write disabled (see get() comment above)
-        # if not context_hash:
-        #     self.semantic.set(query, response)
+        # L3: Store embedding for semantic similarity matching
+        if not context_hash:
+            self.semantic.set(query, response)
 
-        logger.info(f"[CACHE] Stored in L1+L2: {query[:50]}...")
+        logger.info(f"[CACHE] Stored in L1+L2+SEM: {query[:50]}...")
         return True
 
     def invalidate(self, query: str, context_hash: str = "") -> bool:

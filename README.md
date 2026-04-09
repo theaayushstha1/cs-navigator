@@ -149,7 +149,7 @@ flowchart LR
     style Agent fill:#fce4ec,stroke:#c62828
 ```
 
-L3 semantic cache (embedding similarity) is available but disabled from the hot path. At 0.95 cosine threshold it functions as expensive exact matching. L1+L2 exact match handles the common case.
+L3 semantic cache uses Google text-embedding-004 with 0.95 cosine threshold. Catches rephrased versions of the same question (e.g., "where is the CS dept" matches "CS department location") and saves a full 4-second Gemini call.
 
 ### Self-Healing Research Pipeline
 
@@ -203,7 +203,7 @@ flowchart TD
 | **REG Layer 2** | Vertex AI Search (71 docs) | Agent's built-in VertexAiSearchTool with grounding metadata |
 | **REG Layer 3** | Grounding Gate + Faithfulness | Post-generation: coverage check, faculty name validation, link injection |
 | **Database** | AWS RDS MySQL | Users, chat history, DegreeWorks, Canvas, ADK sessions |
-| **Cache** | L1 In-Memory + L2 Redis Cloud | Exact match caching, 1hr + 8hr TTL |
+| **Cache** | L1 In-Memory + L2 Redis + L3 Semantic | 3-tier: exact match (L1+L2) + embedding similarity at 0.95 (L3) |
 | **Testing** | Promptfoo (52 tests) | Backend pipeline tests + CI gate at 90% threshold |
 | **Deployment** | Google Cloud Run (3 services) | Auto-scaling, min-instances=2, DatabaseSessionService |
 
@@ -223,7 +223,7 @@ flowchart TD
 | **DegreeWorks Integration** | Parses academic records via PDF upload or Banner auto-sync. Injects GPA, completed courses, remaining requirements into agent context. |
 | **Red Team Hardened** | 43-category Promptfoo security audit. 9 agent-level security rules blocking jailbreaks, role-play, calibration framing, and self-disclosure attacks. |
 | **Guest Mode** | 15-minute free trial. Personal queries (GPA, grades) intercepted and redirected to signup. No fabricated data. |
-| **2-Tier Caching** | L1 in-memory (instant) + L2 Redis (distributed, 8hr TTL). Greeting and meta fast-paths skip the agent entirely. Semantic L3 available but disabled (0.95 threshold = expensive exact match). |
+| **3-Tier Caching** | L1 in-memory (instant) + L2 Redis (8hr TTL) + L3 semantic embedding (0.95 cosine, catches rephrased questions). Greeting and meta fast-paths skip the agent entirely. |
 | **Model Selection** | ChatGPT-style dropdown: iNav (fast, Gemini 2.0 Flash) and iNav Pro (deeper thinking, Gemini 2.5 Flash). Benchmarked 7 models across accuracy and latency. |
 
 ---
