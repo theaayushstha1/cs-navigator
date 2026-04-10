@@ -73,7 +73,25 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
   const [voiceStatus, setVoiceStatus] = useState("idle"); // idle, listening, processing, speaking
 
   // Model selector state
-  const [selectedModel, setSelectedModel] = useState("inav-1.0"); // "inav-1.0" (quick, default) or "inav-1.1" (pro)
+  const [selectedModel, setSelectedModel] = useState("inav-1.1");
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  const modelDropdownRef = useRef(null);
+
+  const MODEL_OPTIONS = [
+    { id: "inav-1.1", name: "iNav", desc: "Fast & accurate" },
+    { id: "inav-2.0", name: "iNav Pro", desc: "Deeper thinking, may take longer" },
+  ];
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target)) {
+        setModelDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // 🔥 Feedback State
   const [feedbackMenuOpen, setFeedbackMenuOpen] = useState(null); // index of message with open menu
@@ -517,7 +535,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
 
       const isOutage = botResponse.includes("temporarily") && botResponse.includes("knowledge base");
       if (isOutage) {
-        toast("Hang tight! We're pushing an update. Try again in a moment.", {
+        toast("Warming up! Try your question again.", {
           duration: 6000,
           style: {
             background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
@@ -837,8 +855,19 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                             const isOutage = errMsg.includes("temporarily") || errMsg.includes("knowledge base") || errMsg.includes("system issue");
 
                             if (isOutage) {
-                                // Show toast notification instead of polluting the chat
-                                toast("Hang tight! We're pushing an update. Try again in a moment.", {
+                                // Silent retry once before showing toast (ADK cold-connect)
+                                if (!skipCache && !window._lastRetried) {
+                                    window._lastRetried = true;
+                                    setMessages((prev) => prev.slice(0, -1)); // remove placeholder
+                                    setIsLoading(false);
+                                    setTimeout(() => {
+                                        handleSend(null, finalMessage, false);
+                                        setTimeout(() => { window._lastRetried = false; }, 10000);
+                                    }, 2000);
+                                    return;
+                                }
+                                window._lastRetried = false;
+                                toast("Warming up! Try your question again.", {
                                     duration: 6000,
                                     style: {
                                       background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
@@ -895,8 +924,23 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
         const isNetworkDown = err.message?.includes("Failed to fetch") || err.message?.includes("NetworkError") || err.message?.includes("network");
 
         if (isNetworkDown) {
-            // Backend unreachable: show deploy toast, remove placeholder bot message
-            toast("We're deploying updates right now. Give it a moment and try again.", {
+            // Silent retry once before showing toast (backend cold-connect)
+            if (!window._lastRetried) {
+                window._lastRetried = true;
+                setMessages((prev) => {
+                    const last = prev[prev.length - 1];
+                    if (last && last.sender === "bot" && last.isStreaming) return prev.slice(0, -1);
+                    return prev;
+                });
+                setIsLoading(false);
+                setTimeout(() => {
+                    handleSend(null, finalMessage, false);
+                    setTimeout(() => { window._lastRetried = false; }, 10000);
+                }, 2000);
+                return;
+            }
+            window._lastRetried = false;
+            toast("Warming up! Try your question again.", {
                 duration: 6000,
                 style: {
                     background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
@@ -1027,6 +1071,43 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {/* Model selector dropdown */}
+      <div className="model-selector-header" ref={modelDropdownRef}>
+        <button
+          className="model-selector-trigger"
+          onClick={() => setModelDropdownOpen(prev => !prev)}
+          disabled={isLoading}
+        >
+          <span className="model-selector-name">
+            {MODEL_OPTIONS.find(m => m.id === selectedModel)?.name || "iNav"}
+          </span>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.5, marginLeft: 4 }}>
+            <path d="M4 6L8 10L12 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
+        {modelDropdownOpen && (
+          <div className="model-dropdown">
+            {MODEL_OPTIONS.map(model => (
+              <button
+                key={model.id}
+                className={`model-dropdown-item ${selectedModel === model.id ? 'active' : ''}`}
+                onClick={() => { setSelectedModel(model.id); setModelDropdownOpen(false); }}
+              >
+                <div className="model-dropdown-info">
+                  <span className="model-dropdown-name">{model.name}</span>
+                  <span className="model-dropdown-desc">{model.desc}</span>
+                </div>
+                {selectedModel === model.id && (
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" className="model-dropdown-check">
+                    <path d="M6.5 12.5L2 8l1.5-1.5L6.5 9.5 12.5 3.5 14 5z"/>
+                  </svg>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Hidden audio element for TTS playback */}
       <audio ref={audioRef} style={{ display: 'none' }} />
 
@@ -1395,16 +1476,7 @@ export default function Chatbox({ initialMessages = [], onSessionChange, session
                 <BsArrowUpCircleFill size={24} />
             </button>
 
-            {/* Model toggle */}
-            <button
-                type="button"
-                className={`model-toggle ${selectedModel === 'inav-1.1' ? 'pro' : ''}`}
-                onClick={() => setSelectedModel(prev => prev === 'inav-1.0' ? 'inav-1.1' : 'inav-1.0')}
-                disabled={isLoading}
-                title={selectedModel === 'inav-1.0' ? 'iNav 1.0 (Quick) — click for Pro' : 'iNav 1.1 (Pro) — click for Quick'}
-            >
-                <span className="model-toggle-label">{selectedModel === 'inav-1.0' ? '1.0' : '1.1'}</span>
-            </button>
+            {/* Model toggle removed - now in header dropdown */}
 
             {/* Live Voice Mode Button */}
             <button

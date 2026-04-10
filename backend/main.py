@@ -78,6 +78,57 @@ from vertex_agent import query_agent, query_agent_stream, check_agent_health, re
 from cache import query_cache, get_context_hash, log_cache_stats
 
 
+# =============================================================================
+# COURSE FAITHFULNESS CHECK
+# =============================================================================
+# Catches when the agent recommends courses the student already completed or is
+# currently taking. Scans bullet/numbered list items (recommendation format) for
+# course codes that appear in the student's DegreeWorks record.
+
+_COURSE_CODE_IN_LIST_RE = re.compile(
+    r'(?:^|\n)\s*(?:[\*\-•]|\d+\.)\s*\*?\*?\s*([A-Z]{2,4}\s*\d{3})',
+    re.MULTILINE,
+)
+
+_RECOMMENDATION_KEYWORDS = {"recommend", "should take", "should i take", "next semester", "can take",
+                            "courses to take", "what to take", "course choices", "available for",
+                            "offered in", "consider taking", "suggest", "eligible"}
+
+def _check_course_faithfulness(text: str, dw_dict: dict, query: str = "") -> list[str]:
+    """Check if the response recommends courses the student already took or is taking.
+    Only runs when the query is about course recommendations (not history lookups).
+    Returns list of bad course codes."""
+    if not text or not dw_dict:
+        return []
+    # Skip check if query is about history/past courses, not recommendations
+    if query:
+        q_lower = query.lower()
+        is_recommendation = any(kw in q_lower for kw in _RECOMMENDATION_KEYWORDS)
+        if not is_recommendation:
+            return []
+    forbidden = set()
+    for field in ("courses_completed", "courses_in_progress"):
+        raw = dw_dict.get(field, "")
+        if not raw:
+            continue
+        try:
+            courses = json.loads(raw) if isinstance(raw, str) else raw
+            for c in courses:
+                code = re.sub(r'([A-Z]+)\s*(\d+)', r'\1 \2', c.get("code", "").strip().upper())
+                if code:
+                    forbidden.add(code)
+        except Exception:
+            continue
+    if not forbidden:
+        return []
+    recommended = set()
+    for match in _COURSE_CODE_IN_LIST_RE.findall(text.upper()):
+        code = re.sub(r'([A-Z]+)\s*(\d+)', r'\1 \2', match.strip())
+        recommended.add(code)
+    bad = sorted(recommended & forbidden)
+    return bad
+
+
 # Legacy imports kept for /ingest endpoint and file analysis fallback
 try:
     from langchain.text_splitter import TokenTextSplitter
@@ -448,6 +499,12 @@ else:
     print(f"[OK] Created uploads directory: {UPLOADS_DIR}")
 
 # ==============================================================================
+# 4b. ROUTERS (modular endpoint files)
+# ==============================================================================
+from routers.auth import router as auth_router
+app.include_router(auth_router)
+
+# ==============================================================================
 # 5. AUTHENTICATION HELPERS
 # ==============================================================================
 security = HTTPBearer()
@@ -477,7 +534,9 @@ def get_current_user(
         return {
             "user_id": user.id,
             "email": user.email,
-            "role": user.role
+            "role": user.role,
+            "name": user.name,
+            "student_id": user.student_id,
         }
     except JWTError as e:
         print(f"JWT decode error: {e}")
@@ -492,6 +551,8 @@ def allowed_file(filename: str) -> bool:
 class RegisterRequest(BaseModel):
     email: str
     password: str
+    name: Optional[str] = None
+    student_id: Optional[str] = None
 
     @staticmethod
     def validate_email_format(v):
@@ -853,81 +914,83 @@ def root_dashboard(request: Request, user: Optional[dict] = Depends(get_optional
 # ==============================================================================
 
 # --- Auth ---
-ALLOWED_EMAIL_DOMAINS = ["morgan.edu"]
-
-_register_timestamps: dict[str, list] = {}
-
-@app.post("/api/register", status_code=status.HTTP_201_CREATED)
-def register(req: RegisterRequest, db: Session = Depends(get_db)):
-    import re
-    from email_service import generate_token, send_verification_email
-
-    email = req.email.strip().lower()
-
-    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
-        raise HTTPException(status_code=400, detail="Invalid email format")
-
-    # Rate limit per EMAIL (not per IP). On campus WiFi all students share one IP,
-    # so IP-based limiting blocks innocent users. 3 attempts per email per hour.
-    now_ts = time_module.time()
-    reg_ts = _register_timestamps.get(email, [])
-    reg_ts = [t for t in reg_ts if now_ts - t < 3600]
-    if len(reg_ts) >= 3:
-        raise HTTPException(status_code=429, detail="Too many attempts for this email. Try again in an hour.")
-    reg_ts.append(now_ts)
-    _register_timestamps[email] = reg_ts
-
-    # Only allow Morgan State email for new registrations
-    email_domain = email.split("@")[-1].lower()
-    allow_test = os.getenv("ALLOW_TEST_EMAILS", "false").lower() == "true"
-    if email_domain not in ALLOWED_EMAIL_DOMAINS and not (allow_test and email.endswith("@test.com")):
-        raise HTTPException(status_code=400, detail="Only @morgan.edu email addresses are allowed.")
-
-    if len(req.password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-    if db.query(User).filter(User.email == req.email).first():
-        raise HTTPException(status_code=400, detail="Email already registered")
-
-    hashed = hash_password(req.password)
-    token = generate_token()
-    student = User(email=req.email, password_hash=hashed, role="student", email_verified=False, verification_token=token)
-    db.add(student)
-    db.commit()
-    db.refresh(student)
-
-    send_verification_email(req.email, token)
-    return {"message": "Account created! Check your Morgan State email to verify.", "user_id": student.id}
-
-
-@app.get("/api/verify-email")
-def verify_email(token: str, db: Session = Depends(get_db)):
-    from starlette.responses import RedirectResponse
-    user = db.query(User).filter(User.verification_token == token).first()
-    if not user:
-        raise HTTPException(status_code=400, detail="Invalid or expired verification link")
-    user.email_verified = True
-    user.verification_token = None
-    db.commit()
-    # Redirect to login with success flag
-    app_url = os.getenv("APP_URL", "https://cs.inavigator.ai")
-    return RedirectResponse(url=f"{app_url}/login?verified=true")
-
-
-@app.post("/api/resend-verification")
-async def resend_verification(request: Request, db: Session = Depends(get_db)):
-    from email_service import generate_token, send_verification_email
-    body = await request.json()
-    email = body.get("email", "")
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        return {"message": "If an account exists, a verification email has been sent."}
-    if user.email_verified:
-        return {"message": "Email already verified."}
-    token = generate_token()
-    user.verification_token = token
-    db.commit()
-    send_verification_email(email, token)
-    return {"message": "Verification email sent. Check your inbox."}
+# Moved to routers/auth.py: register, verify-email, resend-verification, login
+# ALLOWED_EMAIL_DOMAINS = ["morgan.edu"]
+#
+# _register_timestamps: dict[str, list] = {}
+#
+# @app.post("/api/register", status_code=status.HTTP_201_CREATED)
+# def register(req: RegisterRequest, db: Session = Depends(get_db)):
+#     import re
+#     from email_service import generate_token, send_verification_email
+#
+#     email = req.email.strip().lower()
+#
+#     if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+#         raise HTTPException(status_code=400, detail="Invalid email format")
+#
+#     # Rate limit per EMAIL (not per IP). On campus WiFi all students share one IP,
+#     # so IP-based limiting blocks innocent users. 3 attempts per email per hour.
+#     now_ts = time_module.time()
+#     reg_ts = _register_timestamps.get(email, [])
+#     reg_ts = [t for t in reg_ts if now_ts - t < 3600]
+#     if len(reg_ts) >= 3:
+#         raise HTTPException(status_code=429, detail="Too many attempts for this email. Try again in an hour.")
+#     reg_ts.append(now_ts)
+#     _register_timestamps[email] = reg_ts
+#
+#     # Only allow Morgan State email for new registrations
+#     email_domain = email.split("@")[-1].lower()
+#     allow_test = os.getenv("ALLOW_TEST_EMAILS", "false").lower() == "true"
+#     if email_domain not in ALLOWED_EMAIL_DOMAINS and not (allow_test and email.endswith("@test.com")):
+#         raise HTTPException(status_code=400, detail="Only @morgan.edu email addresses are allowed.")
+#
+#     if len(req.password) < 8:
+#         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+#     if db.query(User).filter(User.email == req.email).first():
+#         raise HTTPException(status_code=400, detail="Email already registered")
+#
+#     hashed = hash_password(req.password)
+#     token = generate_token()
+#     student = User(email=req.email, password_hash=hashed, role="student", email_verified=False, verification_token=token,
+#                    name=req.name.strip() if req.name else None, student_id=req.student_id.strip() if req.student_id else None)
+#     db.add(student)
+#     db.commit()
+#     db.refresh(student)
+#
+#     send_verification_email(req.email, token)
+#     return {"message": "Account created! Check your Morgan State email to verify.", "user_id": student.id}
+#
+#
+# @app.get("/api/verify-email")
+# def verify_email(token: str, db: Session = Depends(get_db)):
+#     from starlette.responses import RedirectResponse
+#     user = db.query(User).filter(User.verification_token == token).first()
+#     if not user:
+#         raise HTTPException(status_code=400, detail="Invalid or expired verification link")
+#     user.email_verified = True
+#     user.verification_token = None
+#     db.commit()
+#     # Redirect to login with success flag
+#     app_url = os.getenv("APP_URL", "https://cs.inavigator.ai")
+#     return RedirectResponse(url=f"{app_url}/login?verified=true")
+#
+#
+# @app.post("/api/resend-verification")
+# async def resend_verification(request: Request, db: Session = Depends(get_db)):
+#     from email_service import generate_token, send_verification_email
+#     body = await request.json()
+#     email = body.get("email", "")
+#     user = db.query(User).filter(User.email == email).first()
+#     if not user:
+#         return {"message": "If an account exists, a verification email has been sent."}
+#     if user.email_verified:
+#         return {"message": "Email already verified."}
+#     token = generate_token()
+#     user.verification_token = token
+#     db.commit()
+#     send_verification_email(email, token)
+#     return {"message": "Verification email sent. Check your inbox."}
 
 
 @app.post("/api/forgot-password")
@@ -993,22 +1056,23 @@ async def reset_password(request: Request, db: Session = Depends(get_db)):
     return {"message": "Password reset successfully. You can now log in."}
 
 
-@app.post("/api/login")
-def login(req: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == req.email).first()
-    if not user or not verify_password(req.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    # Require email verification (skip for admins and existing test accounts)
-    if not getattr(user, 'email_verified', True) and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Please verify your email first. Check your inbox for the verification link.")
-
-    token = create_access_token({
-        "user_id": user.id,
-        "role": user.role,
-        "email": user.email
-    })
-    return {"access_token": token, "token_type": "bearer"}
+# Moved to routers/auth.py
+# @app.post("/api/login")
+# def login(req: LoginRequest, db: Session = Depends(get_db)):
+#     user = db.query(User).filter(User.email == req.email).first()
+#     if not user or not verify_password(req.password, user.password_hash):
+#         raise HTTPException(status_code=401, detail="Invalid credentials")
+#
+#     # Require email verification (skip for admins and existing test accounts)
+#     if not getattr(user, 'email_verified', True) and user.role != "admin":
+#         raise HTTPException(status_code=403, detail="Please verify your email first. Check your inbox for the verification link.")
+#
+#     token = create_access_token({
+#         "user_id": user.id,
+#         "role": user.role,
+#         "email": user.email
+#     })
+#     return {"access_token": token, "token_type": "bearer"}
 
 # --- Profile Management ---
 @app.get("/api/profile")
@@ -1051,7 +1115,10 @@ async def change_password(req: PasswordChangeRequest, user: dict = Depends(get_c
     
     if not verify_password(req.currentPassword, db_user.password_hash):
         raise HTTPException(401, "Current password incorrect")
-    
+
+    if verify_password(req.newPassword, db_user.password_hash):
+        raise HTTPException(400, "New password must be different from your current password")
+
     db_user.password_hash = hash_password(req.newPassword)
     db.commit()
     return {"message": "Password changed"}
@@ -2326,7 +2393,8 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     # Lazy-load: only fetch Canvas if query mentions grades/assignments/deadlines/course codes
     CANVAS_KEYWORDS = {"grade", "assignment", "due", "deadline", "missing", "class",
                        "course", "score", "submit", "canvas", "homework", "quiz",
-                       "test", "exam", "gpa", "taking", "enrolled"}
+                       "test", "exam", "gpa", "taking", "enrolled", "recommend",
+                       "suggest", "should i take", "what to take", "schedule"}
     has_course_code = bool(re.search(r'\b[A-Z]{2,4}\s*\d{3}\b', user_q, re.IGNORECASE))
     needs_canvas = has_course_code or any(kw in user_q.lower() for kw in CANVAS_KEYWORDS)
 
@@ -2355,11 +2423,39 @@ async def chat_with_bot(req: QueryRequest, user=Depends(get_current_user), db: S
     memory_context = build_memory_context(memory_dicts)
     conversation_context = _build_conversation_context(history_dicts)
 
+    # Inject basic profile info so agent knows who they're talking to
+    profile_parts = []
+    if user.get("name"): profile_parts.append(f"Name: {user['name']}")
+    if user.get("email"): profile_parts.append(f"Email: {user['email']}")
+    if user.get("student_id"): profile_parts.append(f"Student ID: {user['student_id']}")
+    if profile_parts:
+        profile_ctx = "STUDENT PROFILE (from account):\n" + "\n".join(profile_parts) + "\n"
+        student_context = profile_ctx + student_context
+
     # Pre-compute course context (prereq analysis, schedule, eligibility)
     course_context = build_course_context(dw_dict, user_q) if dw_dict else ""
     if course_context:
-        # Append to student context so agent sees it alongside DegreeWorks data
         student_context += f"\n{course_context}"
+
+    # Schedule planner state machine
+    from services.schedule_planner import (
+        detect_planning_intent, get_planner_state, set_planner_state,
+        clear_planner_state, process_planner_turn, build_planner_context,
+    )
+    from services.course_context import _SCHEDULES
+
+    planner_state = get_planner_state(user["user_id"], session_id)
+    if planner_state:
+        planner_state = process_planner_turn(planner_state, user_q, dw_dict, _SCHEDULES)
+        if planner_state:
+            set_planner_state(user["user_id"], session_id, planner_state)
+            student_context += build_planner_context(planner_state)
+        else:
+            clear_planner_state(user["user_id"], session_id)
+    elif detect_planning_intent(user_q) and dw_dict:
+        planner_state = {"phase": "ask_semester"}
+        set_planner_state(user["user_id"], session_id, planner_state)
+        student_context += build_planner_context(planner_state)
 
     if file_match and USE_VERTEX_AGENT:
         # File uploaded -> include file content as context for the agent
@@ -2506,7 +2602,8 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     # Lazy-load: only fetch Canvas if query mentions grades/assignments/deadlines/course codes
     CANVAS_KEYWORDS = {"grade", "assignment", "due", "deadline", "missing", "class",
                        "course", "score", "submit", "canvas", "homework", "quiz",
-                       "test", "exam", "gpa", "taking", "enrolled"}
+                       "test", "exam", "gpa", "taking", "enrolled", "recommend",
+                       "suggest", "should i take", "what to take", "schedule"}
     has_course_code = bool(re.search(r'\b[A-Z]{2,4}\s*\d{3}\b', user_q, re.IGNORECASE))
     needs_canvas = has_course_code or any(kw in user_q.lower() for kw in CANVAS_KEYWORDS)
 
@@ -2534,17 +2631,51 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
     canvas_context = _build_canvas_context(canvas_dict) if canvas_dict else ""
     memory_context = build_memory_context(memory_dicts)
 
+    # Inject basic profile info (email, name, student ID) so agent knows who they're talking to
+    profile_parts = []
+    if user.get("name"): profile_parts.append(f"Name: {user['name']}")
+    if user.get("email"): profile_parts.append(f"Email: {user['email']}")
+    if user.get("student_id"): profile_parts.append(f"Student ID: {user['student_id']}")
+    if profile_parts:
+        profile_ctx = "STUDENT PROFILE (from account):\n" + "\n".join(profile_parts) + "\n"
+        student_context = profile_ctx + student_context
+
     # Pre-compute course context (prereq analysis, schedule, eligibility)
     course_context = build_course_context(dw_dict, user_q) if dw_dict else ""
     if course_context:
         student_context += f"\n{course_context}"
 
-    agent_context = student_context  # DegreeWorks + course analysis (stable, for session reuse)
+    # Schedule planner state machine (conversational course planning)
+    from services.schedule_planner import (
+        detect_planning_intent, get_planner_state, set_planner_state,
+        clear_planner_state, process_planner_turn, build_planner_context,
+    )
+    from services.course_context import _SCHEDULES
+
+    planner_state = get_planner_state(user_id, session_id)
+    if planner_state:
+        planner_state = process_planner_turn(planner_state, user_q, dw_dict, _SCHEDULES)
+        if planner_state:
+            set_planner_state(user_id, session_id, planner_state)
+            student_context += build_planner_context(planner_state)
+        else:
+            clear_planner_state(user_id, session_id)
+    elif detect_planning_intent(user_q) and dw_dict:
+        planner_state = {"phase": "ask_semester"}
+        set_planner_state(user_id, session_id, planner_state)
+        student_context += build_planner_context(planner_state)
+
+    agent_context = student_context  # DegreeWorks + course analysis + planner (stable, for session reuse)
 
     # =========================================================================
     # CACHE CHECK - Return cached response instantly if available
     # =========================================================================
-    context_hash = get_context_hash(user_id, has_degreeworks=bool(dw_dict), model=req.model, has_canvas=bool(canvas_dict))
+    _dw_hash = ""
+    if dw_dict:
+        import hashlib as _hl
+        _dw_key = f"{dw_dict.get('overall_gpa','')}{dw_dict.get('total_credits_earned','')}{dw_dict.get('credits_remaining','')}"
+        _dw_hash = _hl.md5(_dw_key.encode()).hexdigest()[:8]
+    context_hash = get_context_hash(user_id, has_degreeworks=bool(dw_dict), model=req.model, has_canvas=bool(canvas_dict), dw_hash=_dw_hash)
 
     # Skip cache when user taps "Regenerate" for a fresh answer
     if req.skip_cache:
@@ -2627,17 +2758,20 @@ async def chat_stream(req: QueryRequest, user=Depends(get_current_user), db: Ses
                 elif event_type == "error":
                     stream_had_error = True
                     yield f"data: {json.dumps({'type': 'error', 'content': content})}\n\n"
-                    full_response = content
+                    # Preserve partial response for chat history instead of overwriting
+                    if not full_response:
+                        full_response = content
                     break
 
         except Exception as e:
             stream_had_error = True
             print(f"[ERROR] Streaming error: {e}")
             yield f"data: {json.dumps({'type': 'error', 'content': 'An error occurred during streaming.'})}\n\n"
-            full_response = "An error occurred during streaming."
+            if not full_response:
+                full_response = "An error occurred during streaming."
 
         # Cache the successful response
-        if full_response and "error" not in full_response.lower()[:50]:
+        if full_response and "error" not in full_response.lower()[:50] and "I may not have complete information" not in full_response:
             if query_cache.set(user_q, full_response, context_hash):
                 print(f"[CACHE] Stored response for: {user_q[:50]}...")
 
@@ -2713,7 +2847,7 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
     # Greetings (including typos) - only if short message
     greeting_patterns = ['hi', 'hey', 'heyt', 'hii', 'heyy', 'hello', 'helo', 'howdy', 'sup', 'yo', 'hola', 'greetings']
     if word_count <= 2 and (norm in greeting_patterns or re.match(r'^(hi+|hey+t?|hello+)$', norm)):
-        return {"response": "Hello! I'm CS Navigator. How can I help you learn about Morgan State's Computer Science program today?"}
+        return {"response": "Hello! I'm CS Navigator, a chatbot for Morgan State CS students. What questions do you have?"}
 
     # #8 FIX: "what's up", "how are you" patterns
     elif norm in ['whatsup', 'wassup', 'wazzup', 'whatsgood', 'howareyou', 'howru', 'howreyou', 'howyoudoing']:
@@ -2757,7 +2891,10 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
         "my remaining", "my progress", "my academic"
     ]
     query_lower = user_q.lower()
-    if any(kw in query_lower for kw in _PERSONAL_KEYWORDS):
+    # Don't trigger personal redirect if asking about a process/procedure (not personal data)
+    _PROCEDURE_OVERRIDES = ["substitution", "waiver", "exception", "how do", "how to", "what is", "process", "submit"]
+    is_procedure_q = any(p in query_lower for p in _PROCEDURE_OVERRIDES)
+    if not is_procedure_q and any(kw in query_lower for kw in _PERSONAL_KEYWORDS):
         return {"response": (
             "To access your personal academic information like GPA, courses, "
             "and degree progress, you'll need to **create a free account** with your "
@@ -2781,7 +2918,7 @@ async def chat_guest(req: GuestQueryRequest, request: Request):
             )
 
             # Cache the successful response
-            if answer and "error" not in answer.lower()[:50]:
+            if answer and "error" not in answer.lower()[:50] and "I may not have complete information" not in answer:
                 query_cache.set(user_q, answer, context_hash="")
 
         except Exception as e:
@@ -2842,6 +2979,20 @@ async def reset_chat_history(user=Depends(get_current_user), db: Session = Depen
     db.query(ChatHistory).filter(ChatHistory.user_id == user["user_id"]).delete()
     db.commit()
     return {"message": "Chat history reset."}
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Delete a single chat session for the logged-in user."""
+    deleted = db.query(ChatHistory).filter(
+        ChatHistory.user_id == user["user_id"],
+        ChatHistory.session_id == session_id,
+    ).delete()
+    db.commit()
+    if deleted == 0:
+        raise HTTPException(404, "Session not found")
+    return {"message": "Session deleted", "deleted_messages": deleted}
+
 
 # --- Voice Mode Endpoints ---
 @app.post("/api/tts")
@@ -3346,6 +3497,44 @@ async def trigger_ingestion(user: dict = Depends(get_current_user)):
         return {"message": "Ingestion not needed. Using Vertex AI structured datastore (instant updates via admin dashboard)."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+
+@app.post("/api/admin/knowledge-base/sync-all")
+async def sync_all_kb(user: dict = Depends(get_current_user)):
+    """One-click: Re-index Pinecone from Vertex AI datastore + clear all caches.
+    Call this after updating KB docs to ensure both search systems are in sync."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    results = {"pinecone": None, "cache": None}
+
+    # Step 1: Re-ingest KB docs to Pinecone (hybrid search index)
+    try:
+        from services.hybrid_retrieval import reingest_to_pinecone, is_pinecone_available
+        if is_pinecone_available():
+            ingest_result = await asyncio.to_thread(reingest_to_pinecone)
+            results["pinecone"] = {
+                "status": "ok" if ingest_result.get("failed", 0) == 0 else "partial",
+                "upserted": ingest_result.get("upserted", 0),
+                "failed": ingest_result.get("failed", 0),
+            }
+        else:
+            results["pinecone"] = {"status": "skipped", "reason": "Pinecone not configured"}
+    except Exception as e:
+        results["pinecone"] = {"status": "error", "reason": str(e)[:200]}
+
+    # Step 2: Clear all caches (L1 + L2 + semantic)
+    try:
+        cleared = query_cache.clear()
+        results["cache"] = {"status": "ok", "cleared": cleared}
+    except Exception as e:
+        results["cache"] = {"status": "error", "reason": str(e)[:200]}
+
+    return {
+        "success": True,
+        "message": f"Pinecone: {results['pinecone'].get('upserted', 0)} docs synced. Cache: cleared.",
+        "details": results,
+    }
 
 # --- Admin: Cloud Knowledge Base (Vertex AI Datastore) ---
 from datastore_manager import (
