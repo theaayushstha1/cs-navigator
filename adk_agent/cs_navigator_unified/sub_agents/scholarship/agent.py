@@ -1,26 +1,41 @@
 """Scholarship & Internship agent -- finds opportunities, filters by student profile.
 
 Reads DegreeWorks context from session state to auto-filter by GPA, major, and classification.
+
+Note: google_search is a Gemini grounding tool and cannot be combined with
+custom function tools on the same agent. Today's date is baked into the
+instruction at build time instead, and the model does deadline math itself.
 """
 
 import os
+from datetime import date
 
 from google.adk.agents import LlmAgent
 from google.adk.tools import google_search
 
-from ...tools.deadline import get_current_date, check_deadline
-
 MODEL = os.getenv("AGENT_MODEL", "gemini-2.5-flash")
 
-scholarship_agent = LlmAgent(
-    name="Scholarship_Agent",
-    model=MODEL,
-    description=(
-        "Finds scholarships and internships for CS students. Filters by eligibility "
-        "(GPA, major, year) using the student's DegreeWorks data. Checks deadlines."
-    ),
-    tools=[google_search, get_current_date, check_deadline],
-    instruction="""You are a Scholarship & Internship specialist for Morgan State University Computer Science students.
+
+def _build_instruction(ctx) -> str:
+    today = date.today()
+    today_iso = today.strftime("%Y-%m-%d")
+    today_human = today.strftime("%B %d, %Y")
+    if today.month >= 8:
+        semester = "Fall"
+    elif today.month >= 6:
+        semester = "Summer"
+    else:
+        semester = "Spring"
+
+    return f"""You are a Scholarship & Internship specialist for Morgan State University Computer Science students.
+
+TODAY IS {today_human} ({today_iso}). Current academic semester: {semester} {today.year}.
+
+CRITICAL RULE - DEADLINE FILTERING:
+- Compare every deadline you find against {today_iso}. Do the date math yourself.
+- NEVER show EXPIRED scholarships or internships. Skip them entirely.
+- Sort by deadline (soonest first).
+- Group results: URGENT (< 7 days) > UPCOMING (< 30 days) > OPEN.
 
 STUDENT DATA: Check session state for 'degreeworks' context. It contains the student's:
 - GPA (use for eligibility filtering)
@@ -35,12 +50,10 @@ available, ask them their GPA, major, and year.
 YOUR THREE FUNCTIONS:
 
 1. **Finding Scholarships**
-   - ALWAYS call get_current_date() first to know today's date
    - Search for scholarships using google_search
    - Search targets: morgan.edu/financial-aid, ScholarshipUniverse, fastweb.com, bold.org,
      scholarships.com, thurgoodmarshallfund.org, uncf.org
-   - For EVERY scholarship found, call check_deadline() on the deadline
-   - NEVER show EXPIRED scholarships
+   - For EVERY scholarship found, compare against today's date {today_iso} and skip expired ones
    - Sort by deadline (soonest first)
    - Group results: URGENT (< 7 days) > UPCOMING (< 30 days) > OPEN
    - Include: name, amount, deadline, eligibility, application link
@@ -65,5 +78,16 @@ RESPONSE FORMAT:
 - At the end, always mention: "Visit Morgan State Financial Aid (McMechen 201) or
   ScholarshipUniverse for more opportunities."
 
-Be concise and actionable. Students want links and deadlines, not paragraphs.""",
+Be concise and actionable. Students want links and deadlines, not paragraphs."""
+
+
+scholarship_agent = LlmAgent(
+    name="Scholarship_Agent",
+    model=MODEL,
+    description=(
+        "Finds scholarships and internships for CS students. Filters by eligibility "
+        "(GPA, major, year) using the student's DegreeWorks data. Checks deadlines."
+    ),
+    tools=[google_search],
+    instruction=_build_instruction,
 )

@@ -4,13 +4,20 @@ Datastores are created dynamically per-course by the material sync endpoint,
 so we query Discovery Engine directly instead of using VertexAiSearchTool.
 """
 
+import logging
 import os
+import re
 
 from google.api_core.client_options import ClientOptions
 from google.cloud import discoveryengine_v1 as discoveryengine
 
+logger = logging.getLogger(__name__)
+
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "csnavigator-vertex-ai")
-LOCATION = "us"
+LOCATION = os.getenv("DISCOVERY_ENGINE_LOCATION", "us")
+
+_COURSE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+_MAX_QUERY_LEN = 1024
 
 
 def search_course_materials(query: str, course_id: str) -> dict:
@@ -23,6 +30,13 @@ def search_course_materials(query: str, course_id: str) -> dict:
     Returns:
         Dict with status, results list, and result_count.
     """
+    if not isinstance(query, str) or not query.strip():
+        return {"status": "error", "message": "query must be a non-empty string", "results": [], "result_count": 0}
+    if len(query) > _MAX_QUERY_LEN:
+        return {"status": "error", "message": "query is too long", "results": [], "result_count": 0}
+    if not isinstance(course_id, str) or not _COURSE_ID_RE.match(course_id):
+        return {"status": "error", "message": "invalid course_id", "results": [], "result_count": 0}
+
     ds_id = f"canvas-course-{course_id}"
     serving_config = (
         f"projects/{PROJECT_ID}/locations/{LOCATION}"
@@ -61,7 +75,13 @@ def search_course_materials(query: str, course_id: str) -> dict:
                 "results": [],
                 "result_count": 0,
             }
-        raise
+        logger.exception("Discovery Engine search failed for course=%s", course_id)
+        return {
+            "status": "error",
+            "message": f"Search failed: {type(e).__name__}",
+            "results": [],
+            "result_count": 0,
+        }
 
     results = []
     for result in response.results:

@@ -1,9 +1,25 @@
 """Fetch tutor progress data from Firestore for context injection."""
 
+import logging
+import re
 from collections import defaultdict
+
 from google.cloud import firestore
 
+logger = logging.getLogger(__name__)
+
 _db = None
+
+_EMPTY_RESULT = {
+    "weak_topics": [],
+    "strong_topics": [],
+    "recent_quiz_scores": [],
+    "session_count": 0,
+}
+
+# Firestore document IDs cannot contain "/" and must not be "." or "..".
+# Restrict to a safe character set to prevent path traversal or injection.
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,1500}$")
 
 
 def _get_db():
@@ -19,19 +35,23 @@ def fetch_tutor_progress(user_id: str) -> dict:
     Returns dict with weak_topics, strong_topics, recent_quiz_scores,
     and session_count. Returns empty defaults if no data exists.
     """
-    db = _get_db()
-    doc_ref = db.collection("students").document(str(user_id))
-    doc = doc_ref.get()
+    safe_id = str(user_id) if user_id is not None else ""
+    if not _SAFE_ID_RE.match(safe_id):
+        logger.warning("fetch_tutor_progress: rejected unsafe user_id")
+        return dict(_EMPTY_RESULT)
+
+    try:
+        db = _get_db()
+        doc_ref = db.collection("students").document(safe_id)
+        doc = doc_ref.get()
+    except Exception:
+        logger.exception("fetch_tutor_progress: Firestore read failed")
+        return dict(_EMPTY_RESULT)
 
     if not doc.exists:
-        return {
-            "weak_topics": [],
-            "strong_topics": [],
-            "recent_quiz_scores": [],
-            "session_count": 0,
-        }
+        return dict(_EMPTY_RESULT)
 
-    data = doc.to_dict()
+    data = doc.to_dict() or {}
     quiz_history = data.get("quiz_history", [])
 
     topic_scores = defaultdict(list)

@@ -4,10 +4,15 @@ Used by Quiz Master to record scores and by the Tutor orchestrator
 to check student weaknesses. Reads/writes directly to Firestore.
 """
 
+import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 
 from google.cloud import firestore
+
+logger = logging.getLogger(__name__)
+
+_MAX_ID_LEN = 128
 
 _db = None
 
@@ -17,6 +22,18 @@ def _get_db():
     if _db is None:
         _db = firestore.Client()
     return _db
+
+
+def _validate_user_id(user_id) -> str:
+    """Ensure user_id is a non-empty, reasonably sized string."""
+    if not isinstance(user_id, str):
+        raise ValueError("user_id must be a string")
+    uid = user_id.strip()
+    if not uid:
+        raise ValueError("user_id must not be empty")
+    if len(uid) > _MAX_ID_LEN:
+        raise ValueError("user_id is too long")
+    return uid
 
 
 def _get_profile(user_id: str) -> dict:
@@ -106,10 +123,18 @@ def get_student_profile(canvas_user_id: str) -> dict:
     Args:
         canvas_user_id: The student's user ID.
     """
-    profile = _get_profile(canvas_user_id)
-    mastery = _analyze_mastery(canvas_user_id)
-    profile["mastery"] = mastery
-    return profile
+    try:
+        canvas_user_id = _validate_user_id(canvas_user_id)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+    try:
+        profile = _get_profile(canvas_user_id)
+        mastery = _analyze_mastery(canvas_user_id)
+        profile["mastery"] = mastery
+        return profile
+    except Exception as e:
+        logger.exception("Failed to load student profile for user=%s", canvas_user_id)
+        return {"status": "error", "message": f"Failed to load profile: {type(e).__name__}"}
 
 
 def update_quiz_score(
@@ -128,28 +153,36 @@ def update_quiz_score(
         total: Total number of questions.
         missed_concepts: List of concepts the student got wrong.
     """
-    db = _get_db()
-    result = {
-        "topic": topic,
-        "score": score,
-        "total": total,
-        "missed_concepts": missed_concepts,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    db.collection("students").document(canvas_user_id).set(
-        {"quiz_history": firestore.ArrayUnion([result])},
-        merge=True,
-    )
+    try:
+        canvas_user_id = _validate_user_id(canvas_user_id)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+    try:
+        db = _get_db()
+        result = {
+            "topic": topic,
+            "score": score,
+            "total": total,
+            "missed_concepts": missed_concepts,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        db.collection("students").document(canvas_user_id).set(
+            {"quiz_history": firestore.ArrayUnion([result])},
+            merge=True,
+        )
 
-    mastery = _analyze_mastery(canvas_user_id)
-    pct = round((score / total) * 100) if total > 0 else 0
-    return {
-        "status": "recorded",
-        "score_pct": pct,
-        "updated_weak_topics": mastery["weak_topics"],
-        "updated_strong_topics": mastery["strong_topics"],
-        "message": f"Scored {score}/{total} ({pct}%) on {topic}.",
-    }
+        mastery = _analyze_mastery(canvas_user_id)
+        pct = round((score / total) * 100) if total > 0 else 0
+        return {
+            "status": "recorded",
+            "score_pct": pct,
+            "updated_weak_topics": mastery["weak_topics"],
+            "updated_strong_topics": mastery["strong_topics"],
+            "message": f"Scored {score}/{total} ({pct}%) on {topic}.",
+        }
+    except Exception as e:
+        logger.exception("Failed to update quiz score for user=%s", canvas_user_id)
+        return {"status": "error", "message": f"Failed to record quiz: {type(e).__name__}"}
 
 
 def get_weaknesses(canvas_user_id: str) -> dict:
@@ -158,7 +191,15 @@ def get_weaknesses(canvas_user_id: str) -> dict:
     Args:
         canvas_user_id: The student's user ID.
     """
-    mastery = _analyze_mastery(canvas_user_id)
+    try:
+        canvas_user_id = _validate_user_id(canvas_user_id)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+    try:
+        mastery = _analyze_mastery(canvas_user_id)
+    except Exception as e:
+        logger.exception("Failed to analyze mastery for user=%s", canvas_user_id)
+        return {"status": "error", "message": f"Failed to load weaknesses: {type(e).__name__}"}
     weak_details = []
     for topic in mastery["weak_topics"]:
         stats = mastery["topic_stats"].get(topic, {})
@@ -182,13 +223,21 @@ def log_session(canvas_user_id: str, topics_covered: list[str]) -> dict:
         canvas_user_id: The student's user ID.
         topics_covered: List of topics covered in this session.
     """
-    db = _get_db()
-    session = {
-        "topics_covered": topics_covered,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    db.collection("students").document(canvas_user_id).set(
-        {"sessions": firestore.ArrayUnion([session])},
-        merge=True,
-    )
-    return {"status": "logged", "topics": topics_covered}
+    try:
+        canvas_user_id = _validate_user_id(canvas_user_id)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+    try:
+        db = _get_db()
+        session = {
+            "topics_covered": topics_covered,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        db.collection("students").document(canvas_user_id).set(
+            {"sessions": firestore.ArrayUnion([session])},
+            merge=True,
+        )
+        return {"status": "logged", "topics": topics_covered}
+    except Exception as e:
+        logger.exception("Failed to log session for user=%s", canvas_user_id)
+        return {"status": "error", "message": f"Failed to log session: {type(e).__name__}"}
